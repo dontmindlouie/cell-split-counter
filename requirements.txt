@@ -1,0 +1,6 @@
+cellpose
+trackpy
+opencv-python
+numpy
+pandas
+anthropic
