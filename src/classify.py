@@ -25,10 +25,27 @@ class LineageEvent:
     confidence: float
 
 
-def classify_events(tracks: list[TrackNode], roi: tuple[int, int, int, int]) -> list[LineageEvent]:
-    """Walk the lineage graph and emit one LineageEvent per split/end point.
+def classify_events(tracks: list[TrackNode], roi: tuple[int, int, int, int] | None) -> list[LineageEvent]:
+    """Walk the lineage graph and emit one LineageEvent per split point.
 
-    Anomaly candidates that the rules can't confidently resolve are marked AMBIGUOUS
-    and left for src.review.review_ambiguous to adjudicate with Claude vision.
+    v1 scope: only split events (NORMAL_SPLIT / MULTI_WAY_SPLIT) are classified.
+    Failed splits, ROI exits, death, and abnormality review are deferred -- see
+    project scope notes -- so `roi` is accepted but unused for now.
     """
-    raise NotImplementedError
+    events = []
+    for node in tracks:
+        if not node.children:
+            continue
+        event_type = EventType.NORMAL_SPLIT if len(node.children) == 2 else EventType.MULTI_WAY_SPLIT
+        for child_track_id in node.children:
+            events.append(
+                LineageEvent(
+                    track_id=child_track_id,
+                    parent_id=node.track_id,
+                    frame=node.frame + 1,  # daughters first appear in the next frame
+                    event_type=event_type,
+                    classification_source="rule",
+                    confidence=1.0,
+                )
+            )
+    return events

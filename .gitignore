@@ -1,6 +1,7 @@
 data/raw/
 data/frames/
 data/output/
+data/ground_truth/
 __pycache__/
 *.pyc
 .venv/

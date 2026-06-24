@@ -1,6 +1,5 @@
 cellpose
-trackpy
 opencv-python
 numpy
-pandas
+scipy
 anthropic
