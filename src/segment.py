@@ -21,13 +21,20 @@ def _get_model() -> models.CellposeModel:
 class CellMask:
     frame: int
     mask_id: int
-    mask: np.ndarray  # boolean array, same shape as frame
+    bbox: tuple[int, int, int, int]  # y0, y1, x0, x1 (exclusive)
+    local_mask: np.ndarray  # boolean array cropped to bbox, NOT full frame size
     centroid: tuple[float, float]
     area: float
 
 
 def segment_frame(frame_path: Path, frame_index: int) -> list[CellMask]:
-    """Run Cellpose on a single frame and return one CellMask per detected cell."""
+    """Run Cellpose on a single frame and return one CellMask per detected cell.
+
+    Masks are stored cropped to each cell's bounding box rather than at full frame
+    size -- a 2048x2048 bool array is 4MB regardless of cell size, and holding one per
+    cell per frame for a whole video exhausts memory. Cropped, each cell costs tens of
+    KB instead.
+    """
     img = cv2.imread(str(frame_path), cv2.IMREAD_GRAYSCALE)
     label_map, _, _ = _get_model().eval(img, diameter=None, channels=[0, 0])
 
@@ -37,9 +44,17 @@ def segment_frame(frame_path: Path, frame_index: int) -> list[CellMask]:
             continue
         mask = label_map == mask_id
         ys, xs = np.nonzero(mask)
+        y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
         centroid = (float(xs.mean()), float(ys.mean()))
         cell_masks.append(
-            CellMask(frame=frame_index, mask_id=int(mask_id), mask=mask, centroid=centroid, area=float(mask.sum()))
+            CellMask(
+                frame=frame_index,
+                mask_id=int(mask_id),
+                bbox=(y0, y1, x0, x1),
+                local_mask=mask[y0:y1, x0:x1].copy(),
+                centroid=centroid,
+                area=float(mask.sum()),
+            )
         )
     return cell_masks
 

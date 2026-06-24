@@ -23,8 +23,21 @@ def _overlap_fraction(a: CellMask, b: CellMask) -> float:
     parent, so intersection / union stays low even when the daughter clearly sits
     where the parent used to be. Normalizing by the smaller area keeps that match
     strong enough to detect.
+
+    Masks are stored cropped to their own bounding box (see CellMask), so the
+    intersection has to be computed over the overlapping region of the two boxes,
+    not by directly comparing the arrays.
     """
-    intersection = np.logical_and(a.mask, b.mask).sum()
+    ay0, ay1, ax0, ax1 = a.bbox
+    by0, by1, bx0, bx1 = b.bbox
+    iy0, iy1 = max(ay0, by0), min(ay1, by1)
+    ix0, ix1 = max(ax0, bx0), min(ax1, bx1)
+    if iy0 >= iy1 or ix0 >= ix1:
+        return 0.0
+
+    sub_a = a.local_mask[iy0 - ay0 : iy1 - ay0, ix0 - ax0 : ix1 - ax0]
+    sub_b = b.local_mask[iy0 - by0 : iy1 - by0, ix0 - bx0 : ix1 - bx0]
+    intersection = np.logical_and(sub_a, sub_b).sum()
     smaller_area = min(a.area, b.area)
     return 0.0 if smaller_area == 0 else intersection / smaller_area
 
