@@ -19,5 +19,5 @@ def run(config: IngestConfig, frame_dir: Path, output_dir: Path) -> None:
     tracks = link_frames(masks_by_frame)
     events = classify_events(tracks, config.roi)
 
-    write_events_csv(events, output_dir / "events.csv")
+    write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(events, {"video_path": str(config.video_path)}, output_dir / "summary.json")

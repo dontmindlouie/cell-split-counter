@@ -8,24 +8,24 @@ from pathlib import Path
 from src.classify import LineageEvent
 
 
-def write_events_csv(events: list[LineageEvent], out_path: Path, frame_range_lookback: int = 10) -> None:
+def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: str, frame_range_lookback: int = 10) -> None:
     """Write one row per detected split event.
 
     frame_range is approximated as [peak_frame - frame_range_lookback, peak_frame] since
     v1 only detects the frame a split is observed (peak_frame), not the metaphase-anaphase
     window the ground-truth sheet records -- that needs per-frame morphology classification,
-    out of scope for v1.
+    out of scope for v1. See docs/output_schema.md for full column definitions.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
-            ["event_id", "frame_range", "peak_frame", "division_type", "track_id", "parent_id", "confidence", "classification_source"]
+            ["event_id", "source_video", "frame_range", "peak_frame", "division_type", "track_id", "parent_id", "confidence", "classification_source"]
         )
         for i, e in enumerate(events):
             range_start = max(e.frame - frame_range_lookback, 0)
             writer.writerow(
-                [i, f"{range_start}-{e.frame}", e.frame, e.event_type.value, e.track_id, e.parent_id, e.confidence, e.classification_source]
+                [i, source_video, f"{range_start}-{e.frame}", e.frame, e.event_type.value, e.track_id, e.parent_id, e.confidence, e.classification_source]
             )
 
 

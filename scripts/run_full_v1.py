@@ -37,7 +37,7 @@ def main() -> None:
     events = classify_events(tracks, config.roi)
     print(f"tracked + classified in {time.time() - t2:.1f}s -- {len(events)} events", flush=True)
 
-    write_events_csv(events, OUT_DIR / "events.csv")
+    write_events_csv(events, OUT_DIR / "events.csv", source_video=VIDEO.name)
     write_summary_json(events, {"video_path": str(VIDEO)}, OUT_DIR / "summary.json")
     print(f"done. total runtime {time.time() - t0:.1f}s", flush=True)
 
