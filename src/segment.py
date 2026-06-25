@@ -13,7 +13,7 @@ _model: models.CellposeModel | None = None
 def _get_model() -> models.CellposeModel:
     global _model
     if _model is None:
-        _model = models.CellposeModel(gpu=False, model_type="cyto3")
+        _model = models.CellposeModel(gpu=True, model_type="cyto3")
     return _model
 
 
