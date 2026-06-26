@@ -19,12 +19,19 @@ GROUND_TRUTH_XLSX = Path("data/ground_truth/ACD_analysis.xlsx")
 GROUND_TRUTH_SHEET = "iPSC_nTSC_Tom20_ACTB_ZO1"  # matches the ACTB_Tom20 video (575 frames)
 EVENTS_CSV = Path("data/output/events.csv")
 
+# Sheet has multiple stacked blocks for different videos.
+# Rows 19-51: 33-event Tom20 block (the one we have video for — use this).
+# Rows 2-17:  original 15-event Tom20 block (superseded by the 33-event block).
+# Rows 70+:   ACTB_Ntsc block (different video, not in data/raw/).
+GT_ROW_START = 19
+GT_ROW_END = 51
+
 
 def parse_ground_truth_peaks(sheet) -> list[int]:
     """Column C ('metaphase-anaphase') is either a single frame number or a 'start-end'
     range string; for ranges, use the midpoint as the representative peak frame."""
     peaks = []
-    for row in sheet.iter_rows(min_row=2, values_only=True):
+    for row in sheet.iter_rows(min_row=GT_ROW_START, max_row=GT_ROW_END, values_only=True):
         value = row[2] if len(row) > 2 else None
         if value is None:
             continue
