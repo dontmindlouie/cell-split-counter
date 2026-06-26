@@ -1,5 +1,6 @@
 """Lineage graph rules: classify each split/end event as normal, anomalous, or ambiguous."""
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -25,8 +26,31 @@ class LineageEvent:
     confidence: float
 
 
+def _daughter_persistence(
+    node_by_tid_frame: dict[tuple[int, int], TrackNode],
+    child_tids: list[int],
+    split_frame: int,
+    max_lookahead: int,
+) -> int:
+    """Count how many consecutive frames ALL daughters remain as separate tracks.
+
+    Returns an int in [0, max_lookahead]. 0 means at least one daughter vanishes
+    at split_frame itself (shouldn't happen normally). A shape-change false positive
+    typically returns 1-2; a real division typically returns max_lookahead or close.
+    """
+    for lookahead in range(max_lookahead):
+        f = split_frame + lookahead
+        if not all((tid, f) in node_by_tid_frame for tid in child_tids):
+            return lookahead
+    return max_lookahead
+
+
 def classify_events(
-    tracks: list[TrackNode], roi: tuple[int, int, int, int] | None, cascade_window: int = 20
+    tracks: list[TrackNode],
+    roi: tuple[int, int, int, int] | None,
+    cascade_window: int = 20,
+    min_daughter_persistence: int = 3,
+    confidence_max_frames: int = 10,
 ) -> list[LineageEvent]:
     """Walk the lineage graph and emit one LineageEvent per split point.
 
@@ -34,22 +58,33 @@ def classify_events(
     Failed splits, ROI exits, death, and abnormality review are deferred -- see
     project scope notes -- so `roi` is accepted but unused for now.
 
-    A real division's two daughters sit right next to each other afterward, and their
-    Cellpose masks keep flickering (touching/separating slightly) for many frames --
-    each flicker looks like "another split" to the tracker, producing a long cascade
-    of spurious events for one real division. If a track that was itself born from a
-    split splits again within cascade_window frames, treat it as noise from the same
-    event rather than a new one: don't emit it, but keep propagating its origin frame
-    so deeper cascades are suppressed too. tracks must be in non-decreasing frame order
-    (true as built by link_frames) for the propagation below to see parents before
-    their children.
+    Two suppression / scoring mechanisms:
+
+    1. Cascade noise (binary suppress): a real division's daughters sit adjacent and
+       their Cellpose masks flicker (touching/separating slightly) across many frames.
+       If a track born from a split re-splits within cascade_window frames, treat as
+       noise. Origin frame is propagated to daughters so deeper cascades are suppressed.
+
+    2. Daughter persistence (suppress + confidence score): a shape-change or z-plane
+       false positive briefly produces 2 masks then reverts to 1 the next frame; real
+       daughters stay separate for many frames. Events where daughters survive fewer than
+       min_daughter_persistence frames are suppressed. Events that pass are scored:
+         confidence = min(1.0, persistence_frames / confidence_max_frames)
+       So daughters surviving 3 frames -> 0.3, 5 frames -> 0.5, 10+ frames -> 1.0.
+       Low-confidence events are real candidates for Claude vision review.
+
+    tracks must be in non-decreasing frame order (true as built by link_frames).
     """
-    origin_frame: dict[int, int] = {}  # track_id -> frame of the split that "really" produced it
+    node_by_tid_frame: dict[tuple[int, int], TrackNode] = {
+        (n.track_id, n.frame): n for n in tracks
+    }
+    origin_frame: dict[int, int] = {}
     events = []
+
     for node in tracks:
         if not node.children:
             continue
-        split_frame = node.frame + 1  # daughters first appear in the next frame
+        split_frame = node.frame + 1
         parent_origin = origin_frame.get(node.track_id)
         is_cascade_noise = parent_origin is not None and (split_frame - parent_origin) <= cascade_window
 
@@ -58,6 +93,13 @@ def classify_events(
                 origin_frame[child_track_id] = parent_origin
             continue
 
+        persistence = _daughter_persistence(
+            node_by_tid_frame, node.children, split_frame, confidence_max_frames
+        )
+        if persistence < min_daughter_persistence:
+            continue  # brief shape-change or z-plane artifact; don't propagate origin_frame
+
+        confidence = min(1.0, persistence / confidence_max_frames)
         event_type = EventType.NORMAL_SPLIT if len(node.children) == 2 else EventType.MULTI_WAY_SPLIT
         for child_track_id in node.children:
             origin_frame[child_track_id] = split_frame
@@ -68,7 +110,7 @@ def classify_events(
                     frame=split_frame,
                     event_type=event_type,
                     classification_source="rule",
-                    confidence=1.0,
+                    confidence=confidence,
                 )
             )
     return events

@@ -3,12 +3,34 @@ from src.segment import CellMask
 from src.track import TrackNode
 
 
-def fake_mask(frame: int) -> CellMask:
-    return CellMask(frame=frame, mask_id=0, bbox=(0, 1, 0, 1), local_mask=None, centroid=(0, 0), area=1.0)
+def fake_mask(cx: float = 0.0, cy: float = 0.0) -> CellMask:
+    return CellMask(frame=0, mask_id=0, bbox=(0, 1, 0, 1), local_mask=None, centroid=(cx, cy), area=1.0)
 
 
-def node(track_id, parent_id, frame, children=None):
-    return TrackNode(track_id=track_id, parent_id=parent_id, frame=frame, mask=fake_mask(frame), children=children or [])
+def node(track_id, parent_id, frame, children=None, cx=0.0, cy=0.0):
+    return TrackNode(
+        track_id=track_id,
+        parent_id=parent_id,
+        frame=frame,
+        mask=fake_mask(cx, cy),
+        children=children or [],
+    )
+
+
+def split_nodes(parent_tid, child_tids, parent_frame, persist=5, cx_offsets=None):
+    """Build a parent node + daughter nodes persisting for `persist` frames.
+
+    cx_offsets: list of x-centroid offsets per daughter (default: spread daughters apart).
+    Used to control daughter separation for persistence tests.
+    """
+    if cx_offsets is None:
+        cx_offsets = [i * 50.0 for i in range(len(child_tids))]
+    result = [node(parent_tid, None, parent_frame, children=list(child_tids))]
+    split_frame = parent_frame + 1
+    for f in range(split_frame, split_frame + persist):
+        for i, c in enumerate(child_tids):
+            result.append(node(c, parent_tid if f == split_frame else None, f, cx=cx_offsets[i]))
+    return result
 
 
 def test_no_children_produces_no_events():
@@ -17,7 +39,7 @@ def test_no_children_produces_no_events():
 
 
 def test_normal_split_emits_one_event_per_daughter():
-    tracks = [node(track_id=1, parent_id=None, frame=10, children=[2, 3])]
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=5)
     events = classify_events(tracks, None)
 
     assert len(events) == 2
@@ -28,7 +50,7 @@ def test_normal_split_emits_one_event_per_daughter():
 
 
 def test_three_way_split_is_classified_as_multi_way():
-    tracks = [node(track_id=1, parent_id=None, frame=10, children=[2, 3, 4])]
+    tracks = split_nodes(1, [2, 3, 4], parent_frame=10, persist=5)
     events = classify_events(tracks, None)
 
     assert len(events) == 3
@@ -40,26 +62,57 @@ def test_cascade_within_window_is_suppressed_but_descendant_origin_still_tracked
     # track 2 'splits' again at frame 12 into 4,5 -- mask-flicker noise, same underlying event.
     # track 4 splits again at frame 41 -- far enough later (>20 frames from the ORIGINAL frame 11)
     # to be a real, distinct second division.
-    tracks = [
-        node(track_id=1, parent_id=None, frame=10, children=[2, 3]),
-        node(track_id=2, parent_id=1, frame=11, children=[4, 5]),
-        node(track_id=4, parent_id=2, frame=40, children=[6, 7]),
-    ]
-    events = classify_events(tracks, None, cascade_window=20)
+    # min_daughter_persistence=1 isolates cascade behaviour from persistence checking.
+    tracks = (
+        split_nodes(1, [2, 3], parent_frame=10, persist=1)  # daughters at frame 11 only
+        + split_nodes(2, [4, 5], parent_frame=11, persist=1)
+        + split_nodes(4, [6, 7], parent_frame=40, persist=5)
+        + [node(3, None, f) for f in range(12, 16)]   # track 3 continues
+    )
+    events = classify_events(tracks, None, cascade_window=20, min_daughter_persistence=1)
 
-    assert [e.track_id for e in events] == [2, 3, 6, 7]
-    assert [e.frame for e in events] == [11, 11, 41, 41]
-    assert events[2].parent_id == 4 and events[3].parent_id == 4
+    assert {e.track_id for e in events} == {2, 3, 6, 7}
+    assert {e.frame for e in events} == {11, 41}
+    split_1_events = [e for e in events if e.frame == 11]
+    assert all(e.parent_id == 1 for e in split_1_events)
+    split_2_events = [e for e in events if e.frame == 41]
+    assert all(e.parent_id == 4 for e in split_2_events)
 
 
 def test_cascade_just_outside_window_is_not_suppressed():
-    # same as above, but the second split is only 15 frames after the first -- still within
-    # the 20-frame cascade window -- versus one that's 25 frames after, which is outside it.
-    tracks = [
-        node(track_id=1, parent_id=None, frame=10, children=[2, 3]),  # split at frame 11
-        node(track_id=2, parent_id=1, frame=34, children=[4, 5]),  # split at frame 35: 35-11=24 > 20
-    ]
-    events = classify_events(tracks, None, cascade_window=20)
+    # Second split is 24 frames after the first (> cascade_window=20) -- should NOT be suppressed.
+    tracks = (
+        split_nodes(1, [2, 3], parent_frame=10, persist=5)
+        + split_nodes(2, [4, 5], parent_frame=34, persist=5)  # split_frame=35, 35-11=24 > 20
+        + [node(3, None, f) for f in range(12, 41)]
+    )
+    events = classify_events(tracks, None, cascade_window=20, min_daughter_persistence=1)
 
-    assert len(events) == 4  # both splits kept, since the second is outside the cascade window
+    assert len(events) == 4
     assert {e.track_id for e in events} == {2, 3, 4, 5}
+
+
+def test_short_lived_daughters_are_suppressed():
+    # Daughters survive only 2 frames -- below min_daughter_persistence=3 -- should be suppressed.
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=2)
+    events = classify_events(tracks, None, min_daughter_persistence=3)
+
+    assert events == []
+
+
+def test_persistent_daughters_pass_and_get_confidence_score():
+    # Daughters survive confidence_max_frames=5 -- confidence should be 1.0.
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=5)
+    events = classify_events(tracks, None, min_daughter_persistence=3, confidence_max_frames=5)
+
+    assert len(events) == 2
+    assert all(e.confidence == 1.0 for e in events)
+
+
+def test_partial_persistence_gives_fractional_confidence():
+    # Daughters survive 3 frames out of confidence_max_frames=6 -- confidence = 0.5.
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=3)
+    events = classify_events(tracks, None, min_daughter_persistence=3, confidence_max_frames=6)
+
+    assert len(events) == 2
+    assert all(abs(e.confidence - 0.5) < 1e-6 for e in events)
