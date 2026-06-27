@@ -145,18 +145,13 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Trackastra.from_pretrained("general_2d", device=device)
-    out = model.track(frames, labels, mode="greedy")
 
-    try:
-        df_ctc, tracked_video = graph_to_ctc(out, labels)
-    except Exception:
-        graph = out[0] if isinstance(out, (list, tuple)) else out
-        df_ctc, tracked_video = graph_to_ctc(graph, labels)
+    # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
+    track_graph, tracked_video = model.track(frames, labels, mode="greedy")
+    # graph_to_ctc recomputes relabeled masks from the graph; columns: track_id, t_start, t_end, parent_id
+    df_ctc, tracked_video = graph_to_ctc(track_graph, labels)
 
-    # CTC format: one row per track segment with columns L (label), B (begin frame),
-    # E (end frame), P (parent label; 0 = no parent / born from division of P)
-    col = df_ctc.columns.tolist()
-    l_col, b_col, e_col, p_col = col[0], col[1], col[2], col[3]
+    l_col, b_col, e_col, p_col = "track_id", "t_start", "t_end", "parent_id"
 
     # Build parent lookup: label -> parent_label (0 if no parent)
     parent_of: dict[int, int] = {
