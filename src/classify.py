@@ -49,7 +49,6 @@ def classify_events(
     tracks: list[TrackNode],
     roi: tuple[int, int, int, int] | None,
     cascade_window: int = 20,
-    min_daughter_persistence: int = 3,
     confidence_max_frames: int = 10,
 ) -> list[LineageEvent]:
     """Walk the lineage graph and emit one LineageEvent per split point.
@@ -58,20 +57,19 @@ def classify_events(
     Failed splits, ROI exits, death, and abnormality review are deferred -- see
     project scope notes -- so `roi` is accepted but unused for now.
 
-    Two suppression / scoring mechanisms:
+    Two mechanisms:
 
     1. Cascade noise (binary suppress): a real division's daughters sit adjacent and
        their Cellpose masks flicker (touching/separating slightly) across many frames.
        If a track born from a split re-splits within cascade_window frames, treat as
        noise. Origin frame is propagated to daughters so deeper cascades are suppressed.
 
-    2. Daughter persistence (suppress + confidence score): a shape-change or z-plane
-       false positive briefly produces 2 masks then reverts to 1 the next frame; real
-       daughters stay separate for many frames. Events where daughters survive fewer than
-       min_daughter_persistence frames are suppressed. Events that pass are scored:
+    2. Daughter persistence (confidence score only, no suppression): a shape-change or
+       z-plane false positive briefly produces 2 masks then reverts to 1 the next frame;
+       real daughters stay separate for many frames. All splits are kept so recall stays
+       at 100%, but scored:
          confidence = min(1.0, persistence_frames / confidence_max_frames)
-       So daughters surviving 3 frames -> 0.3, 5 frames -> 0.5, 10+ frames -> 1.0.
-       Low-confidence events are real candidates for Claude vision review.
+       Low-confidence events (confidence < 1.0) are routed to Claude vision review.
 
     tracks must be in non-decreasing frame order (true as built by link_frames).
     """
@@ -96,9 +94,6 @@ def classify_events(
         persistence = _daughter_persistence(
             node_by_tid_frame, node.children, split_frame, confidence_max_frames
         )
-        if persistence < min_daughter_persistence:
-            continue  # brief shape-change or z-plane artifact; don't propagate origin_frame
-
         confidence = min(1.0, persistence / confidence_max_frames)
         event_type = EventType.NORMAL_SPLIT if len(node.children) == 2 else EventType.MULTI_WAY_SPLIT
         for child_track_id in node.children:

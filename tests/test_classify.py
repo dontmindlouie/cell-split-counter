@@ -69,7 +69,7 @@ def test_cascade_within_window_is_suppressed_but_descendant_origin_still_tracked
         + split_nodes(4, [6, 7], parent_frame=40, persist=5)
         + [node(3, None, f) for f in range(12, 16)]   # track 3 continues
     )
-    events = classify_events(tracks, None, cascade_window=20, min_daughter_persistence=1)
+    events = classify_events(tracks, None, cascade_window=20)
 
     assert {e.track_id for e in events} == {2, 3, 6, 7}
     assert {e.frame for e in events} == {11, 41}
@@ -86,24 +86,25 @@ def test_cascade_just_outside_window_is_not_suppressed():
         + split_nodes(2, [4, 5], parent_frame=34, persist=5)  # split_frame=35, 35-11=24 > 20
         + [node(3, None, f) for f in range(12, 41)]
     )
-    events = classify_events(tracks, None, cascade_window=20, min_daughter_persistence=1)
+    events = classify_events(tracks, None, cascade_window=20)
 
     assert len(events) == 4
     assert {e.track_id for e in events} == {2, 3, 4, 5}
 
 
-def test_short_lived_daughters_are_suppressed():
-    # Daughters survive only 2 frames -- below min_daughter_persistence=3 -- should be suppressed.
-    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=2)
-    events = classify_events(tracks, None, min_daughter_persistence=3)
+def test_short_lived_daughters_still_emit_with_low_confidence():
+    # Daughters survive only 1 frame -- below confidence_max_frames=10 -- kept but low confidence.
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=1)
+    events = classify_events(tracks, None, confidence_max_frames=10)
 
-    assert events == []
+    assert len(events) == 2
+    assert all(e.confidence == 0.1 for e in events)
 
 
 def test_persistent_daughters_pass_and_get_confidence_score():
     # Daughters survive confidence_max_frames=5 -- confidence should be 1.0.
     tracks = split_nodes(1, [2, 3], parent_frame=10, persist=5)
-    events = classify_events(tracks, None, min_daughter_persistence=3, confidence_max_frames=5)
+    events = classify_events(tracks, None, confidence_max_frames=5)
 
     assert len(events) == 2
     assert all(e.confidence == 1.0 for e in events)
@@ -112,7 +113,7 @@ def test_persistent_daughters_pass_and_get_confidence_score():
 def test_partial_persistence_gives_fractional_confidence():
     # Daughters survive 3 frames out of confidence_max_frames=6 -- confidence = 0.5.
     tracks = split_nodes(1, [2, 3], parent_frame=10, persist=3)
-    events = classify_events(tracks, None, min_daughter_persistence=3, confidence_max_frames=6)
+    events = classify_events(tracks, None, confidence_max_frames=6)
 
     assert len(events) == 2
     assert all(abs(e.confidence - 0.5) < 1e-6 for e in events)
