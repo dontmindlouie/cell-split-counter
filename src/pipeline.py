@@ -13,7 +13,7 @@ from src.track import link_frames, link_frames_trackastra
 # is validated against ground truth.
 
 
-def run(config: IngestConfig, frame_dir: Path, output_dir: Path, tracker: str = "iou") -> None:
+def run(config: IngestConfig, frame_dir: Path, output_dir: Path, tracker: str = "trackastra") -> None:
     frame_paths = extract_frames(config, frame_dir)
 
     if tracker == "trackastra":
