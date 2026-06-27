@@ -151,7 +151,8 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     # graph_to_ctc recomputes relabeled masks from the graph; columns: track_id, t_start, t_end, parent_id
     df_ctc, tracked_video = graph_to_ctc(track_graph, labels)
 
-    l_col, b_col, e_col, p_col = "track_id", "t_start", "t_end", "parent_id"
+    # Column names vary by trackastra version (label/t1/t2/parent or track_id/t_start/t_end/parent_id)
+    l_col, b_col, e_col, p_col = df_ctc.columns[:4]
 
     # Build parent lookup: label -> parent_label (0 if no parent)
     parent_of: dict[int, int] = {
