@@ -55,6 +55,13 @@ def main():
     tifffile.imwrite(str(OUT_TIFF), stack, photometric="minisblack")
     print(f"Written to {OUT_TIFF}")
 
+    # Remove stale Cell-ACDC outputs so the next run re-segments from scratch
+    for stale in ["video_segm.npz", "video_acdc_output.csv"]:
+        p = OUT_TIFF.parent / stale
+        if p.exists():
+            p.unlink()
+            print(f"Removed stale {stale}")
+
 
 if __name__ == "__main__":
     main()
