@@ -2,16 +2,20 @@
 
 import base64
 import dataclasses
+import io
 import json
 import os
 from pathlib import Path
 
 import anthropic
+import cv2
+import numpy as np
 
 from src.classify import LineageEvent
 
 _FRAMES_BEFORE = 2
 _FRAMES_AFTER = 3
+_CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + both daughters
 
 # System prompt — uses .format() so JSON braces must be doubled.
 _SYSTEM = """\
@@ -35,8 +39,19 @@ def _find_frame(frame_dir: Path, index: int) -> Path | None:
     return matches[0] if matches else None
 
 
-def _load_image_block(path: Path) -> dict:
-    data = base64.standard_b64encode(path.read_bytes()).decode()
+def _load_image_block(path: Path, centroid: tuple[float, float] | None = None) -> dict:
+    if centroid is not None:
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        cx, cy = int(centroid[0]), int(centroid[1])
+        h, w = img.shape
+        y0, y1 = max(0, cy - _CROP_RADIUS), min(h, cy + _CROP_RADIUS)
+        x0, x1 = max(0, cx - _CROP_RADIUS), min(w, cx + _CROP_RADIUS)
+        crop = img[y0:y1, x0:x1]
+        ok, buf = cv2.imencode(".png", crop)
+        raw = buf.tobytes() if ok else path.read_bytes()
+    else:
+        raw = path.read_bytes()
+    data = base64.standard_b64encode(raw).decode()
     return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
 
 
@@ -45,8 +60,8 @@ def _review_split(
     event: LineageEvent,
     frame_dir: Path,
     model: str,
-) -> tuple[str, float]:
-    """Ask Claude whether the split at event.frame is real. Returns (verdict, confidence)."""
+) -> tuple[str, float, str]:
+    """Ask Claude whether the split at event.frame is real. Returns (verdict, confidence, reason)."""
     indices = list(range(max(0, event.frame - _FRAMES_BEFORE), event.frame + _FRAMES_AFTER + 1))
     indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
 
@@ -56,7 +71,7 @@ def _review_split(
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
     after_count = len(indexed_paths) - before_count
 
-    content = [_load_image_block(p) for _, p in indexed_paths]
+    content = [_load_image_block(p, event.centroid) for _, p in indexed_paths]
     content.append({
         "type": "text",
         "text": (
@@ -77,7 +92,7 @@ def _review_split(
         .removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     )
     parsed = json.loads(text)
-    return str(parsed["verdict"]), float(parsed["confidence"])
+    return str(parsed["verdict"]), float(parsed["confidence"]), str(parsed.get("reason", ""))
 
 
 def review_ambiguous(
@@ -129,15 +144,16 @@ def review_ambiguous(
                 continue
 
             try:
-                verdict, confidence = _review_split(client, event, frame_dir, model)
+                verdict, confidence, reason = _review_split(client, event, frame_dir, model)
             except Exception:
                 # API failure: preserve original rule-based classification.
-                split_verdict[key] = ("real", event.confidence)
+                split_verdict[key] = ("real", event.confidence, "")
                 reviewed.append(event)
                 continue
-            split_verdict[key] = (verdict, confidence)
+            print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}] {reason}")
+            split_verdict[key] = (verdict, confidence, reason)
 
-        verdict, confidence = split_verdict[key]
+        verdict, confidence, _ = split_verdict[key]
         reviewed.append(dataclasses.replace(
             event,
             classification_source="claude",

@@ -34,6 +34,9 @@ def load_events(path: Path) -> list[LineageEvent]:
     events = []
     with path.open() as f:
         for row in csv.DictReader(f):
+            cx = row.get("centroid_x", "")
+            cy = row.get("centroid_y", "")
+            centroid = (float(cx), float(cy)) if cx and cy else None
             events.append(LineageEvent(
                 track_id=int(row["track_id"]),
                 parent_id=int(row["parent_id"]) if row["parent_id"] else None,
@@ -41,25 +44,39 @@ def load_events(path: Path) -> list[LineageEvent]:
                 event_type=TYPE_MAP[row["division_type"]],
                 classification_source=row["classification_source"],
                 confidence=float(row["confidence"]),
+                centroid=centroid,
             ))
     return events
 
 events = load_events(EVENTS_CSV)
-low = [e for e in events if e.confidence < 1.0]
-print(f"Total events: {len(events)}  |  Low-confidence: {len(low)}")
+high = [e for e in events if e.confidence >= 1.0]
+low  = [e for e in events if e.confidence < 1.0]
+print(f"Total: {len(events)}  |  High-confidence (known real): {len(high)}  |  Low-confidence: {len(low)}")
 
-reviewed = review_ambiguous(
-    events,
+# --- Test 1: known true positives — force high-confidence events through Claude ---
+print("\n=== Known true positives (rule confidence=1.0) ===")
+reviewed_high = review_ambiguous(
+    high,
+    FRAME_DIR,
+    confidence_threshold=1.1,  # send everything regardless of confidence
+    model="claude-haiku-4-5",
+    max_reviews=5,
+)
+
+# --- Test 2: low-confidence events (same as before) ---
+print("\n=== Low-confidence events ===")
+reviewed_low = review_ambiguous(
+    low,
     FRAME_DIR,
     confidence_threshold=1.0,
     model="claude-haiku-4-5",
-    max_reviews=5,       # cap: 5 unique split points = 5 API calls
+    max_reviews=5,
 )
 
-changed = [e for e in reviewed if e.classification_source == "claude"]
-print(f"\nReviewed by Claude: {len(changed)} events ({len({(e.parent_id, e.frame) for e in changed})} unique splits)\n")
-
-for e in changed:
-    verdict = "REAL" if e.confidence > 0 else "FALSE POSITIVE"
-    print(f"  frame={e.frame:3d}  parent={e.parent_id}  track={e.track_id}  "
-          f"confidence={e.confidence:.2f}  -> {verdict}")
+for label, reviewed in [("TRUE POSITIVE TEST", reviewed_high), ("LOW CONFIDENCE", reviewed_low)]:
+    changed = [e for e in reviewed if e.classification_source == "claude"]
+    print(f"\n{label} — {len({(e.parent_id, e.frame) for e in changed})} splits reviewed:")
+    for e in changed:
+        verdict = "REAL" if e.confidence > 0 else "FALSE POSITIVE"
+        print(f"  frame={e.frame:3d}  parent={e.parent_id}  track={e.track_id}  "
+              f"rule_conf={e.confidence:.2f}  -> {verdict}")

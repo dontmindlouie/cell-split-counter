@@ -24,6 +24,7 @@ class LineageEvent:
     event_type: EventType
     classification_source: str  # "rule" or "claude"
     confidence: float
+    centroid: tuple[float, float] | None = None  # (cx, cy) of parent cell at split frame
 
 
 def _daughter_persistence(
@@ -106,6 +107,7 @@ def classify_events(
                     event_type=event_type,
                     classification_source="rule",
                     confidence=confidence,
+                    centroid=node.mask.centroid,
                 )
             )
     return events
