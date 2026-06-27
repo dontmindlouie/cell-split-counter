@@ -1,6 +1,7 @@
 """Deterministic frame-to-frame linking of cell masks into lineage tracks."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -110,5 +111,92 @@ def link_frames(masks_by_frame: dict[int, list[CellMask]], overlap_threshold: fl
                 next_track_id += 1
 
         live = new_live
+
+    return nodes
+
+
+def _label_to_cellmask(label_map: np.ndarray, label_id: int, frame: int) -> CellMask:
+    mask = label_map == label_id
+    ys, xs = np.nonzero(mask)
+    y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+    return CellMask(
+        frame=frame,
+        mask_id=label_id,
+        bbox=(y0, y1, x0, x1),
+        local_mask=mask[y0:y1, x0:x1].copy(),
+        centroid=(float(xs.mean()), float(ys.mean())),
+        area=float(mask.sum()),
+    )
+
+
+def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[TrackNode]:
+    """Track cells using Trackastra and return a TrackNode list with lineage.
+
+    frames: (T, H, W) uint8 grayscale
+    labels: (T, H, W) uint32 Cellpose label maps
+
+    Trackastra assigns stable Cell_IDs across frames and detects divisions.
+    The returned TrackNodes have parent_id and children set for split events,
+    so classify_events() scores daughter persistence correctly.
+    """
+    import torch
+    from trackastra.model import Trackastra
+    from trackastra.tracking import graph_to_ctc
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = Trackastra.from_pretrained("general_2d", device=device)
+    out = model.track(frames, labels, mode="greedy")
+
+    try:
+        df_ctc, tracked_video = graph_to_ctc(out, labels)
+    except Exception:
+        graph = out[0] if isinstance(out, (list, tuple)) else out
+        df_ctc, tracked_video = graph_to_ctc(graph, labels)
+
+    # CTC format: one row per track segment with columns L (label), B (begin frame),
+    # E (end frame), P (parent label; 0 = no parent / born from division of P)
+    col = df_ctc.columns.tolist()
+    l_col, b_col, e_col, p_col = col[0], col[1], col[2], col[3]
+
+    # Build parent lookup: label -> parent_label (0 if no parent)
+    parent_of: dict[int, int] = {
+        int(row[l_col]): int(row[p_col]) for _, row in df_ctc.iterrows()
+    }
+    begin_of: dict[int, int] = {
+        int(row[l_col]): int(row[b_col]) for _, row in df_ctc.iterrows()
+    }
+
+    # Build nodes — one TrackNode per (label, frame) occurrence in tracked_video
+    nodes: list[TrackNode] = []
+    # Track the last node for each label so we can set children on it
+    last_node: dict[int, TrackNode] = {}
+
+    for t, label_map in enumerate(tracked_video):
+        for label_id in np.unique(label_map):
+            if label_id == 0:
+                continue
+            label_id = int(label_id)
+            parent_label = parent_of.get(label_id, 0)
+            is_birth_frame = (begin_of.get(label_id, 0) == t)
+
+            # parent_id on the TrackNode is the label of the mother track,
+            # but only set it on the birth frame node (first appearance after division)
+            parent_id = parent_label if (parent_label > 0 and is_birth_frame) else None
+
+            node = TrackNode(
+                track_id=label_id,
+                parent_id=parent_id,
+                frame=t,
+                mask=_label_to_cellmask(label_map, label_id, t),
+            )
+            nodes.append(node)
+
+            # Wire children onto the parent's last-seen node
+            if parent_id is not None and parent_label in last_node:
+                parent_node = last_node[parent_label]
+                if label_id not in parent_node.children:
+                    parent_node.children.append(label_id)
+
+            last_node[label_id] = node
 
     return nodes

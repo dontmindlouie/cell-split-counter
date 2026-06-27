@@ -62,3 +62,20 @@ def segment_frame(frame_path: Path, frame_index: int) -> list[CellMask]:
 def segment_all(frame_paths: list[Path]) -> dict[int, list[CellMask]]:
     """Segment every frame, keyed by frame index."""
     return {i: segment_frame(p, i) for i, p in enumerate(frame_paths)}
+
+
+def segment_video_arrays(frame_paths: list[Path]) -> tuple[np.ndarray, np.ndarray]:
+    """Segment all frames and return raw arrays for Trackastra input.
+
+    Returns (frames, labels) both shaped (T, H, W):
+      frames: uint8 grayscale pixel values
+      labels: uint32 integer label maps (0 = background, N = cell N)
+    """
+    model = _get_model()
+    raw_frames, label_maps = [], []
+    for path in frame_paths:
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        label_map, _, _ = model.eval(img, diameter=None, channels=[0, 0])
+        raw_frames.append(img)
+        label_maps.append(label_map.astype(np.uint32))
+    return np.stack(raw_frames), np.stack(label_maps)
