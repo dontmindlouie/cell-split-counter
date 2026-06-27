@@ -25,6 +25,7 @@ class LineageEvent:
     classification_source: str  # "rule" or "claude"
     confidence: float
     centroid: tuple[float, float] | None = None  # (cx, cy) of parent cell at split frame
+    claude_notes: str | None = None  # "split_type: reason" from Claude vision review
 
 
 def _daughter_persistence(

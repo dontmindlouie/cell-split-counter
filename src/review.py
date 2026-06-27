@@ -19,7 +19,7 @@ _CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + bo
 
 # System prompt — uses .format() so JSON braces must be doubled.
 _SYSTEM = """\
-You are reviewing microscopy timelapse images to verify a candidate cell division event.
+You are reviewing microscopy timelapse images to verify and characterize a candidate cell division event.
 You will receive frames in chronological order: {before} frames before the split and {after} \
 frames after it. The split is expected to occur between the last before-frame and the first \
 after-frame.
@@ -30,8 +30,13 @@ False positives arise from: (1) shape-change flickering where a cell briefly app
 touching masks, (2) z-plane focus drift that momentarily blurs one cell into two blobs, \
 (3) a tracking ID swap with a nearby unrelated cell.
 
+For real divisions, also classify the split type:
+- "symmetric": daughters are approximately equal in size (typical mitosis)
+- "asymmetric": one daughter is clearly larger than the other (stem cell-like or budding)
+- "multi_way": three or more daughters visible
+
 Respond with a JSON object — no other text:
-{{"verdict": "real" | "false_positive", "confidence": <float 0.0–1.0>, "reason": "<one sentence>"}}"""
+{{"verdict": "real" | "false_positive", "confidence": <float 0.0–1.0>, "split_type": "symmetric" | "asymmetric" | "multi_way" | null, "description": "<one or two sentences describing what is observed>"}}"""
 
 
 def _find_frame(frame_dir: Path, index: int) -> Path | None:
@@ -61,7 +66,7 @@ def _review_split(
     frame_dir: Path,
     model: str,
 ) -> tuple[str, float, str]:
-    """Ask Claude whether the split at event.frame is real. Returns (verdict, confidence, reason)."""
+    """Ask Claude whether the split at event.frame is real. Returns (verdict, confidence, notes)."""
     indices = list(range(max(0, event.frame - _FRAMES_BEFORE), event.frame + _FRAMES_AFTER + 1))
     indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
 
@@ -92,7 +97,10 @@ def _review_split(
         .removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     )
     parsed = json.loads(text)
-    return str(parsed["verdict"]), float(parsed["confidence"]), str(parsed.get("reason", ""))
+    split_type = parsed.get("split_type") or ""
+    description = parsed.get("description", "")
+    notes = f"{split_type}: {description}".strip(": ") if split_type else description
+    return str(parsed["verdict"]), float(parsed["confidence"]), notes
 
 
 def review_ambiguous(
@@ -144,20 +152,20 @@ def review_ambiguous(
                 continue
 
             try:
-                verdict, confidence, reason = _review_split(client, event, frame_dir, model)
+                verdict, confidence, notes = _review_split(client, event, frame_dir, model)
             except Exception:
-                # API failure: preserve original rule-based classification.
                 split_verdict[key] = ("real", event.confidence, "")
                 reviewed.append(event)
                 continue
-            print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}] {reason}")
-            split_verdict[key] = (verdict, confidence, reason)
+            print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}] {notes}")
+            split_verdict[key] = (verdict, confidence, notes)
 
-        verdict, confidence, _ = split_verdict[key]
+        verdict, confidence, notes = split_verdict[key]
         reviewed.append(dataclasses.replace(
             event,
             classification_source="claude",
             confidence=confidence if verdict == "real" else 0.0,
+            claude_notes=notes if verdict == "real" else None,
         ))
 
     return passing + reviewed
