@@ -133,7 +133,7 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     """Track cells using Trackastra and return a TrackNode list with lineage.
 
     frames: (T, H, W) uint8 grayscale
-    labels: (T, H, W) uint32 Cellpose label maps
+    labels: (T, H, W) uint16 Cellpose label maps
 
     Trackastra assigns stable Cell_IDs across frames and detects divisions.
     The returned TrackNodes have parent_id and children set for split events,

@@ -69,13 +69,23 @@ def segment_video_arrays(frame_paths: list[Path]) -> tuple[np.ndarray, np.ndarra
 
     Returns (frames, labels) both shaped (T, H, W):
       frames: uint8 grayscale pixel values
-      labels: uint32 integer label maps (0 = background, N = cell N)
+      labels: uint16 integer label maps (0 = background, N = cell N)
+
+    Pre-allocates output arrays to avoid the peak-memory spike that np.stack()
+    causes by holding both the intermediate list and the final array simultaneously.
+    uint16 labels halve memory vs uint32 (cell IDs per frame never exceed 65535).
     """
     model = _get_model()
-    raw_frames, label_maps = [], []
-    for path in frame_paths:
+    first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE)
+    T, H, W = len(frame_paths), first.shape[0], first.shape[1]
+    raw_frames = np.empty((T, H, W), dtype=np.uint8)
+    label_maps = np.empty((T, H, W), dtype=np.uint16)
+
+    for i, path in enumerate(frame_paths):
+        print(f"  segmenting frame {i+1}/{T}", end="\r", flush=True)
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         label_map, _, _ = model.eval(img, diameter=None, channels=[0, 0])
-        raw_frames.append(img)
-        label_maps.append(label_map.astype(np.uint32))
-    return np.stack(raw_frames), np.stack(label_maps)
+        raw_frames[i] = img
+        label_maps[i] = label_map.astype(np.uint16)
+    print()
+    return raw_frames, label_maps
