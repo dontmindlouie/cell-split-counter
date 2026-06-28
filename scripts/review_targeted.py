@@ -33,7 +33,7 @@ def _row_to_event(row: dict) -> LineageEvent:
         track_id=int(row["track_id"]),
         parent_id=int(row["parent_id"]) if row.get("parent_id") else None,
         frame=int(row["peak_frame"]),
-        event_type=EventType(row["division_type"]),
+        event_type=EventType(row.get("split_topology") or row.get("division_type") or "normal_split"),
         classification_source=row["classification_source"],
         confidence=float(row["confidence"]),
         centroid=(cx, cy) if cx is not None and cy is not None else None,

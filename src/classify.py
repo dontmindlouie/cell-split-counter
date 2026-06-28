@@ -27,6 +27,12 @@ class LineageEvent:
     centroid: tuple[float, float] | None = None  # (cx, cy) of parent cell at split frame
     claude_notes: str | None = None  # "split_type: reason" from Claude vision review
     bleach_risk: float | None = None  # frame / total_frames; proxy for photobleaching accumulation
+    # ACD division classification (populated by review_division_type if enabled)
+    acd_division_type: str | None = None  # bipolar / tripolar / multipolar / unknown
+    misaligned_chromosomes: bool | None = None
+    lagging_chromosome: bool | None = None
+    anaphase_bridge: bool | None = None
+    micronucleus: bool | None = None
 
 
 def _daughter_persistence(

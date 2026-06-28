@@ -6,7 +6,7 @@ from pathlib import Path
 from src.classify import classify_events
 from src.ingest import IngestConfig, extract_frames
 from src.output import write_events_csv, write_summary_json
-from src.review import review_ambiguous
+from src.review import review_ambiguous, review_division_type
 from src.segment import segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 
@@ -19,6 +19,7 @@ def run(
     start_frame: int = 0,
     end_frame: int | None = None,
     save_debug_crops: bool = False,
+    classify_divisions: bool = False,
 ) -> None:
     frame_paths = extract_frames(config, frame_dir)
 
@@ -39,6 +40,9 @@ def run(
     events = [dataclasses.replace(e, bleach_risk=e.frame / total_frames) for e in events]
 
     events = review_ambiguous(events, frame_dir, save_debug_crops=save_debug_crops)
+
+    if classify_divisions:
+        events = review_division_type(events, frame_dir)
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(events, {"video_path": str(config.video_path)}, output_dir / "summary.json")
