@@ -64,22 +64,34 @@ def segment_all(frame_paths: list[Path]) -> dict[int, list[CellMask]]:
     return {i: segment_frame(p, i) for i, p in enumerate(frame_paths)}
 
 
-def segment_video_arrays(frame_paths: list[Path]) -> tuple[np.ndarray, np.ndarray]:
+def segment_video_arrays(
+    frame_paths: list[Path],
+    memmap_dir: Path | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Segment all frames and return raw arrays for Trackastra input.
 
     Returns (frames, labels) both shaped (T, H, W):
       frames: uint8 grayscale pixel values
       labels: uint16 integer label maps (0 = background, N = cell N)
 
-    Pre-allocates output arrays to avoid the peak-memory spike that np.stack()
-    causes by holding both the intermediate list and the final array simultaneously.
-    uint16 labels halve memory vs uint32 (cell IDs per frame never exceed 65535).
+    Arrays are written to memory-mapped files under memmap_dir (defaults to a
+    temp dir alongside the first frame). This keeps RAM usage to a single frame
+    at a time during segmentation — Trackastra then pages from disk on demand
+    rather than holding the full video in RAM.
     """
+    import tempfile
     model = _get_model()
     first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE)
     T, H, W = len(frame_paths), first.shape[0], first.shape[1]
-    raw_frames = np.empty((T, H, W), dtype=np.uint8)
-    label_maps = np.empty((T, H, W), dtype=np.uint16)
+
+    if memmap_dir is None:
+        memmap_dir = frame_paths[0].parent / "_memmap"
+    memmap_dir.mkdir(parents=True, exist_ok=True)
+
+    frames_path = memmap_dir / "frames.dat"
+    labels_path = memmap_dir / "labels.dat"
+    raw_frames = np.memmap(frames_path, dtype=np.uint8,  mode="w+", shape=(T, H, W))
+    label_maps = np.memmap(labels_path, dtype=np.uint16, mode="w+", shape=(T, H, W))
 
     for i, path in enumerate(frame_paths):
         print(f"  segmenting frame {i+1}/{T}", end="\r", flush=True)
@@ -88,4 +100,6 @@ def segment_video_arrays(frame_paths: list[Path]) -> tuple[np.ndarray, np.ndarra
         raw_frames[i] = img
         label_maps[i] = label_map.astype(np.uint16)
     print()
+    raw_frames.flush()
+    label_maps.flush()
     return raw_frames, label_maps
