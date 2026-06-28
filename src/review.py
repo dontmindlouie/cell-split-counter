@@ -2,9 +2,9 @@
 
 import base64
 import dataclasses
-import io
 import json
 import os
+import shutil
 from pathlib import Path
 
 import anthropic
@@ -44,18 +44,21 @@ def _find_frame(frame_dir: Path, index: int) -> Path | None:
     return matches[0] if matches else None
 
 
+def _crop_image(path: Path, centroid: tuple[float, float] | None = None) -> np.ndarray:
+    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if centroid is None:
+        return img
+    cx, cy = int(centroid[0]), int(centroid[1])
+    h, w = img.shape
+    y0, y1 = max(0, cy - _CROP_RADIUS), min(h, cy + _CROP_RADIUS)
+    x0, x1 = max(0, cx - _CROP_RADIUS), min(w, cx + _CROP_RADIUS)
+    return img[y0:y1, x0:x1]
+
+
 def _load_image_block(path: Path, centroid: tuple[float, float] | None = None) -> dict:
-    if centroid is not None:
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        cx, cy = int(centroid[0]), int(centroid[1])
-        h, w = img.shape
-        y0, y1 = max(0, cy - _CROP_RADIUS), min(h, cy + _CROP_RADIUS)
-        x0, x1 = max(0, cx - _CROP_RADIUS), min(w, cx + _CROP_RADIUS)
-        crop = img[y0:y1, x0:x1]
-        ok, buf = cv2.imencode(".png", crop)
-        raw = buf.tobytes() if ok else path.read_bytes()
-    else:
-        raw = path.read_bytes()
+    crop = _crop_image(path, centroid)
+    ok, buf = cv2.imencode(".png", crop)
+    raw = buf.tobytes() if ok else path.read_bytes()
     data = base64.standard_b64encode(raw).decode()
     return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
 
@@ -65,6 +68,7 @@ def _review_split(
     event: LineageEvent,
     frame_dir: Path,
     model: str,
+    debug_dir: Path | None = None,
 ) -> tuple[str, float, str]:
     """Ask Claude whether the split at event.frame is real. Returns (verdict, confidence, notes)."""
     indices = list(range(max(0, event.frame - _FRAMES_BEFORE), event.frame + _FRAMES_AFTER + 1))
@@ -75,6 +79,15 @@ def _review_split(
 
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
     after_count = len(indexed_paths) - before_count
+
+    event_debug_dir: Path | None = None
+    if debug_dir is not None:
+        event_debug_dir = debug_dir / f"frame_{event.frame:05d}_parent_{event.parent_id}"
+        event_debug_dir.mkdir(parents=True, exist_ok=True)
+        for pos, (idx, path) in enumerate(indexed_paths):
+            label = "before" if idx < event.frame else ("split" if idx == event.frame else "after")
+            crop = _crop_image(path, event.centroid)
+            cv2.imwrite(str(event_debug_dir / f"{pos:02d}_{label}_{idx:05d}.png"), crop)
 
     content = [_load_image_block(p, event.centroid) for _, p in indexed_paths]
     content.append({
@@ -100,7 +113,15 @@ def _review_split(
     split_type = parsed.get("split_type") or ""
     description = parsed.get("description", "")
     notes = f"{split_type}: {description}".strip(": ") if split_type else description
-    return str(parsed["verdict"]), float(parsed["confidence"]), notes
+    verdict = str(parsed["verdict"])
+    confidence = float(parsed["confidence"])
+
+    if event_debug_dir is not None:
+        (event_debug_dir / "verdict.txt").write_text(
+            f"verdict:    {verdict}\nconfidence: {confidence:.2f}\nnotes:      {notes}\n"
+        )
+
+    return verdict, confidence, notes
 
 
 def review_ambiguous(
@@ -111,6 +132,7 @@ def review_ambiguous(
     upper_threshold: float = 1.0,
     model: str = "claude-haiku-4-5",
     max_reviews: int = 50,
+    save_debug_crops: bool = False,
 ) -> list[LineageEvent]:
     """Three-tier confidence routing for split events.
 
@@ -134,6 +156,14 @@ def review_ambiguous(
     if not to_review:
         return passing
 
+    debug_dir: Path | None = None
+    if save_debug_crops:
+        debug_dir = frame_dir.parent / "debug" / "crops"
+        if debug_dir.exists():
+            shutil.rmtree(debug_dir)
+        debug_dir.mkdir(parents=True)
+        print(f"  saving crops to {debug_dir}")
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY not set — cannot run Claude vision review")
@@ -154,7 +184,7 @@ def review_ambiguous(
                 continue
 
             try:
-                verdict, confidence, notes = _review_split(client, event, frame_dir, model)
+                verdict, confidence, notes = _review_split(client, event, frame_dir, model, debug_dir=debug_dir)
             except Exception:
                 split_verdict[key] = ("real", event.confidence, "")
                 reviewed.append(event)

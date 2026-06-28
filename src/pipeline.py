@@ -11,8 +11,20 @@ from src.segment import segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 
 
-def run(config: IngestConfig, frame_dir: Path, output_dir: Path, tracker: str = "trackastra") -> None:
+def run(
+    config: IngestConfig,
+    frame_dir: Path,
+    output_dir: Path,
+    tracker: str = "trackastra",
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    save_debug_crops: bool = False,
+) -> None:
     frame_paths = extract_frames(config, frame_dir)
+
+    if start_frame != 0 or end_frame is not None:
+        frame_paths = frame_paths[start_frame:end_frame]
+        print(f"  frame range: {start_frame}–{end_frame or len(frame_paths) + start_frame} ({len(frame_paths)} frames)")
 
     if tracker == "trackastra":
         frames_arr, labels_arr = segment_video_arrays(frame_paths)
@@ -26,7 +38,7 @@ def run(config: IngestConfig, frame_dir: Path, output_dir: Path, tracker: str = 
     total_frames = len(frame_paths)
     events = [dataclasses.replace(e, bleach_risk=e.frame / total_frames) for e in events]
 
-    events = review_ambiguous(events, frame_dir)
+    events = review_ambiguous(events, frame_dir, save_debug_crops=save_debug_crops)
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(events, {"video_path": str(config.video_path)}, output_dir / "summary.json")

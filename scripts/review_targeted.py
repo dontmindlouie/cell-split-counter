@@ -10,6 +10,7 @@ Usage:
 import argparse
 import csv
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -44,6 +45,7 @@ def main() -> None:
     parser.add_argument("--max-reviews", type=int, default=200)
     parser.add_argument("--min-conf", type=float, default=0.05)
     parser.add_argument("--max-conf", type=float, default=1.0)
+    parser.add_argument("--debug-crops", action="store_true", help="save review crops to data/debug/crops/")
     args = parser.parse_args()
 
     with open(EVENTS_CSV, newline="") as f:
@@ -69,6 +71,14 @@ def main() -> None:
     total = min(len(unique_targets), args.max_reviews)
     print(f"Targeting {total} unique splits for Claude review (conf {args.min_conf}–{args.max_conf})")
 
+    debug_dir: Path | None = None
+    if args.debug_crops:
+        debug_dir = FRAME_DIR.parent / "debug" / "crops"
+        if debug_dir.exists():
+            shutil.rmtree(debug_dir)
+        debug_dir.mkdir(parents=True)
+        print(f"Saving crops to {debug_dir}")
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY not set")
@@ -80,7 +90,7 @@ def main() -> None:
         key = (row["parent_id"], row["peak_frame"])
         event = _row_to_event(row)
         try:
-            verdict, confidence, notes = _review_split(client, event, FRAME_DIR, MODEL)
+            verdict, confidence, notes = _review_split(client, event, FRAME_DIR, MODEL, debug_dir=debug_dir)
         except Exception as exc:
             print(f"  frame={event.frame:3d} parent={event.parent_id} [ERROR] {exc}")
             continue
