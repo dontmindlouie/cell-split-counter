@@ -107,30 +107,32 @@ def review_ambiguous(
     events: list[LineageEvent],
     frame_dir: Path,
     *,
-    confidence_threshold: float = 1.0,
+    lower_threshold: float = 0.05,
+    upper_threshold: float = 1.0,
     model: str = "claude-haiku-4-5",
     max_reviews: int = 50,
 ) -> list[LineageEvent]:
-    """Re-classify low-confidence events using Claude vision.
+    """Three-tier confidence routing for split events.
 
-    Events at or above confidence_threshold pass through unchanged.
-    For events below the threshold, Claude reviews the frame window around the split
-    and returns a verdict; classification_source is updated to "claude" and confidence
-    reflects Claude's assessment (0.0 for false positives).
+    Tier 1 — suppress (confidence < lower_threshold): daughters vanished in 0 frames,
+      definitely noise. Dropped from output entirely.
+    Tier 2 — Claude review (lower_threshold <= confidence < upper_threshold): ambiguous;
+      Claude inspects the frame window and returns a verdict.
+    Tier 3 — auto-confirm (confidence >= upper_threshold): daughters persisted long enough
+      to be confident; pass through unchanged.
 
-    max_reviews caps the number of unique split points sent to Claude — daughter events
-    from the same split share one API call, so the actual call count is at most
-    min(unique_split_points, max_reviews). Events beyond the cap pass through unchanged.
-    Raise max_reviews only after you have a sense of typical event counts per video.
-
-    Daughter events from the same split share one Claude call — frames are identical
-    so there is no point querying twice.
+    max_reviews caps unique split points sent to Claude (daughters share one call).
+    Events beyond the cap pass through unchanged in Tier 2.
     """
-    to_review = [e for e in events if e.confidence < confidence_threshold]
-    passing = [e for e in events if e.confidence >= confidence_threshold]
+    suppressed  = [e for e in events if e.confidence < lower_threshold]
+    to_review   = [e for e in events if lower_threshold <= e.confidence < upper_threshold]
+    passing     = [e for e in events if e.confidence >= upper_threshold]
+
+    if suppressed:
+        print(f"  suppressed {len(suppressed)} events (confidence < {lower_threshold})")
 
     if not to_review:
-        return events
+        return passing
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
