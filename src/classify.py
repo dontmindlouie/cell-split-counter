@@ -26,6 +26,7 @@ class LineageEvent:
     confidence: float
     centroid: tuple[float, float] | None = None  # (cx, cy) of parent cell at split frame
     claude_notes: str | None = None  # "split_type: reason" from Claude vision review
+    bleach_risk: float | None = None  # frame / total_frames; proxy for photobleaching accumulation
 
 
 def _daughter_persistence(

@@ -157,7 +157,8 @@ def review_ambiguous(
                 split_verdict[key] = ("real", event.confidence, "")
                 reviewed.append(event)
                 continue
-            print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}] {notes}")
+            risk_str = f" bleach={event.bleach_risk:.2f}" if event.bleach_risk is not None else ""
+            print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}]{risk_str} {notes}")
             split_verdict[key] = (verdict, confidence, notes)
 
         verdict, confidence, notes = split_verdict[key]

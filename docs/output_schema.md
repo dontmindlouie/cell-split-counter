@@ -15,6 +15,7 @@ and parent_id).
 | `parent_id` | The track ID of the cell that split to produce this daughter -- i.e. look up other rows with this same `track_id` value to trace lineage back another generation. |
 | `confidence` | Always `1.0` for now -- placeholder for when ambiguous cases get a real confidence score from Claude-vision review (not wired in yet, see `src/review.py`). |
 | `classification_source` | Always `"rule"` for now (deterministic lineage-graph rule). Will be `"claude"` once vision review is wired in. |
+| `bleach_risk` | `peak_frame / total_frames` (0.0–1.0). Proxy for photobleaching accumulation — higher values mean the event occurred later in the timelapse, where SiR-DNA signal may be degraded. Treat Claude division-type classifications with higher skepticism as this value approaches 1.0. |
 
 ## Known limitations (v1)
 
