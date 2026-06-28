@@ -1,6 +1,5 @@
 """Lineage graph rules: classify each split/end event as normal, anomalous, or ambiguous."""
 
-import math
 from dataclasses import dataclass
 from enum import Enum
 

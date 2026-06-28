@@ -9,7 +9,6 @@ from pathlib import Path
 
 import anthropic
 import cv2
-import numpy as np
 
 from src.classify import LineageEvent
 
@@ -75,7 +74,7 @@ def _review_split(
     indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
 
     if not indexed_paths:
-        return "false_positive", 0.0
+        return "false_positive", 0.0, ""
 
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
     after_count = len(indexed_paths) - before_count
