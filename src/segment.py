@@ -103,3 +103,32 @@ def segment_video_arrays(
     raw_frames.flush()
     label_maps.flush()
     return raw_frames, label_maps
+
+
+def load_video_arrays(
+    frame_paths: list[Path],
+    memmap_dir: Path | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load existing segmentation memmaps without re-running Cellpose.
+
+    Raises FileNotFoundError if the memmaps don't exist yet — run without
+    --reuse-masks first to produce them.
+    """
+    first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE)
+    T, H, W = len(frame_paths), first.shape[0], first.shape[1]
+
+    if memmap_dir is None:
+        memmap_dir = frame_paths[0].parent / "_memmap"
+
+    frames_path = memmap_dir / "frames.dat"
+    labels_path = memmap_dir / "labels.dat"
+
+    if not frames_path.exists() or not labels_path.exists():
+        raise FileNotFoundError(
+            f"Segmentation memmaps not found in {memmap_dir} — run without --reuse-masks first"
+        )
+
+    raw_frames = np.memmap(frames_path, dtype=np.uint8,  mode="r", shape=(T, H, W))
+    label_maps = np.memmap(labels_path, dtype=np.uint16, mode="r", shape=(T, H, W))
+    print(f"  loaded existing memmaps from {memmap_dir} ({T} frames, {H}x{W})")
+    return raw_frames, label_maps

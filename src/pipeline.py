@@ -7,7 +7,7 @@ from src.classify import classify_events
 from src.ingest import IngestConfig, extract_frames
 from src.output import write_events_csv, write_summary_json
 from src.review import review_ambiguous, review_division_type
-from src.segment import segment_all, segment_video_arrays
+from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 
 
@@ -20,6 +20,7 @@ def run(
     end_frame: int | None = None,
     save_debug_crops: bool = False,
     classify_divisions: bool = False,
+    reuse_masks: bool = False,
 ) -> None:
     frame_paths = extract_frames(config, frame_dir)
 
@@ -28,7 +29,10 @@ def run(
         print(f"  frame range: {start_frame}–{end_frame or len(frame_paths) + start_frame} ({len(frame_paths)} frames)")
 
     if tracker == "trackastra":
-        frames_arr, labels_arr = segment_video_arrays(frame_paths)
+        if reuse_masks:
+            frames_arr, labels_arr = load_video_arrays(frame_paths)
+        else:
+            frames_arr, labels_arr = segment_video_arrays(frame_paths)
         tracks = link_frames_trackastra(frames_arr, labels_arr)
     else:
         masks_by_frame = segment_all(frame_paths)
