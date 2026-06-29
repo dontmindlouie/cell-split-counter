@@ -110,6 +110,9 @@ def main() -> None:
         key = (row["parent_id"], row["peak_frame"])
         if key in verdicts:
             verdict, confidence, notes = verdicts[key]
+            # preserve original tracker score before overwriting confidence
+            if not row.get("tracker_confidence"):
+                row["tracker_confidence"] = row["confidence"]
             row["classification_source"] = "claude"
             row["confidence"] = str(confidence if verdict == "real" else 0.0)
             row["claude_notes"] = notes if verdict == "real" else ""

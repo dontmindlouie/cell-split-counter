@@ -20,14 +20,17 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
     with open(out_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
-            ["event_id", "source_video", "frame_range", "peak_frame", "division_type", "track_id", "parent_id", "confidence", "classification_source", "centroid_x", "centroid_y", "claude_notes", "bleach_risk"]
+            ["event_id", "source_video", "frame_range", "peak_frame", "division_type", "track_id", "parent_id",
+             "confidence", "tracker_confidence", "classification_source", "centroid_x", "centroid_y", "claude_notes", "bleach_risk"]
         )
         for i, e in enumerate(events):
             range_start = max(e.frame - frame_range_lookback, 0)
             cx, cy = (e.centroid[0], e.centroid[1]) if e.centroid else ("", "")
             bleach = f"{e.bleach_risk:.3f}" if e.bleach_risk is not None else ""
+            tracker_conf = f"{e.tracker_confidence:.4f}" if e.tracker_confidence is not None else ""
             writer.writerow(
-                [i, source_video, f"{range_start}-{e.frame}", e.frame, e.event_type.value, e.track_id, e.parent_id, e.confidence, e.classification_source, cx, cy, e.claude_notes or "", bleach]
+                [i, source_video, f"{range_start}-{e.frame}", e.frame, e.event_type.value, e.track_id, e.parent_id,
+                 e.confidence, tracker_conf, e.classification_source, cx, cy, e.claude_notes or "", bleach]
             )
 
 
