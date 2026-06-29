@@ -15,6 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dotenv import load_dotenv; load_dotenv()
+
 from src.classify import EventType, LineageEvent
 from src.review import review_division_type
 
