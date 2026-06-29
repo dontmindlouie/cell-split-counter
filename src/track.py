@@ -170,8 +170,8 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     The returned TrackNodes have parent_id and children set for split events,
     so classify_events() scores daughter persistence correctly.
     """
+    import trackastra.model.model_api as _model_api
     import trackastra.tracking.utils as _ttu
-    import trackastra.utils.utils as _tuu
     import torch
     from trackastra.model import Trackastra
     from trackastra.tracking import graph_to_ctc
@@ -182,15 +182,19 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     # Trackastra's normalize() casts the full (T,H,W) array to float32 in RAM (~9GB for
     # 575 frames at 2048x2048). Pre-write float32 to disk memmap instead, then replace
     # normalize so it operates on the on-disk array without the RAM spike.
+    #
+    # IMPORTANT: model_api.py uses `from ..utils import normalize` — a LOCAL binding.
+    # Patching trackastra.utils.utils.normalize has no effect on that local binding.
+    # We must patch trackastra.model.model_api.normalize directly.
     float_frames = _make_float32_memmap(frames)
-    _orig_normalize = _tuu.normalize
-    _tuu.normalize = lambda x, **kw: _normalize_on_memmap(float_frames)
+    _orig_normalize = _model_api.normalize
+    _model_api.normalize = lambda x, **kw: _normalize_on_memmap(float_frames)
 
     try:
         # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
         track_graph, tracked_video = model.track(frames, labels, mode="greedy")
     finally:
-        _tuu.normalize = _orig_normalize
+        _model_api.normalize = _orig_normalize
 
     # graph_to_ctc allocates (T,H,W) uint16 tracked masks via np.stack in RAM (~4.5GB).
     # Patch np.stack in that module to redirect large uint16 outputs to a disk memmap.
