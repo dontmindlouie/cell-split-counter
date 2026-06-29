@@ -1,4 +1,7 @@
-cellpose
+cellpose<4
+trackastra
+torch
+torchvision
 opencv-python
 numpy
 scipy

@@ -128,6 +128,17 @@ def load_video_arrays(
             f"Segmentation memmaps not found in {memmap_dir} — run without --reuse-masks first"
         )
 
+    expected_frames = T * H * W
+    expected_labels = T * H * W * 2
+    actual_frames = frames_path.stat().st_size
+    actual_labels = labels_path.stat().st_size
+    if actual_frames != expected_frames or actual_labels != expected_labels:
+        raise ValueError(
+            f"Memmap size mismatch — expected {expected_frames/1e9:.2f} GB / {expected_labels/1e9:.2f} GB "
+            f"but found {actual_frames/1e9:.2f} GB / {actual_labels/1e9:.2f} GB. "
+            f"Memmaps are stale (different frame count or resolution). Run without --reuse-masks to regenerate."
+        )
+
     raw_frames = np.memmap(frames_path, dtype=np.uint8,  mode="r", shape=(T, H, W))
     label_maps = np.memmap(labels_path, dtype=np.uint16, mode="r", shape=(T, H, W))
     print(f"  loaded existing memmaps from {memmap_dir} ({T} frames, {H}x{W})")
