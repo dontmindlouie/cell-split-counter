@@ -25,11 +25,8 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.config import EVENTS_CSV, FRAME_DIR, PACKAGES_DIR as OUTPUT_DIR
 from src.review import _DIV_FRAMES_AFTER, _DIV_FRAMES_BEFORE, _crop_image, _find_frame
-
-EVENTS_CSV = Path("data/output/events.csv")
-FRAME_DIR  = Path("data/frames")
-OUTPUT_DIR = Path("data/packages")
 
 
 def _abn_tag(row: dict) -> str:

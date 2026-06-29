@@ -1,0 +1,16 @@
+"""Shared path constants and model defaults for scripts and src modules.
+
+All paths are relative to the project root (the directory containing main.py).
+Scripts that override these via argparse should import these as defaults only.
+"""
+
+from pathlib import Path
+
+DATA_DIR     = Path("data")
+FRAME_DIR    = DATA_DIR / "frames"
+OUTPUT_DIR   = DATA_DIR / "output"
+EVENTS_CSV   = OUTPUT_DIR / "events.csv"
+DEBUG_DIR    = DATA_DIR / "debug" / "crops"
+PACKAGES_DIR = DATA_DIR / "packages"
+
+CLAUDE_MODEL = "claude-haiku-4-5"

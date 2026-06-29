@@ -11,6 +11,7 @@ import anthropic
 import cv2
 
 from src.classify import LineageEvent
+from src.config import CLAUDE_MODEL
 
 _FRAMES_BEFORE = 2
 _FRAMES_AFTER = 3
@@ -129,7 +130,7 @@ def review_ambiguous(
     *,
     lower_threshold: float = 0.05,
     upper_threshold: float = 1.0,
-    model: str = "claude-haiku-4-5",
+    model: str = CLAUDE_MODEL,
     max_reviews: int = 50,
     save_debug_crops: bool = False,
 ) -> list[LineageEvent]:
@@ -288,7 +289,7 @@ def review_division_type(
     frame_dir: Path,
     *,
     min_confidence: float = 0.5,
-    model: str = "claude-haiku-4-5",
+    model: str = CLAUDE_MODEL,
     max_reviews: int = 50,
 ) -> list["LineageEvent"]:
     """Classify division type and chromosomal abnormalities for confirmed high-confidence events.

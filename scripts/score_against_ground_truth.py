@@ -21,9 +21,10 @@ import openpyxl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.config import EVENTS_CSV
+
 GROUND_TRUTH_XLSX = Path("data/ground_truth/ACD_analysis.xlsx")
 GROUND_TRUTH_SHEET = "iPSC_nTSC_Tom20_ACTB_ZO1"
-EVENTS_CSV = Path("data/output/events.csv")
 
 GT_ROW_START = 19
 GT_ROW_END = 51

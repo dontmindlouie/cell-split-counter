@@ -19,11 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import anthropic
 
 from src.classify import EventType, LineageEvent
+from src.config import CLAUDE_MODEL as MODEL, EVENTS_CSV, FRAME_DIR
 from src.review import _review_split
-
-EVENTS_CSV = Path("data/output/events.csv")
-FRAME_DIR = Path("data/frames")
-MODEL = "claude-haiku-4-5"
 
 
 def _row_to_event(row: dict) -> LineageEvent:
