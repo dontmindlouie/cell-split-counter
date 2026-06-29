@@ -129,6 +129,37 @@ def _label_to_cellmask(label_map: np.ndarray, label_id: int, frame: int) -> Cell
     )
 
 
+def _normalize_on_memmap(float_frames: np.ndarray, subsample: int = 4) -> np.ndarray:
+    """Percentile-normalize a float32 memmap in-place.
+
+    Replicates trackastra.utils.utils.normalize but operates on an already-float32
+    disk-backed memmap, avoiding the 9GB RAM spike from astype(float32) on the full
+    video at once. In-place ops page through the memmap without loading it all to RAM.
+    """
+    if subsample is not None and all(s > 64 * subsample for s in float_frames.shape[-2:]):
+        y = float_frames[..., ::subsample, ::subsample]
+    else:
+        y = float_frames
+    mi, ma = np.percentile(y, (1, 99.8)).astype(np.float32)
+    float_frames -= mi
+    float_frames /= ma - mi + 1e-8
+    return float_frames
+
+
+def _make_float32_memmap(frames: np.ndarray) -> np.ndarray:
+    """Write uint8 frames to a float32 memmap one frame at a time (16MB per frame)."""
+    T, H, W = frames.shape
+    memmap_dir = Path(getattr(frames, "filename", "data/frames/_memmap")).parent
+    float_path = memmap_dir / "frames_float32.dat"
+    float_frames = np.memmap(float_path, dtype=np.float32, mode="w+", shape=(T, H, W))
+    print("  writing float32 memmap to avoid Trackastra RAM spike...", flush=True)
+    for i in range(T):
+        float_frames[i] = frames[i].astype(np.float32)
+    float_frames.flush()
+    print("  done", flush=True)
+    return float_frames
+
+
 def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[TrackNode]:
     """Track cells using Trackastra and return a TrackNode list with lineage.
 
@@ -139,6 +170,8 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     The returned TrackNodes have parent_id and children set for split events,
     so classify_events() scores daughter persistence correctly.
     """
+    import trackastra.tracking.utils as _ttu
+    import trackastra.utils.utils as _tuu
     import torch
     from trackastra.model import Trackastra
     from trackastra.tracking import graph_to_ctc
@@ -146,10 +179,48 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Trackastra.from_pretrained("general_2d", device=device)
 
-    # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
-    track_graph, tracked_video = model.track(frames, labels, mode="greedy")
-    # graph_to_ctc recomputes relabeled masks from the graph; columns: track_id, t_start, t_end, parent_id
-    df_ctc, tracked_video = graph_to_ctc(track_graph, labels)
+    # Trackastra's normalize() casts the full (T,H,W) array to float32 in RAM (~9GB for
+    # 575 frames at 2048x2048). Pre-write float32 to disk memmap instead, then replace
+    # normalize so it operates on the on-disk array without the RAM spike.
+    float_frames = _make_float32_memmap(frames)
+    _orig_normalize = _tuu.normalize
+    _tuu.normalize = lambda x, **kw: _normalize_on_memmap(float_frames)
+
+    try:
+        # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
+        track_graph, tracked_video = model.track(frames, labels, mode="greedy")
+    finally:
+        _tuu.normalize = _orig_normalize
+
+    # graph_to_ctc allocates (T,H,W) uint16 tracked masks via np.stack in RAM (~4.5GB).
+    # Patch np.stack in that module to redirect large uint16 outputs to a disk memmap.
+    memmap_dir = Path(getattr(frames, "filename", "data/frames/_memmap")).parent
+    tracked_masks_path = memmap_dir / "tracked_masks.dat"
+    T, H, W = labels.shape
+    _orig_stack = _ttu.np.stack
+
+    def _stack_to_memmap(arrays, *args, **kwargs):
+        # Intercept call 1: np.stack([zeros_like(m) for m in labels]) → (T,H,W) uint16
+        # Create a zero memmap directly instead of allocating 4.5GB in RAM.
+        if (isinstance(arrays, (list, tuple)) and len(arrays) == T
+                and np.asarray(arrays[0]).shape == (H, W)
+                and np.asarray(arrays[0]).dtype == labels.dtype):
+            return np.memmap(tracked_masks_path, dtype=labels.dtype, mode="w+", shape=(T, H, W))
+        # Intercept call 2: np.stack(masks) where masks is already our (T,H,W) memmap.
+        # graph_to_ctc calls np.stack a second time on the already-filled array — a no-op copy
+        # that would OOM at 4.5GB. Return the memmap unchanged.
+        if (isinstance(arrays, np.ndarray) and arrays.shape == (T, H, W)
+                and arrays.dtype == labels.dtype):
+            return arrays
+        return _orig_stack(arrays, *args, **kwargs)
+
+    _ttu.np.stack = _stack_to_memmap
+    try:
+        # graph_to_ctc recomputes relabeled masks; columns: track_id, t_start, t_end, parent_id
+        # check=False skips _check_ctc_df which iterates all frames (slow, not needed here)
+        df_ctc, tracked_video = graph_to_ctc(track_graph, labels, check=False)
+    finally:
+        _ttu.np.stack = _orig_stack
 
     # Column names vary by trackastra version (label/t1/t2/parent or track_id/t_start/t_end/parent_id)
     l_col, b_col, e_col, p_col = df_ctc.columns[:4]
