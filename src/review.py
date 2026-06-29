@@ -43,7 +43,7 @@ def _find_frame(frame_dir: Path, index: int) -> Path | None:
     return matches[0] if matches else None
 
 
-def _crop_image(path: Path, centroid: tuple[float, float] | None = None) -> np.ndarray:
+def _crop_image(path: Path, centroid: tuple[float, float] | None = None):
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if centroid is None:
         return img
