@@ -16,11 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.config import DEBUG_DIR, EVENTS_CSV, FRAME_DIR
 from src.review import _FRAMES_BEFORE, _FRAMES_AFTER, _crop_image, _find_frame
-
-EVENTS_CSV = Path("data/output/events.csv")
-FRAME_DIR = Path("data/frames")
-DEBUG_DIR = Path("data/debug/crops")
 
 
 def main() -> None:

@@ -16,14 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dotenv import load_dotenv; load_dotenv()
+
 import anthropic
 
 from src.classify import EventType, LineageEvent
+from src.config import CLAUDE_MODEL as MODEL, EVENTS_CSV, FRAME_DIR
 from src.review import _review_split
-
-EVENTS_CSV = Path("data/output/events.csv")
-FRAME_DIR = Path("data/frames")
-MODEL = "claude-haiku-4-5"
 
 
 def _row_to_event(row: dict) -> LineageEvent:
@@ -33,7 +32,7 @@ def _row_to_event(row: dict) -> LineageEvent:
         track_id=int(row["track_id"]),
         parent_id=int(row["parent_id"]) if row.get("parent_id") else None,
         frame=int(row["peak_frame"]),
-        event_type=EventType(row["division_type"]),
+        event_type=EventType(row.get("split_topology") or row.get("division_type") or "normal_split"),
         classification_source=row["classification_source"],
         confidence=float(row["confidence"]),
         centroid=(cx, cy) if cx is not None and cy is not None else None,

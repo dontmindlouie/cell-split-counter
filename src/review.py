@@ -9,9 +9,9 @@ from pathlib import Path
 
 import anthropic
 import cv2
-import numpy as np
 
 from src.classify import LineageEvent
+from src.config import CLAUDE_MODEL
 
 _FRAMES_BEFORE = 2
 _FRAMES_AFTER = 3
@@ -44,7 +44,7 @@ def _find_frame(frame_dir: Path, index: int) -> Path | None:
     return matches[0] if matches else None
 
 
-def _crop_image(path: Path, centroid: tuple[float, float] | None = None) -> np.ndarray:
+def _crop_image(path: Path, centroid: tuple[float, float] | None = None):
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if centroid is None:
         return img
@@ -75,7 +75,7 @@ def _review_split(
     indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
 
     if not indexed_paths:
-        return "false_positive", 0.0
+        return "false_positive", 0.0, ""
 
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
     after_count = len(indexed_paths) - before_count
@@ -130,7 +130,7 @@ def review_ambiguous(
     *,
     lower_threshold: float = 0.05,
     upper_threshold: float = 1.0,
-    model: str = "claude-haiku-4-5",
+    model: str = CLAUDE_MODEL,
     max_reviews: int = 50,
     save_debug_crops: bool = False,
 ) -> list[LineageEvent]:
@@ -203,3 +203,151 @@ def review_ambiguous(
         ))
 
     return passing + reviewed
+
+
+# ── Division type classifier ──────────────────────────────────────────────────
+
+_DIV_FRAMES_BEFORE = 5  # see metaphase plate alignment
+_DIV_FRAMES_AFTER = 5   # see cytokinesis + any micronuclei forming
+
+_DIV_SYSTEM = """\
+You are analyzing fluorescence microscopy timelapse images of dividing cells stained with \
+SiR-DNA, a live-cell DNA dye. Chromosomes appear bright. You will receive {before} frames \
+before the detected anaphase onset and {after} frames after it.
+
+Classify the following for this division event:
+
+1. DIVISION TYPE (spindle geometry):
+   - "bipolar": chromosomes separate into exactly 2 groups (normal mitosis)
+   - "tripolar": chromosomes separate into 3 groups (extra spindle pole)
+   - "multipolar": chromosomes separate into 4 or more groups
+   - "unknown": image quality too poor to determine
+
+2. ABNORMALITIES (examine each frame carefully):
+   - misaligned_chromosomes: in pre-split frames, one or more chromosomes visibly offset \
+from the main mass / not on the metaphase plate
+   - lagging_chromosome: around the split, a single chromosome or fragment trailing between \
+the two separating masses during anaphase
+   - anaphase_bridge: a thin continuous chromatin thread connecting the two separating \
+chromosome masses
+   - micronucleus: a small distinct bright spot separate from the main daughter nucleus \
+visible in post-split frames
+
+Respond with a JSON object — no other text:
+{{"division_type": "bipolar" | "tripolar" | "multipolar" | "unknown", \
+"misaligned_chromosomes": true | false, \
+"lagging_chromosome": true | false, \
+"anaphase_bridge": true | false, \
+"micronucleus": true | false, \
+"confidence": <float 0.0-1.0 reflecting image quality and classification certainty>, \
+"notes": "<one sentence summarizing the key observation>"}}"""
+
+
+def _classify_division(
+    client: anthropic.Anthropic,
+    event: "LineageEvent",
+    frame_dir: Path,
+    model: str,
+) -> dict:
+    """Ask Claude to classify division type and chromosomal abnormalities."""
+    indices = list(range(max(0, event.frame - _DIV_FRAMES_BEFORE), event.frame + _DIV_FRAMES_AFTER + 1))
+    indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
+
+    if not indexed_paths:
+        return {"division_type": "unknown", "misaligned_chromosomes": False,
+                "lagging_chromosome": False, "anaphase_bridge": False,
+                "micronucleus": False, "confidence": 0.0, "notes": "no frames found"}
+
+    before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
+    after_count = len(indexed_paths) - before_count
+
+    content = [_load_image_block(p, event.centroid) for _, p in indexed_paths]
+    content.append({
+        "type": "text",
+        "text": (
+            f"Division event at frame {event.frame}: track {event.parent_id} split into daughters. "
+            f"{before_count} pre-split frames and {after_count} post-split frames shown."
+        ),
+    })
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=256,
+        system=_DIV_SYSTEM.format(before=_DIV_FRAMES_BEFORE, after=_DIV_FRAMES_AFTER),
+        messages=[{"role": "user", "content": content}],
+    )
+
+    text = (
+        response.content[0].text.strip()
+        .removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    )
+    return json.loads(text)
+
+
+def review_division_type(
+    events: list["LineageEvent"],
+    frame_dir: Path,
+    *,
+    min_confidence: float = 0.5,
+    model: str = CLAUDE_MODEL,
+    max_reviews: int = 50,
+) -> list["LineageEvent"]:
+    """Classify division type and chromosomal abnormalities for confirmed high-confidence events.
+
+    Only events with confidence >= min_confidence are sent to Claude — these are events the
+    FP check already confirmed as real (or auto-confirmed by persistence). Events below the
+    threshold (including Claude-confirmed FPs at 0.0) pass through unchanged.
+
+    Daughters from the same split share one API call. max_reviews caps unique split points.
+    """
+    to_classify = [e for e in events if e.confidence >= min_confidence]
+    passing = [e for e in events if e.confidence < min_confidence]
+
+    if not to_classify:
+        return events
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set — cannot run division type classification")
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    split_result: dict[tuple[int | None, int], dict] = {}
+    classified = []
+
+    for event in to_classify:
+        key = (event.parent_id, event.frame)
+
+        if key not in split_result:
+            if len(split_result) >= max_reviews:
+                classified.append(event)
+                continue
+
+            try:
+                result = _classify_division(client, event, frame_dir, model)
+            except Exception as exc:
+                print(f"  [div-classify] frame={event.frame} parent={event.parent_id} ERROR: {exc}")
+                classified.append(event)
+                continue
+
+            risk_str = f" bleach={event.bleach_risk:.2f}" if event.bleach_risk is not None else ""
+            print(
+                f"  [div-classify] frame={event.frame:3d} parent={event.parent_id}{risk_str}"
+                f" {result.get('division_type','?')}"
+                f" mis={result.get('misaligned_chromosomes')} lag={result.get('lagging_chromosome')}"
+                f" bridge={result.get('anaphase_bridge')} mn={result.get('micronucleus')}"
+                f" conf={result.get('confidence'):.2f}"
+            )
+            split_result[key] = result
+
+        r = split_result[key]
+        classified.append(dataclasses.replace(
+            event,
+            acd_division_type=r.get("division_type"),
+            misaligned_chromosomes=bool(r.get("misaligned_chromosomes")),
+            lagging_chromosome=bool(r.get("lagging_chromosome")),
+            anaphase_bridge=bool(r.get("anaphase_bridge")),
+            micronucleus=bool(r.get("micronucleus")),
+        ))
+
+    return passing + classified

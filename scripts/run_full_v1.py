@@ -1,6 +1,9 @@
 """Run the full v1 pipeline on the real ACTB_Tom20 video at full resolution.
 
 Expect ~4 hours on CPU (cellpose cyto3, ~26s/frame x 575 frames). Run overnight.
+
+NOTE: superseded by main.py which uses pipeline.run() (Trackastra + Claude review).
+Kept for reference only — prefer: python main.py data/raw/<video>.avi
 """
 
 import sys
