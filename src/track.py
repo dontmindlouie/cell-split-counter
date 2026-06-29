@@ -237,28 +237,38 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
         int(row[l_col]): int(row[b_col]) for _, row in df_ctc.iterrows()
     }
 
-    # Build nodes — one TrackNode per (label, frame) occurrence in tracked_video
+    # Build nodes — one TrackNode per (label, frame) occurrence in tracked_video.
+    # Use regionprops for a single pass per frame: instead of N separate boolean array
+    # comparisons (label_map == label_id for each label), compute all cell properties in
+    # one C-level scan. Also skip storing local_mask — downstream classify/review only
+    # needs centroid, which regionprops provides directly.
+    from skimage.measure import regionprops
+
     nodes: list[TrackNode] = []
-    # Track the last node for each label so we can set children on it
     last_node: dict[int, TrackNode] = {}
 
     for t, label_map in enumerate(tracked_video):
-        for label_id in np.unique(label_map):
-            if label_id == 0:
-                continue
-            label_id = int(label_id)
+        label_arr = np.asarray(label_map)  # load frame from memmap once
+        for prop in regionprops(label_arr):
+            label_id = int(prop.label)
             parent_label = parent_of.get(label_id, 0)
             is_birth_frame = (begin_of.get(label_id, 0) == t)
-
-            # parent_id on the TrackNode is the label of the mother track,
-            # but only set it on the birth frame node (first appearance after division)
             parent_id = parent_label if (parent_label > 0 and is_birth_frame) else None
 
+            # regionprops bbox: (min_row, min_col, max_row, max_col) exclusive
+            r0, c0, r1, c1 = prop.bbox
             node = TrackNode(
                 track_id=label_id,
                 parent_id=parent_id,
                 frame=t,
-                mask=_label_to_cellmask(label_map, label_id, t),
+                mask=CellMask(
+                    frame=t,
+                    mask_id=label_id,
+                    bbox=(r0, r1, c0, c1),  # (y0, y1, x0, x1)
+                    local_mask=None,         # not needed; saves ~1 GB of bool copies
+                    centroid=(float(prop.centroid[1]), float(prop.centroid[0])),  # (cx, cy)
+                    area=float(prop.area),
+                ),
             )
             nodes.append(node)
 
