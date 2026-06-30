@@ -10,7 +10,6 @@ venv/
 .pytest_cache/
 data/cellacdc_input/Position_1/Images/video_Tom20.tif
 data/cellacdc_input/Position_1/Images/video_segm.npz
-data/cellacdc_run.log
-data/cellacdc_run_err.log
+data/*.log
 .env
 data/debug/
