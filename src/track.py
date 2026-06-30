@@ -179,6 +179,11 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Trackastra.from_pretrained("general_2d", device=device)
 
+    # Pre-compute paths used by multiple patches below.
+    T, H, W = labels.shape
+    memmap_dir = Path(getattr(frames, "filename", "data/frames/_memmap")).parent
+    tracked_masks_path = memmap_dir / "tracked_masks.dat"
+
     # Trackastra's normalize() casts the full (T,H,W) array to float32 in RAM (~9GB for
     # 575 frames at 2048x2048). Pre-write float32 to disk memmap instead, then replace
     # normalize so it operates on the on-disk array without the RAM spike.
@@ -190,17 +195,25 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
     _orig_normalize = _model_api.normalize
     _model_api.normalize = lambda x, **kw: _normalize_on_memmap(float_frames)
 
+    # model.track() internally calls apply_solution_graph_to_masks which does
+    # np.zeros_like(masks_original) → 4.49 GB RAM allocation. We don't use that
+    # return value (graph_to_ctc recomputes tracked masks on disk below), so replace
+    # it with a stub that returns a tiny dummy array.
+    #
+    # IMPORTANT: model_api.py uses `from ..tracking import apply_solution_graph_to_masks`
+    # (local binding) — must patch _model_api directly.
+    _orig_asm = _model_api.apply_solution_graph_to_masks
+    _model_api.apply_solution_graph_to_masks = lambda g, m, **kw: np.zeros((1,), dtype=m.dtype)
+
     try:
         # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
         track_graph, tracked_video = model.track(frames, labels, mode="greedy")
     finally:
         _model_api.normalize = _orig_normalize
+        _model_api.apply_solution_graph_to_masks = _orig_asm
 
     # graph_to_ctc allocates (T,H,W) uint16 tracked masks via np.stack in RAM (~4.5GB).
     # Patch np.stack in that module to redirect large uint16 outputs to a disk memmap.
-    memmap_dir = Path(getattr(frames, "filename", "data/frames/_memmap")).parent
-    tracked_masks_path = memmap_dir / "tracked_masks.dat"
-    T, H, W = labels.shape
     _orig_stack = _ttu.np.stack
 
     def _stack_to_memmap(arrays, *args, **kwargs):
