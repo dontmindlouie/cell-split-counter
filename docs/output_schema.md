@@ -7,7 +7,7 @@ and parent_id).
 | Column | Meaning |
 |---|---|
 | `event_id` | Row counter, no other meaning. |
-| `source_video` | Filename of the input video this row came from (e.g. `20251016_ACTB_Tom20 - Denoised_Tom20.avi (blue).avi`). One run = one video; this column makes the CSV self-describing if you're comparing output from multiple runs side by side. |
+| `source_video` | Filename of the input video this row came from. One run = one video; this column makes the CSV self-describing if you're comparing output from multiple runs side by side. |
 | `frame_range` | **Approximation only.** `[peak_frame - 10, peak_frame]` -- a fixed lookback window, not a real measurement of the metaphase-anaphase window like the ground-truth sheet's `Frame` column. Detecting the true window needs per-frame morphology classification, which is out of scope for v1. |
 | `peak_frame` | The actual detected frame: the first frame the daughter cells appear as 2+ separate masks instead of 1. **0-indexed** (frame 0 = the first frame of the video) -- the ground-truth sheet is 1-indexed, so add 1 before comparing (`scripts/score_against_ground_truth.py` already does this). |
 | `split_topology` | `normal_split` (1->2 daughters) or `multi_way_split` (1->3+). Tracks the number of daughters from the lineage graph. Distinct from ACD division type (bipolar/tripolar/multipolar), which describes spindle geometry and will be a separate column when the division classifier is wired in. |
@@ -27,9 +27,8 @@ and parent_id).
   micronuclei, and anaphase bridges -- all present in the ground-truth sheet -- are
   not detected.
 - **`frame_range` is not the real metaphase-anaphase window**, see above.
-- Only validated against `20251016_ACTB_Tom20 - Denoised_Tom20.avi (blue).avi`
-  (575 frames). The other raw sample (`iPSC_nTSC_ZO1_1_RED.avi`, 9,431 frames) has
-  not been run through the pipeline.
+- Only validated against a single 575-frame test video. Longer videos have not been
+  run through the full pipeline.
 
 ## `data/output/summary.json`
 

@@ -1,6 +1,6 @@
-"""Compare Trackastra confidence thresholds against Tom20 ground truth.
+"""Compare Trackastra confidence thresholds against ground truth on the smoke test.
 
-Ground truth: rows 17-49 of iPSC_nTSC_Tom20_ACTB_ZO1 sheet (the updated section).
+Ground truth: rows 17-49 of the configured sheet (the division events section).
 We filter to events whose frame window starts at or before frame 20 (1-indexed),
 matching the 20-frame smoke test.
 
@@ -18,7 +18,7 @@ import pandas as pd
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-GT_XLSX = ROOT / "data/ground_truth/ACD_analysis.xlsx"
+GT_XLSX = ROOT / "data/ground_truth/ground_truth.xlsx"  # configure for your dataset
 EVENTS_TRACKASTRA = ROOT / "data/output/events_trackastra.csv"
 SMOKE_AVI = ROOT / "data/smoke_test.avi"
 FRAME_DIR = ROOT / "data/frames"
@@ -27,15 +27,18 @@ OUTPUT_DIR = ROOT / "data/output"
 SMOKE_FRAMES = 20  # 0-indexed: frames 0..19, 1-indexed: frames 1..20
 
 
-def load_gt_events(max_frame_1indexed: int = SMOKE_FRAMES) -> list[dict]:
-    """Load Tom20 GT divisions that START within the smoke test window.
+GT_SHEET = "Sheet1"  # configure: name of the sheet containing division events
 
-    The updated section is rows 17-49 (0-indexed) of the sheet.
+
+def load_gt_events(max_frame_1indexed: int = SMOKE_FRAMES) -> list[dict]:
+    """Load GT divisions that START within the smoke test window.
+
+    The data section is rows 17-49 (0-indexed) of the sheet.
     A GT event counts if its frame range start <= max_frame_1indexed.
     """
-    df = pd.read_excel(GT_XLSX, sheet_name="iPSC_nTSC_Tom20_ACTB_ZO1", header=0)
+    df = pd.read_excel(GT_XLSX, sheet_name=GT_SHEET, header=0)
 
-    # Updated section: rows 17-49 (0-indexed pandas), the second block of Tom20 data
+    # Data section: rows 17-49 (0-indexed pandas)
     section = df.iloc[17:50].reset_index(drop=True)
 
     events = []

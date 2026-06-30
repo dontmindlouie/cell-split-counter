@@ -23,11 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import EVENTS_CSV
 
-GROUND_TRUTH_XLSX = Path("data/ground_truth/ACD_analysis.xlsx")
-GROUND_TRUTH_SHEET = "iPSC_nTSC_Tom20_ACTB_ZO1"
+GROUND_TRUTH_XLSX = Path("data/ground_truth/ground_truth.xlsx")  # configure for your dataset
+GROUND_TRUTH_SHEET = "Sheet1"  # configure: name of the sheet containing division events
 
-GT_ROW_START = 19
-GT_ROW_END = 51
+GT_ROW_START = 19  # configure: first data row (1-indexed)
+GT_ROW_END = 51    # configure: last data row (inclusive)
 
 
 def parse_ground_truth_peaks(sheet) -> list[int]:

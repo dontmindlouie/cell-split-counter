@@ -13,7 +13,7 @@ Detects and classifies cell division events in microscopy video (Fiji/AVI etc).
 8. **Output** ✅ — `events.csv` (19 columns) + `summary.json`.
 
 ## Status
-Full pipeline implemented and validated against the ACTB_Tom20 video (575 frames, 33 GT events).
+Full pipeline implemented and validated against a 575-frame test video (33 ground-truth division events).
 Results at confidence > 0: 63.6% recall, 88.0% precision, F1 0.739.
 See `docs/output_schema.md` for column reference.
 

@@ -1,4 +1,4 @@
-"""Run the full v1 pipeline on the real ACTB_Tom20 video at full resolution.
+"""Run the full v1 pipeline on a video at full resolution.
 
 Expect ~4 hours on CPU (cellpose cyto3, ~26s/frame x 575 frames). Run overnight.
 
@@ -18,7 +18,7 @@ from src.output import write_events_csv, write_summary_json
 from src.segment import segment_all
 from src.track import link_frames
 
-VIDEO = Path("data/raw/20251016_ACTB_Tom20 - Denoised_Tom20.avi (blue).avi")
+VIDEO = Path("data/raw/your_video.avi")  # configure for your dataset
 FRAME_DIR = Path("data/frames")
 OUT_DIR = Path("data/output")
 
