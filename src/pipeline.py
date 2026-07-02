@@ -45,10 +45,14 @@ def run(
 
     # upper_threshold=inf: every non-suppressed event gets a Claude verdict + notes,
     # instead of persistence-confirmed (confidence>=1.0) events skipping review.
-    events = review_ambiguous(events, frame_dir, upper_threshold=float("inf"), save_debug_crops=save_debug_crops)
+    # max_reviews raised so busy videos don't silently fall back to rule-only
+    # classification once the default 50-split-point cap is hit.
+    events = review_ambiguous(
+        events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000, save_debug_crops=save_debug_crops
+    )
 
     if classify_divisions:
-        events = review_division_type(events, frame_dir)
+        events = review_division_type(events, frame_dir, max_reviews=10_000)
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(events, {"video_path": str(config.video_path)}, output_dir / "summary.json")
