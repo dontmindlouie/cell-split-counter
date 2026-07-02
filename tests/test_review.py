@@ -90,16 +90,16 @@ def test_claude_real_verdict_updates_source_and_confidence(tmp_path):
     assert result[0].claude_notes == "symmetric: clear division"
 
 
-def test_claude_false_positive_zeroes_confidence_and_clears_notes(tmp_path):
+def test_claude_false_positive_zeroes_confidence_but_keeps_notes(tmp_path):
     event = make_event(1, confidence=0.5)
     with patch("src.review._review_split") as mock_review, \
          patch("src.review.anthropic.Anthropic"), \
          patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        mock_review.return_value = ("false_positive", 0.1, "")
+        mock_review.return_value = ("false_positive", 0.1, "z-plane focus drift")
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
 
     assert result[0].confidence == 0.0
-    assert result[0].claude_notes is None
+    assert result[0].claude_notes == "z-plane focus drift"
 
 
 def test_max_reviews_cap_passes_excess_events_unchanged(tmp_path):

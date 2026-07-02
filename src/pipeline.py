@@ -43,7 +43,9 @@ def run(
     total_frames = len(frame_paths)
     events = [dataclasses.replace(e, bleach_risk=e.frame / total_frames) for e in events]
 
-    events = review_ambiguous(events, frame_dir, save_debug_crops=save_debug_crops)
+    # upper_threshold=inf: every non-suppressed event gets a Claude verdict + notes,
+    # instead of persistence-confirmed (confidence>=1.0) events skipping review.
+    events = review_ambiguous(events, frame_dir, upper_threshold=float("inf"), save_debug_crops=save_debug_crops)
 
     if classify_divisions:
         events = review_division_type(events, frame_dir)

@@ -22,12 +22,13 @@ if __name__ == "__main__":
     parser.add_argument("--classify-divisions", action="store_true", help="run ACD division type classifier on high-confidence events")
     parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from data/frames/_memmap/")
     parser.add_argument("--output-dir", type=Path, default=Path("data/output"), help="directory for events.csv and summary.json (default: data/output)")
+    parser.add_argument("--frame-dir", type=Path, default=Path("data/frames"), help="directory for extracted frames (default: data/frames)")
     args = parser.parse_args()
 
     config = IngestConfig(video_path=args.video_path, frame_step=args.frame_step, roi=None)
     run(
         config,
-        frame_dir=Path("data/frames"),
+        frame_dir=args.frame_dir,
         output_dir=args.output_dir,
         tracker=args.tracker,
         start_frame=args.start_frame,

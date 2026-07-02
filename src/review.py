@@ -199,7 +199,7 @@ def review_ambiguous(
             classification_source="claude",
             confidence=confidence if verdict == "real" else 0.0,
             tracker_confidence=event.tracker_confidence if event.tracker_confidence is not None else event.confidence,
-            claude_notes=notes if verdict == "real" else None,
+            claude_notes=notes,
         ))
 
     return passing + reviewed
