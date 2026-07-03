@@ -77,7 +77,7 @@ def segment_all(frame_paths: list[Path]) -> dict[int, list[CellMask]]:
     return {i: segment_frame(p, i) for i, p in enumerate(frame_paths)}
 
 
-_EVAL_BATCH = 32  # frames per Cellpose eval() call — amortizes per-call overhead
+_EVAL_BATCH = 64  # frames per Cellpose eval() call — amortizes per-call overhead
 
 
 def segment_video_arrays(
