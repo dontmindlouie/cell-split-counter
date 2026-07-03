@@ -8,4 +8,5 @@ scipy
 anthropic
 python-dotenv
 azure-storage-blob
+nd2
 # cache-bust 2026-07-01
