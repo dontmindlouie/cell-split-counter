@@ -1,5 +1,44 @@
 # Investigation notes
 
+## 2026-07-03 (follow-up 3): stride-3 review window fix validated — recall 51.5%→84.8% on greedy alone, ilp not needed
+
+Acted on the "remaining open thread" from follow-up 2: widened `review.py`'s crop
+sampling from consecutive frames to stride-3 (same frame *count*, wider time span) and
+added an explicit prompt hint that gradual constriction still resolving by the last
+frame counts as a real division, not just a fully-separated pair. Re-reviewed every
+previously-Claude-reviewed split from both the `greedy` and `ilp` full validation-video
+runs through the new prompt/window (418 unique splits total, Claude Haiku), scored
+against the same 33-event ground truth:
+
+| mode              | detected | recall        | precision   | F1    | missed GT frames |
+|-------------------|----------|---------------|-------------|-------|---|
+| greedy, pre-fix   | 14       | 17/33 = 51.5% | 13/14=92.9% | 0.663 | 56,60,62,65,65,99,177,185,212,266,363,394,427,440,514,520 |
+| **greedy, fixed** | 45       | 28/33 = 84.8% | 37/45=82.2% | 0.835 | 60,62,177,185,212 |
+| ilp, pre-fix      | 16       | 15/33 = 45.5% | 11/16=68.8% | 0.547 | (16 missed, incl. 545,567) |
+| ilp, fixed        | 48       | 28/33 = 84.8% | 38/48=79.2% | 0.819 | 60,62,177,212,427 |
+
+**The review-window/prompt fix was the real lever, not the tracker linking mode.**
+Applying it to plain `greedy` alone recovers recall from 51.5% to 84.8% — including
+frame 56 (the exact case from follow-up 2 that motivated trying `ilp` in the first
+place) plus most of the other previously-missed frames. Precision drops modestly
+(92.9%→82.2%), which is an acceptable trade here: the pipeline's output is a curated
+candidate set for human review, not an automated count, so a missed real event is
+costlier than one extra reviewed-and-dismissed false positive (+24 true positives for
++7 false positives on greedy).
+
+**This also settles the tracker-mode question:** with the fix applied, `greedy` and
+`ilp` land at identical recall (84.8%), but `greedy` still has better precision (82.2%
+vs. 79.2%) and is cheaper to run (no global-optimization solve). **`ilp` provides no
+remaining benefit once the review fix is in place — greedy stays the default, exactly
+as follow-up 1 concluded, but now for a stronger reason: it isn't just "not a clean
+win," it's fully redundant.**
+
+**Remaining open thread, narrowed:** only 5 GT events are still genuinely missed
+(60, 62, 177, 185/212 depending on mode) — down from 16. These look like real
+segmentation/tracking gaps rather than review-prompt issues (the review fix had no
+way to help with events the tracker never candidated at all), separate from
+everything fixed here. Not investigated yet.
+
 ## 2026-07-03: Trackastra greedy vs ilp linking mode
 
 **Trigger:** the frame-2 split spot-check (cell at (432, 454)) was visible in Fiji and confirmed
