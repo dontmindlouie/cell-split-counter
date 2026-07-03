@@ -6,7 +6,7 @@ from pathlib import Path
 from src.classify import classify_events
 from src.ingest import IngestConfig, extract_frames
 from src.output import write_events_csv, write_summary_json
-from src.review import review_ambiguous, review_division_type
+from src.review import review_ambiguous
 from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 
@@ -19,7 +19,6 @@ def run(
     start_frame: int = 0,
     end_frame: int | None = None,
     save_debug_crops: bool = False,
-    classify_divisions: bool = False,
     reuse_masks: bool = False,
 ) -> None:
     frame_paths = extract_frames(config, frame_dir)
@@ -43,16 +42,14 @@ def run(
     total_frames = len(frame_paths)
     events = [dataclasses.replace(e, bleach_risk=e.frame / total_frames) for e in events]
 
-    # upper_threshold=inf: every non-suppressed event gets a Claude verdict + notes,
-    # instead of persistence-confirmed (confidence>=1.0) events skipping review.
+    # upper_threshold=inf: every non-suppressed event gets a Claude verdict, notes, AND
+    # division-type/abnormality classification in one combined call, instead of
+    # persistence-confirmed (confidence>=1.0) events skipping review.
     # max_reviews raised so busy videos don't silently fall back to rule-only
     # classification once the default 50-split-point cap is hit.
     events = review_ambiguous(
         events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000, save_debug_crops=save_debug_crops
     )
-
-    if classify_divisions:
-        events = review_division_type(events, frame_dir, max_reviews=10_000)
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(events, {"video_path": str(config.video_path)}, output_dir / "summary.json")

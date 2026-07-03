@@ -21,8 +21,8 @@ from dotenv import load_dotenv; load_dotenv()
 import anthropic
 
 from src.classify import EventType, LineageEvent
-from src.config import CLAUDE_MODEL as MODEL, EVENTS_CSV, FRAME_DIR
-from src.review import _review_split
+from src.config import CLAUDE_MODEL as MODEL, EVENTS_CSV, FRAME_DIR, HIGH_CONFIDENCE
+from src.review import _review_and_classify
 
 
 def _row_to_event(row: dict) -> LineageEvent:
@@ -42,7 +42,7 @@ def _row_to_event(row: dict) -> LineageEvent:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-reviews", type=int, default=200)
-    parser.add_argument("--min-conf", type=float, default=0.05)
+    parser.add_argument("--min-conf", type=float, default=HIGH_CONFIDENCE)
     parser.add_argument("--max-conf", type=float, default=1.0)
     parser.add_argument("--debug-crops", action="store_true", help="save review crops to data/debug/crops/")
     args = parser.parse_args()
@@ -83,38 +83,64 @@ def main() -> None:
         raise EnvironmentError("ANTHROPIC_API_KEY not set")
     client = anthropic.Anthropic(api_key=api_key)
 
-    verdicts: dict[tuple, tuple[str, float, str]] = {}
+    results: dict[tuple, dict] = {}
     real_count = fp_count = 0
     for row in unique_targets[:args.max_reviews]:
         key = (row["parent_id"], row["peak_frame"])
         event = _row_to_event(row)
         try:
-            verdict, confidence, notes = _review_split(client, event, FRAME_DIR, MODEL, debug_dir=debug_dir)
+            result = _review_and_classify(client, event, FRAME_DIR, MODEL, debug_dir=debug_dir)
         except Exception as exc:
             print(f"  frame={event.frame:3d} parent={event.parent_id} [ERROR] {exc}")
             continue
-        verdicts[key] = (verdict, confidence, notes)
+        results[key] = result
+        verdict = result.get("verdict", "real")
         tag = "real" if verdict == "real" else "false_positive"
-        print(f"  frame={event.frame:3d} parent={event.parent_id} [{tag}] {notes[:100]}")
+        print(f"  frame={event.frame:3d} parent={event.parent_id} [{tag}] {result.get('description', '')[:100]}")
         if verdict == "real":
             real_count += 1
         else:
             fp_count += 1
 
-    print(f"\nReviewed {len(verdicts)}: {real_count} real, {fp_count} false positive")
+    print(f"\nReviewed {len(results)}: {real_count} real, {fp_count} false positive")
+
+    # Ensure classifier columns exist
+    for col in ("acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
+                "anaphase_bridge", "micronucleus", "anomaly_notes"):
+        if col not in fieldnames:
+            fieldnames.append(col)
+    for row in rows:
+        for col in ("acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
+                    "anaphase_bridge", "micronucleus", "anomaly_notes"):
+            row.setdefault(col, "")
+
+    def _flag(v):
+        return "" if v is None else ("1" if v else "0")
 
     # Update matching rows in CSV
     updated = 0
     for row in rows:
         key = (row["parent_id"], row["peak_frame"])
-        if key in verdicts:
-            verdict, confidence, notes = verdicts[key]
+        if key in results:
+            r = results[key]
+            verdict = r.get("verdict", "real")
+            confidence = float(r.get("confidence", 0.0))
+            is_real = verdict == "real"
+            split_type = r.get("split_type") or ""
+            description = r.get("description", "")
+            notes = f"{split_type}: {description}".strip(": ") if split_type else description
             # preserve original tracker score before overwriting confidence
             if not row.get("tracker_confidence"):
                 row["tracker_confidence"] = row["confidence"]
             row["classification_source"] = "claude"
-            row["confidence"] = str(confidence if verdict == "real" else 0.0)
-            row["claude_notes"] = notes if verdict == "real" else ""
+            row["confidence"] = str(confidence if is_real else 0.0)
+            row["claude_notes"] = notes if is_real else ""
+            row["acd_division_type"] = (r.get("acd_division_type") or "") if is_real else ""
+            row["misaligned_chromosomes"] = _flag(r.get("misaligned_chromosomes")) if is_real else ""
+            row["lagging_chromosome"] = _flag(r.get("lagging_chromosome")) if is_real else ""
+            row["anaphase_bridge"] = _flag(r.get("anaphase_bridge")) if is_real else ""
+            row["micronucleus"] = _flag(r.get("micronucleus")) if is_real else ""
+            row["anomaly_notes"] = (r.get("anomaly_notes") or "") if is_real else ""
             updated += 1
 
     with open(EVENTS_CSV, "w", newline="") as f:

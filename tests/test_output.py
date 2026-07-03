@@ -36,7 +36,7 @@ def test_csv_header_columns(tmp_path):
         "track_id", "parent_id", "confidence", "tracker_confidence", "classification_source",
         "centroid_x", "centroid_y", "claude_notes", "bleach_risk",
         "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
-        "anaphase_bridge", "micronucleus",
+        "anaphase_bridge", "micronucleus", "anomaly_notes",
     ]
 
 
