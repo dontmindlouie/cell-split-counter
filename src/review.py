@@ -14,8 +14,8 @@ import cv2
 from src.classify import LineageEvent
 from src.config import CLAUDE_MODEL
 
-_FRAMES_BEFORE = 5  # see metaphase plate alignment
-_FRAMES_AFTER = 5   # see cytokinesis + any micronuclei forming
+_FRAMES_BEFORE = 8  # see metaphase plate alignment; widened 2026-07-03 sweep, see docs/investigation_notes.md
+_FRAMES_AFTER = 8   # see cytokinesis + any micronuclei forming; widened 2026-07-03 sweep, see docs/investigation_notes.md
 _FRAME_STRIDE = 3   # sample every Nth frame instead of consecutive frames, see docs/investigation_notes.md 2026-07-03
 _CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + both daughters
 

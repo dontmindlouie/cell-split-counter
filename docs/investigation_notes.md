@@ -3,6 +3,40 @@
 Running log of spot-check findings that don't belong in code comments but shouldn't
 be lost between sessions. Newest entries on top.
 
+## 2026-07-03 (follow-up 4): more frames beats a bigger gap — settled on 8+8 @ stride-3
+
+After merging the combined verify+classify architecture (5+5 frames @ stride-3) with the
+validated stride-3 fix (originally tested at 2+3 @ stride-3), the merged parameter
+combination hadn't itself been validated. Each video frame is 3 min of real acquisition
+time, so swept 5 configs against the same 180 previously-Claude-reviewed greedy-mode
+candidates to decide between widening the *count* of frames shown vs. widening the
+*gap* (stride) between them:
+
+| config              | before/after | stride | detected | recall        | precision | F1    | missed GT |
+|----------------------|:---:|:---:|---|---------------|-----------|-------|---|
+| baseline (2+3 @ s3)  | 2/3 | 3 | 59 | 30/33 = 90.9% | 79.7%     | 0.849 | 177, 185, 212 |
+| merged (5+5 @ s3)    | 5/5 | 3 | 68 | 31/33 = 93.9% | 75.0%     | 0.834 | 177, 185 |
+| denser (5+5 @ s2)    | 5/5 | 2 | 59 | 30/33 = 90.9% | 76.3%     | 0.829 | 177, 185, 212 |
+| sparser (5+5 @ s5)   | 5/5 | 5 | 91 | 31/33 = 93.9% | 65.9%     | 0.775 | 185, 212 |
+| **more frames (8+8 @ s3)** | 8/8 | 3 | 85 | **32/33 = 97.0%** | 64.7% | 0.776 | **177 only** |
+
+**Tightening the gap ("every other frame," stride=2) gave no benefit** — identical
+recall to baseline, slightly worse precision. **Just widening the gap (stride=5) without
+more frames** matches the merged config's recall but costs more precision for no gain.
+**Showing more frames at the same gap (8+8 @ stride-3) won clearly** — 97.0% recall,
+missing only frame 177, which is the one GT event every single config in this sweep
+still misses (consistent with it being a genuine upstream segmentation/tracking gap,
+not a review-window/prompt-fixable case, per the earlier follow-ups). **Decision: set
+`_FRAMES_BEFORE=8, _FRAMES_AFTER=8, _FRAME_STRIDE=3`** (was 5+5 @ stride-3).
+
+**Caveat — run-to-run variance is real:** re-running the identical baseline (2+3 @ s3)
+config gave 90.9% recall here vs. 84.8% in the earlier validation pass — a ~6pp swing
+from Claude's inherent non-determinism (no fixed seed/temperature=0), same candidate
+set both times. Treat exact percentage-point gaps between configs as directional, not
+precise; the "more frames helps, denser gap doesn't" pattern held consistently enough
+across the sweep to trust, but a couple of points of difference between any two configs
+here shouldn't be over-read.
+
 ## 2026-07-03 (follow-up 3): stride-3 review window fix validated — recall 51.5%→84.8% on greedy alone, ilp not needed
 
 Acted on the "remaining open thread" from follow-up 2: widened `review.py`'s crop
