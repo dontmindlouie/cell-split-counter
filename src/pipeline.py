@@ -16,6 +16,7 @@ def run(
     frame_dir: Path,
     output_dir: Path,
     tracker: str = "trackastra",
+    tracker_mode: str = "greedy",
     start_frame: int = 0,
     end_frame: int | None = None,
     save_debug_crops: bool = False,
@@ -33,7 +34,7 @@ def run(
             frames_arr, labels_arr = load_video_arrays(frame_paths)
         else:
             frames_arr, labels_arr = segment_video_arrays(frame_paths)
-        tracks = link_frames_trackastra(frames_arr, labels_arr)
+        tracks = link_frames_trackastra(frames_arr, labels_arr, mode=tracker_mode)
     else:
         masks_by_frame = segment_all(frame_paths)
         tracks = link_frames(masks_by_frame)

@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import DEBUG_DIR, EVENTS_CSV, FRAME_DIR
-from src.review import _FRAMES_BEFORE, _FRAMES_AFTER, _crop_image, _find_frame
+from src.review import _FRAMES_BEFORE, _FRAMES_AFTER, _FRAME_STRIDE, _crop_image, _find_frame
 
 
 def main() -> None:
@@ -69,7 +69,9 @@ def main() -> None:
         event_dir = DEBUG_DIR / folder_name
         event_dir.mkdir()
 
-        indices = list(range(max(0, pf - _FRAMES_BEFORE), pf + _FRAMES_AFTER + 1))
+        before_indices = [pf - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]
+        after_indices = [pf + i * _FRAME_STRIDE for i in range(1, _FRAMES_AFTER + 1)]
+        indices = [i for i in before_indices if i >= 0] + [pf] + after_indices
         frame_count = 0
         for pos, idx in enumerate(indices):
             path = _find_frame(FRAME_DIR, idx)

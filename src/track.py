@@ -160,11 +160,15 @@ def _make_float32_memmap(frames: np.ndarray) -> np.ndarray:
     return float_frames
 
 
-def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[TrackNode]:
+def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "greedy") -> list[TrackNode]:
     """Track cells using Trackastra and return a TrackNode list with lineage.
 
     frames: (T, H, W) uint8 grayscale
     labels: (T, H, W) uint16 Cellpose label maps
+    mode: "greedy" (default, fast) or "ilp" (global optimum via motile/SCIP --
+        catches divisions where two daughters are compact/adjacent enough that
+        greedy's local frame-to-frame matching collapses them into one track;
+        see docs/investigation_notes.md 2026-07-03 entry)
 
     Trackastra assigns stable Cell_IDs across frames and detects divisions.
     The returned TrackNodes have parent_id and children set for split events,
@@ -207,7 +211,7 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray) -> list[Track
 
     try:
         # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
-        track_graph, tracked_video = model.track(frames, labels, mode="greedy")
+        track_graph, tracked_video = model.track(frames, labels, mode=mode)
     finally:
         _model_api.normalize = _orig_normalize
         _model_api.apply_solution_graph_to_masks = _orig_asm

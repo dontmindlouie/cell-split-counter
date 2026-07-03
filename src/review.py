@@ -16,20 +16,25 @@ from src.config import CLAUDE_MODEL
 
 _FRAMES_BEFORE = 2
 _FRAMES_AFTER = 3
+_FRAME_STRIDE = 3  # sample every Nth frame instead of consecutive frames, see docs/investigation_notes.md 2026-07-03
 _CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + both daughters
 
 # System prompt — uses .format() so JSON braces must be doubled.
 _SYSTEM = """\
 You are reviewing microscopy timelapse images to verify and characterize a candidate cell division event.
 You will receive frames in chronological order: {before} frames before the split and {after} \
-frames after it. The split is expected to occur between the last before-frame and the first \
-after-frame.
+frames after it, sampled every {stride} frames (not consecutive) to cover a longer time span. \
+The split is expected to occur between the last before-frame and the first after-frame.
 
 Real divisions: one cell rounds up, elongates along a cleavage plane, and becomes two \
-distinct, persistent daughter cells.
+distinct, persistent daughter cells. Divisions can be slow — a nucleus may still look like a \
+single waisted/hourglass shape partway through the sequence and only clearly resolve into two \
+separated lobes by the last frame or two. Judge the whole trend across the sequence, not just \
+the frame nearest the split: progressive elongation and constriction that is still resolving by \
+the final frame is real division evidence, even without full separation in every frame shown.
 False positives arise from: (1) shape-change flickering where a cell briefly appears as two \
-touching masks, (2) z-plane focus drift that momentarily blurs one cell into two blobs, \
-(3) a tracking ID swap with a nearby unrelated cell.
+touching masks then reverts, with no net progression toward separation, (2) z-plane focus drift \
+that momentarily blurs one cell into two blobs, (3) a tracking ID swap with a nearby unrelated cell.
 
 For real divisions, also classify the split type:
 - "symmetric": daughters are approximately equal in size (typical mitosis)
@@ -72,7 +77,9 @@ def _review_split(
     debug_dir: Path | None = None,
 ) -> tuple[str, float, str]:
     """Ask Claude whether the split at event.frame is real. Returns (verdict, confidence, notes)."""
-    indices = list(range(max(0, event.frame - _FRAMES_BEFORE), event.frame + _FRAMES_AFTER + 1))
+    before_indices = [event.frame - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]
+    after_indices = [event.frame + i * _FRAME_STRIDE for i in range(1, _FRAMES_AFTER + 1)]
+    indices = [i for i in before_indices if i >= 0] + [event.frame] + after_indices
     indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
 
     if not indexed_paths:
@@ -95,14 +102,15 @@ def _review_split(
         "type": "text",
         "text": (
             f"Candidate split at frame {event.frame}: track {event.parent_id} → daughter tracks. "
-            f"{before_count} frames before and {after_count} frames after the split are shown."
+            f"{before_count} frames before and {after_count} frames after the split are shown, "
+            f"each {_FRAME_STRIDE} frames apart."
         ),
     })
 
     response = client.messages.create(
         model=model,
         max_tokens=256,
-        system=_SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER),
+        system=_SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE),
         messages=[{"role": "user", "content": content}],
     )
 

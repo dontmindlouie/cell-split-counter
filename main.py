@@ -16,6 +16,7 @@ if __name__ == "__main__":
     parser.add_argument("video_path", type=Path)
     parser.add_argument("--frame-step", type=int, default=1)
     parser.add_argument("--tracker", choices=["iou", "trackastra"], default="trackastra")
+    parser.add_argument("--tracker-mode", choices=["greedy", "ilp"], default="greedy", help="Trackastra linking mode (default: greedy; ilp catches compact/adjacent divisions greedy collapses, see docs/investigation_notes.md)")
     parser.add_argument("--start-frame", type=int, default=0, help="first frame index to process (0-indexed)")
     parser.add_argument("--end-frame", type=int, default=None, help="last frame index (exclusive); default = all")
     parser.add_argument("--debug-crops", action="store_true", help="save Claude review crops to data/review_crops/")
@@ -31,6 +32,7 @@ if __name__ == "__main__":
         frame_dir=args.frame_dir,
         output_dir=args.output_dir,
         tracker=args.tracker,
+        tracker_mode=args.tracker_mode,
         start_frame=args.start_frame,
         end_frame=args.end_frame,
         save_debug_crops=args.debug_crops,
