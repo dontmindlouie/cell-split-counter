@@ -14,3 +14,6 @@ DEBUG_DIR    = DATA_DIR / "debug" / "crops"
 PACKAGES_DIR = DATA_DIR / "packages"
 
 CLAUDE_MODEL = "claude-haiku-4-5"
+
+# Confidence floor used by scripts that backfill/re-review already-confirmed events.
+HIGH_CONFIDENCE = 0.5

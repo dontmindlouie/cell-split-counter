@@ -1,5 +1,8 @@
 # Investigation notes
 
+Running log of spot-check findings that don't belong in code comments but shouldn't
+be lost between sessions. Newest entries on top.
+
 ## 2026-07-03 (follow-up 3): stride-3 review window fix validated — recall 51.5%→84.8% on greedy alone, ilp not needed
 
 Acted on the "remaining open thread" from follow-up 2: widened `review.py`'s crop
@@ -158,3 +161,8 @@ frame-56 case) was found for them within 50-70. They may be in a part of the fra
 range not covered by this scan window, or may be genuine full segmentation misses
 (Cellpose never producing 2 masks for the real dividing cell at all). Not pursued
 further this session.
+
+**Note:** the original, shorter write-up of this frame-2/pixel-(432,454) miss
+(segmentation-vs-tracking root cause, untested Cellpose hypotheses) was superseded by
+the fuller investigation above and dropped here to avoid duplication — see the
+"Trackastra greedy vs ilp linking mode" section below for the full trace.
