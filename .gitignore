@@ -11,4 +11,4 @@ venv/
 data/cellacdc_input/
 data/*.log
 .env
-data/debug/
+data/review_crops/
