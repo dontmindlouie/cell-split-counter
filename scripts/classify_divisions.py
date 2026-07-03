@@ -1,8 +1,11 @@
-"""Run ACD division type + abnormality classification on confirmed events in an existing events.csv.
+"""Backfill ACD division type + abnormality classification onto an existing events.csv.
 
-Reads events.csv, classifies events with confidence >= min_conf using Claude vision,
-and writes an updated CSV with acd_division_type + abnormality flag columns appended.
-Does not re-run segmentation or tracking.
+Older runs (or runs made before the combined verify+classify call existed) can end up
+with claude_notes populated but the acd_division_type/misaligned/lagging/anaphase/
+micronucleus columns empty, since classification used to be a separate opt-in pass
+that defaulted off. This re-sends confirmed events (confidence >= min_conf) through
+the same combined Claude call and fills in just the classification fields.
+Does not re-run segmentation or tracking, and does not touch the existing verdict/notes.
 
 Usage:
   python scripts/classify_divisions.py [--events PATH] [--frames PATH] [--min-conf F] [--max-reviews N]
@@ -10,6 +13,7 @@ Usage:
 
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -17,8 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv; load_dotenv()
 
+import anthropic
+
 from src.classify import EventType, LineageEvent
-from src.review import review_division_type
+from src.config import CLAUDE_MODEL, HIGH_CONFIDENCE
+from src.review import _review_and_classify
 
 # Default to main worktree data since frames/events live there
 _ROOT = Path(__file__).resolve().parents[2] / "cell-split-counter"
@@ -45,14 +52,15 @@ def _row_to_event(row: dict) -> LineageEvent:
     )
 
 
-ACD_COLS = ["acd_division_type", "misaligned_chromosomes", "lagging_chromosome", "anaphase_bridge", "micronucleus"]
+ACD_COLS = ["acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
+            "anaphase_bridge", "micronucleus", "anomaly_notes"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS)
     parser.add_argument("--frames", type=Path, default=DEFAULT_FRAMES)
-    parser.add_argument("--min-conf", type=float, default=0.5)
+    parser.add_argument("--min-conf", type=float, default=HIGH_CONFIDENCE)
     parser.add_argument("--max-reviews", type=int, default=50)
     args = parser.parse_args()
 
@@ -70,33 +78,53 @@ def main() -> None:
             row.setdefault(col, "")
 
     events = [_row_to_event(r) for r in rows]
-    n_eligible = sum(1 for e in events if e.confidence >= args.min_conf)
-    print(f"Found {len(events)} total events, {n_eligible} with confidence >= {args.min_conf}")
+    to_classify = [e for e in events if e.confidence >= args.min_conf]
+    print(f"Found {len(events)} total events, {len(to_classify)} with confidence >= {args.min_conf}")
 
-    classified = review_division_type(
-        events,
-        args.frames,
-        min_confidence=args.min_conf,
-        max_reviews=args.max_reviews,
-    )
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY not set")
+    client = anthropic.Anthropic(api_key=api_key)
 
-    # Build lookup by (track_id, frame) → classified event
-    result_map = {(e.track_id, e.frame): e for e in classified}
+    # One call per unique split point (parent_id, frame) -- daughters share a result.
+    to_call: dict[tuple, LineageEvent] = {}
+    for e in to_classify:
+        key = (e.parent_id, e.frame)
+        if key not in to_call and len(to_call) < args.max_reviews:
+            to_call[key] = e
 
     def _flag(v):
         return "" if v is None else ("1" if v else "0")
 
+    split_result: dict[tuple, dict] = {}
+    for key, event in to_call.items():
+        try:
+            split_result[key] = _review_and_classify(client, event, args.frames, CLAUDE_MODEL)
+        except Exception as exc:
+            print(f"  frame={event.frame:3d} parent={event.parent_id} [ERROR] {exc}")
+            continue
+        r = split_result[key]
+        print(
+            f"  frame={event.frame:3d} parent={event.parent_id}"
+            f" {r.get('acd_division_type', '?')}"
+            f" mis={r.get('misaligned_chromosomes')} lag={r.get('lagging_chromosome')}"
+            f" bridge={r.get('anaphase_bridge')} mn={r.get('micronucleus')}"
+        )
+
     updated = 0
-    for row in rows:
-        key = (int(row["track_id"]), int(row["peak_frame"]))
-        e = result_map.get(key)
-        if e and e.acd_division_type is not None:
-            row["acd_division_type"] = e.acd_division_type or ""
-            row["misaligned_chromosomes"] = _flag(e.misaligned_chromosomes)
-            row["lagging_chromosome"] = _flag(e.lagging_chromosome)
-            row["anaphase_bridge"] = _flag(e.anaphase_bridge)
-            row["micronucleus"] = _flag(e.micronucleus)
-            updated += 1
+    for e in to_classify:
+        key = (e.parent_id, e.frame)
+        r = split_result.get(key)
+        if r is None:
+            continue
+        row = next(row for row in rows if int(row["track_id"]) == e.track_id and int(row["peak_frame"]) == e.frame)
+        row["acd_division_type"] = r.get("acd_division_type") or ""
+        row["misaligned_chromosomes"] = _flag(r.get("misaligned_chromosomes"))
+        row["lagging_chromosome"] = _flag(r.get("lagging_chromosome"))
+        row["anaphase_bridge"] = _flag(r.get("anaphase_bridge"))
+        row["micronucleus"] = _flag(r.get("micronucleus"))
+        row["anomaly_notes"] = r.get("anomaly_notes") or ""
+        updated += 1
 
     out_path = args.events.parent / (args.events.stem + "_classified.csv")
     with open(out_path, "w", newline="") as f:

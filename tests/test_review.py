@@ -37,7 +37,9 @@ def test_events_at_lower_threshold_are_not_suppressed(tmp_path):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = MagicMock(
-            content=[MagicMock(text='{"verdict":"false_positive","confidence":0.0,"split_type":null,"description":"noise"}')]
+            content=[MagicMock(text='{"verdict":"false_positive","confidence":0.0,"split_type":null,"description":"noise",'
+                                     '"acd_division_type":null,"misaligned_chromosomes":null,"lagging_chromosome":null,'
+                                     '"anaphase_bridge":null,"micronucleus":null,"anomaly_notes":null}')]
         )
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
     # event was routed to Claude (not suppressed), came back as FP with confidence 0.0
@@ -67,39 +69,51 @@ def test_daughters_sharing_split_point_share_one_api_call(tmp_path):
     d1 = make_event(track_id=2, frame=10, confidence=0.5, parent_id=1)
     d2 = make_event(track_id=3, frame=10, confidence=0.5, parent_id=1)
 
-    with patch("src.review._review_split") as mock_review, \
+    with patch("src.review._review_and_classify") as mock_review, \
          patch("src.review.anthropic.Anthropic"), \
          patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        mock_review.return_value = ("real", 0.9, "clean division")
+        mock_review.return_value = {"verdict": "real", "confidence": 0.9, "split_type": None,
+                                     "description": "clean division", "acd_division_type": "bipolar",
+                                     "misaligned_chromosomes": False, "lagging_chromosome": False,
+                                     "anaphase_bridge": False, "micronucleus": False, "anomaly_notes": None}
         review_ambiguous([d1, d2], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
 
     assert mock_review.call_count == 1
 
 
-def test_claude_real_verdict_updates_source_and_confidence(tmp_path):
+def test_claude_real_verdict_updates_source_confidence_and_classification(tmp_path):
     event = make_event(1, confidence=0.5)
-    with patch("src.review._review_split") as mock_review, \
+    with patch("src.review._review_and_classify") as mock_review, \
          patch("src.review.anthropic.Anthropic"), \
          patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        mock_review.return_value = ("real", 0.85, "symmetric: clear division")
+        mock_review.return_value = {"verdict": "real", "confidence": 0.85, "split_type": "symmetric",
+                                     "description": "clear division", "acd_division_type": "bipolar",
+                                     "misaligned_chromosomes": True, "lagging_chromosome": False,
+                                     "anaphase_bridge": False, "micronucleus": False, "anomaly_notes": None}
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
 
     assert len(result) == 1
     assert result[0].classification_source == "claude"
     assert result[0].confidence == 0.85
     assert result[0].claude_notes == "symmetric: clear division"
+    assert result[0].acd_division_type == "bipolar"
+    assert result[0].misaligned_chromosomes is True
 
 
-def test_claude_false_positive_zeroes_confidence_but_keeps_notes(tmp_path):
+def test_claude_false_positive_zeroes_confidence_keeps_notes_no_classification(tmp_path):
     event = make_event(1, confidence=0.5)
-    with patch("src.review._review_split") as mock_review, \
+    with patch("src.review._review_and_classify") as mock_review, \
          patch("src.review.anthropic.Anthropic"), \
          patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        mock_review.return_value = ("false_positive", 0.1, "z-plane focus drift")
+        mock_review.return_value = {"verdict": "false_positive", "confidence": 0.1, "split_type": None,
+                                     "description": "z-plane focus drift", "acd_division_type": None,
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
 
     assert result[0].confidence == 0.0
     assert result[0].claude_notes == "z-plane focus drift"
+    assert result[0].acd_division_type is None
 
 
 def test_max_reviews_cap_passes_excess_events_unchanged(tmp_path):
@@ -109,10 +123,13 @@ def test_max_reviews_cap_passes_excess_events_unchanged(tmp_path):
         make_event(track_id=3, frame=20, parent_id=4, confidence=0.5),
         make_event(track_id=5, frame=30, parent_id=6, confidence=0.5),
     ]
-    with patch("src.review._review_split") as mock_review, \
+    with patch("src.review._review_and_classify") as mock_review, \
          patch("src.review.anthropic.Anthropic"), \
          patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        mock_review.return_value = ("real", 0.9, "")
+        mock_review.return_value = {"verdict": "real", "confidence": 0.9, "split_type": None,
+                                     "description": "", "acd_division_type": None,
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
         result = review_ambiguous(events, tmp_path, lower_threshold=0.05, upper_threshold=1.0, max_reviews=2)
 
     assert mock_review.call_count == 2
