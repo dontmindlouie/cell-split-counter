@@ -1,5 +1,8 @@
 """Per-frame cell segmentation via Cellpose."""
 
+import cProfile
+import os
+import pstats
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +11,16 @@ import numpy as np
 from cellpose import models
 
 _model: models.CellposeModel | None = None
+_PROFILE = os.environ.get("PROFILE_SEGMENTATION") == "1"
+
+
+def _log_memory(label: str) -> None:
+    import resource  # Linux-only; only imported when actually profiling (cloud)
+    import torch
+    ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB->MB on Linux
+    gpu_alloc_mb = torch.cuda.max_memory_allocated() / 1e6 if torch.cuda.is_available() else 0
+    gpu_reserved_mb = torch.cuda.max_memory_reserved() / 1e6 if torch.cuda.is_available() else 0
+    print(f"  [mem] {label}: RAM peak={ram_mb:.0f}MB  GPU alloc peak={gpu_alloc_mb:.0f}MB  GPU reserved peak={gpu_reserved_mb:.0f}MB", flush=True)
 
 
 def _get_model() -> models.CellposeModel:
@@ -64,6 +77,9 @@ def segment_all(frame_paths: list[Path]) -> dict[int, list[CellMask]]:
     return {i: segment_frame(p, i) for i, p in enumerate(frame_paths)}
 
 
+_EVAL_BATCH = 32  # frames per Cellpose eval() call — amortizes per-call overhead
+
+
 def segment_video_arrays(
     frame_paths: list[Path],
     memmap_dir: Path | None = None,
@@ -75,11 +91,14 @@ def segment_video_arrays(
       labels: uint16 integer label maps (0 = background, N = cell N)
 
     Arrays are written to memory-mapped files under memmap_dir (defaults to a
-    temp dir alongside the first frame). This keeps RAM usage to a single frame
-    at a time during segmentation — Trackastra then pages from disk on demand
-    rather than holding the full video in RAM.
+    temp dir alongside the first frame). This keeps RAM usage to one batch of
+    frames at a time during segmentation — Trackastra then pages from disk on
+    demand rather than holding the full video in RAM.
+
+    Frames are sent to Cellpose in batches (model.eval() accepts a list of
+    images) rather than one call per frame — each call carries its own fixed
+    dispatch/normalization overhead, which one-at-a-time calls pay per frame.
     """
-    import tempfile
     model = _get_model()
     first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE)
     T, H, W = len(frame_paths), first.shape[0], first.shape[1]
@@ -93,13 +112,29 @@ def segment_video_arrays(
     raw_frames = np.memmap(frames_path, dtype=np.uint8,  mode="w+", shape=(T, H, W))
     label_maps = np.memmap(labels_path, dtype=np.uint16, mode="w+", shape=(T, H, W))
 
-    for i, path in enumerate(frame_paths):
-        print(f"  segmenting frame {i+1}/{T}", end="\r", flush=True)
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        label_map, _, _ = model.eval(img, diameter=None, channels=[0, 0])
-        raw_frames[i] = img
-        label_maps[i] = label_map.astype(np.uint16)
+    profiler = cProfile.Profile() if _PROFILE else None
+    if profiler:
+        profiler.enable()
+
+    for batch_num, start in enumerate(range(0, T, _EVAL_BATCH)):
+        end = min(start + _EVAL_BATCH, T)
+        print(f"  segmenting frames {start+1}-{end}/{T}", end="\r", flush=True)
+        imgs = [cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) for p in frame_paths[start:end]]
+        masks, _, _ = model.eval(imgs, diameter=None, channels=[0, 0])
+        for offset, (img, mask) in enumerate(zip(imgs, masks)):
+            raw_frames[start + offset] = img
+            label_maps[start + offset] = mask.astype(np.uint16)
+        if _PROFILE and batch_num % 5 == 0:
+            _log_memory(f"after batch {batch_num} (frame {end}/{T})")
     print()
+
+    if profiler:
+        profiler.disable()
+        _log_memory("segmentation complete")
+        stats = pstats.Stats(profiler).sort_stats("cumulative")
+        print("  [profile] top 30 by cumulative time:")
+        stats.print_stats(30)
+
     raw_frames.flush()
     label_maps.flush()
     return raw_frames, label_maps
