@@ -18,7 +18,7 @@ if __name__ == "__main__":
     parser.add_argument("--tracker", choices=["iou", "trackastra"], default="trackastra")
     parser.add_argument("--start-frame", type=int, default=0, help="first frame index to process (0-indexed)")
     parser.add_argument("--end-frame", type=int, default=None, help="last frame index (exclusive); default = all")
-    parser.add_argument("--debug-crops", action="store_true", help="save Claude review crops to data/debug/crops/")
+    parser.add_argument("--debug-crops", action="store_true", help="save Claude review crops to data/review_crops/")
     parser.add_argument("--classify-divisions", action="store_true", help="run ACD division type classifier on high-confidence events")
     parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from data/frames/_memmap/")
     parser.add_argument("--output-dir", type=Path, default=Path("data/output"), help="directory for events.csv and summary.json (default: data/output)")

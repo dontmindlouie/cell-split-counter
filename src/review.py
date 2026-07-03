@@ -162,7 +162,7 @@ def review_ambiguous(
 
     debug_dir: Path | None = None
     if save_debug_crops:
-        debug_dir = frame_dir.parent / "debug" / "crops"
+        debug_dir = frame_dir.parent / "review_crops"
         if debug_dir.exists():
             shutil.rmtree(debug_dir)
         debug_dir.mkdir(parents=True)
