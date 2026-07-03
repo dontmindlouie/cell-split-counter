@@ -45,7 +45,7 @@ print("Uploading output...")
 out_container = client.get_container_client(OUTPUT_CONTAINER)
 run_prefix = Path(VIDEO_BLOB).stem
 for f in output_dir.rglob("*"):
-    if f.is_file():
+    if f.is_file() and "_memmap" not in f.parts:
         blob_name = f"{run_prefix}/{f.relative_to(output_dir)}"
         with open(f, "rb") as data:
             out_container.upload_blob(blob_name, data, overwrite=True)
