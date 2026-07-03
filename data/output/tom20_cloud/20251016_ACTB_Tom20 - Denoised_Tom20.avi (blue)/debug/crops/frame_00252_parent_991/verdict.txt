@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell maintains a consistently bilobed morphology across all five frames with no progression toward separation. The two lobes remain in contact and show no evidence of cytokinesis, elongation along a cleavage plane, or daughter cell migration—characteristics indicative of shape-change flickering or z-plane focus drift rather than a genuine division event.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The candidate event shows a small bright structure in the center-right region that appears fragmented across frames 3-5 (post-split), but this is consistent with z-plane focus drift or shape-change flickering rather than a genuine division. The structure lacks the hallmarks of real mitosis: no clear rounding and elongation phase is visible, and the daughter-like fragments do not persist as distinct, well-defined cells with stable morphology. The appearance is more consistent with transient imaging artifacts.

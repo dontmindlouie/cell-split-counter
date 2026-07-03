@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center of the field shows only minor shape fluctuations across all frames, with no clear rounding, elongation along a cleavage plane, or separation into two distinct persistent daughter cells. The apparent morphology changes are consistent with z-plane focus drift or shape-change flickering rather than a genuine mitotic division.

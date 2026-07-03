@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central object appears as a single, compact, dim structure in the before-frames that becomes two very faint, closely-spaced spots in the after-frames. This pattern is consistent with z-plane focus drift or motion blur creating a false appearance of division rather than genuine cytokinesis with rounding, elongation, and persistent daughter cell formation.

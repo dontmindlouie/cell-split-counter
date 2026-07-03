@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell cluster shows no clear progression toward division across the frames. The appearance of multiple touching lobes remains static throughout the sequence, consistent with z-plane focus drift or a persistent irregular cell morphology rather than cytokinesis. No daughter cells separate or move apart after the proposed split point, and the overall configuration and intensity remain unchanged, indicating this is likely a shape-change artifact rather than a real division event.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The central cell-like structure remains visibly connected and does not separate into two distinct daughter cells across all frames. The apparent fragmented appearance in the center is consistent with z-plane focus drift or debris rather than a genuine cytokinetic division, as no persistent pair of daughter cells emerges.

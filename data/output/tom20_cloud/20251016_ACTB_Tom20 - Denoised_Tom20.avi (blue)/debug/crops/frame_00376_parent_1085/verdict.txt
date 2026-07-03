@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center-left region (track 1085) shows no morphological changes consistent with division across the 6-frame sequence. The cell maintains a relatively constant size, position, and intensity throughout, with no evidence of rounding, elongation, cleavage plane formation, or separation into two distinct daughter cells. The apparent "split" appears to be a tracking artifact or false positive detection.

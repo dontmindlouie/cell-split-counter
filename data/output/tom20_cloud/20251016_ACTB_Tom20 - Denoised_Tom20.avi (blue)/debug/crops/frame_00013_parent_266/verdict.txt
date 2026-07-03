@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      No clear division event is observed. The sequence shows the same field of cells with minor positional and intensity fluctuations typical of focus drift or cell movement, but no single cell rounds up, elongates, or visibly separates into two persistent daughter cells. The apparent 'split' likely reflects z-plane focus drift or tracking artifact rather than a genuine mitotic division.

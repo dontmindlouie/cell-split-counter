@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center displays a persistent multi-lobed or clustered morphology across all frames without clear separation into two distinct daughter cells. The structure remains stationary and maintains the same overall shape and intensity throughout, consistent with z-plane focus drift or shape-change flickering rather than a genuine cytokinesis event.

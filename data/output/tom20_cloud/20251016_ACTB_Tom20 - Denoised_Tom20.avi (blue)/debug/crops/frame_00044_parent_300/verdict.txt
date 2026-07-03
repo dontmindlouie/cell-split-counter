@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The center region shows a cell that appears to transiently elongate and briefly manifest as two touching objects across frames 3-5 (after-frames), but the structures remain dim, poorly resolved, and do not clearly separate into two persistent daughter cells with stable morphology. This pattern is consistent with z-plane focus drift or shape-change flickering rather than a genuine mitotic division.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The six frames show no detectable change in cell positions, morphology, or number. All cells maintain stable, rounded morphology throughout the sequence with no evidence of rounding, elongation, cleavage furrow formation, or separation into daughter cells. This appears to be static background noise or a tracking artifact rather than a real division event.

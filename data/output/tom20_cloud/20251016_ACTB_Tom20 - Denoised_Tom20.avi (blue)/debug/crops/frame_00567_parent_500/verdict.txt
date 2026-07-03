@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.92
+notes:      The center cell appears as two touching masks across all frames with no significant morphological change or separation over time. This is consistent with shape-change flickering or a persistent segmentation artifact rather than a genuine division event, as true mitosis would show progressive rounding, elongation, and clear separation of daughter cells.

@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      symmetric: A cell in the center-upper region progressively rounds up and elongates along a cleavage plane between frames 1-2, then clearly separates into two distinct daughter cells by frame 3 that persist and move independently through frames 4-5. The daughters appear approximately equal in size, consistent with symmetric mitotic division.

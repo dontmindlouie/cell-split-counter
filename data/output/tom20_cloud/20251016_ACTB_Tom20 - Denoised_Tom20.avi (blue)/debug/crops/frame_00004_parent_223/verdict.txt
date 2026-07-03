@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The sequence shows multiple distinct cells with stable positions and morphologies throughout all frames. There is no evidence of a single cell rounding up, elongating along a cleavage plane, or transitioning into two daughter cells. The cell positions and number remain consistent, suggesting this is a tracking artifact or ID swap rather than a genuine division event.

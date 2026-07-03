@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell maintains a consistent three-lobed or clustered morphology across all five frames with no clear progression toward cytokinesis. The shape remains unchanged before and after the candidate split point, suggesting this represents a single cell with an irregular or multi-lobed morphology rather than an active division event. No rounding, elongation along a cleavage plane, or separation of distinct daughter cells is observed.

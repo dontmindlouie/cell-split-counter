@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central object appears as a small, dim, and fragmented structure across all frames that never exhibits the characteristic morphology of a real cell division. No clear rounding, elongation, or formation of two persistent, distinct daughter cells is observed; instead, the object remains extremely small and diffuse, consistent with z-plane focus drift or transient segmentation artifacts rather than cytokinesis.

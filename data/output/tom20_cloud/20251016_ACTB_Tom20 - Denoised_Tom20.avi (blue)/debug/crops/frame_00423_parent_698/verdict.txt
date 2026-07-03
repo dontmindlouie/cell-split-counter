@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell cluster appears relatively static across all frames with no clear evidence of rounding, elongation, or cytokinesis. The apparent 'two-cell' appearance in the central region is consistent across frames without progressive separation, suggesting this is either shape-change flickering or a focus-plane artifact rather than active cell division.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The upper cell shows shape-change flickering characteristic of a false positive. The two bright punctate structures in the upper region persist unchanged across all frames, remaining separated and dim. There is no evidence of cell rounding, elongation along a cleavage plane, or progressive cytokinesis. The apparent separation is consistent with z-plane focus drift or mask segmentation artifacts rather than a genuine mitotic division with distinct, persistent daughter cells.

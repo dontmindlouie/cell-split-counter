@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center shows progressive fragmentation and loss of cohesion across frames, appearing as increasingly dispersed bright puncta rather than two distinct, persistent daughter cells with intact membranes. This pattern is consistent with cell death or z-plane focus drift causing a single cell to appear fragmented, rather than genuine cytokinesis producing viable daughters.

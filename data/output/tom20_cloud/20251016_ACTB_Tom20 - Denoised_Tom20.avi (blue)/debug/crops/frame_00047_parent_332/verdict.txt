@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the upper right region appears to maintain a similar two-lobed or dumbbell morphology across all frames, consistent with shape-change flickering or z-plane focus effects rather than a genuine cell division. No clear separation, migration, or establishment of two distinct daughter cells is observed; the touching lobes remain in proximity without persistent independent motion or growth patterns characteristic of real mitosis.

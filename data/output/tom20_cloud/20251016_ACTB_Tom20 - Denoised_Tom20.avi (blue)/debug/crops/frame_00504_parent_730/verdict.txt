@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits fragmented or irregular morphology across all frames, with no clear rounding, elongation, or progression toward distinct daughter cells. The irregular appearance is consistent with z-plane focus drift or segmentation noise rather than genuine cytokinesis, and the cell does not resolve into two persistent, well-defined daughter cells in the post-split frames.

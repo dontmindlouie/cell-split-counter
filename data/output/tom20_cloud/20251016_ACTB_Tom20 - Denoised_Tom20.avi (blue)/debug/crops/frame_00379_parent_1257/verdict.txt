@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.92
+notes:      The central structure appears to be fragmented or debris rather than a genuine cell division. The object maintains an irregular, scattered morphology throughout the sequence without the characteristic rounding, elongation, and formation of two distinct, persistent daughter cells expected in real mitosis. Additionally, the structure decreases in brightness and coherence across frames, consistent with z-plane focus drift or image artifact rather than cytokinesis.

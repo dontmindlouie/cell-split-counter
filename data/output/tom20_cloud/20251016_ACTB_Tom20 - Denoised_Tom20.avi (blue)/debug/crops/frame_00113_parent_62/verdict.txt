@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.92
+notes:      symmetric: A cell in the center undergoes cytokinesis, progressing from a compact form in frames 1-2, through elongation and cleavage furrow formation in frame 3, to complete separation into two distinct daughter cells of approximately equal size by frames 4-5. The daughters remain well-separated and maintain consistent morphology through the final frame.

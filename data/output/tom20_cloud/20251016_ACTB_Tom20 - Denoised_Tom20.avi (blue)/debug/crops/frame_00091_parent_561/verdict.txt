@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits fragmentation into multiple small, disconnected bright spots rather than forming two distinct, persistent daughter cells with clear membranes. This pattern is consistent with z-plane focus drift or image artifact causing a single cell to appear as multiple separated blobs, rather than a genuine cytokinetic division with two coherent daughter cells.

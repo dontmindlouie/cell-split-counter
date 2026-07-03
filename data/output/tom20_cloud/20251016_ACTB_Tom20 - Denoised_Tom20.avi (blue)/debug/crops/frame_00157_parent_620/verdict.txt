@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No observable cell division event occurs in this sequence. All cells maintain stable morphologies and positions across all frames, with no evidence of rounding, elongation, cleavage plane formation, or separation into daughter cells. This appears to be a static field showing no dynamic changes consistent with mitosis.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell at the center remains as a doublet throughout all frames with no significant morphological changes or separation. There is no visible rounding, elongation along a cleavage plane, or progressive separation into two distinct daughter cells—the appearance is consistent across frames, indicating this is likely a persistent doublet or imaging artifact rather than an active division event.

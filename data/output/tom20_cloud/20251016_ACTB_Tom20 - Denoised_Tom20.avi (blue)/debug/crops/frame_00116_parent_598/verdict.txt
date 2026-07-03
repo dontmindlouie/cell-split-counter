@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell cluster shows slight morphological changes across frames, appearing to shift and reorient rather than undergo true cytokinesis. The structure remains connected throughout all frames with no clear separation into two distinct, persistent daughter cells. This appears to be shape-change flickering or z-plane drift causing temporary appearance of multiple lobes within a single cell rather than a genuine division event.

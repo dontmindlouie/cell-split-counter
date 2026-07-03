@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the upper-left region shows progressive fragmentation and degradation across frames rather than a clean mitotic division. The appearance of multiple small pieces in the later frames is consistent with cell death or apoptosis, not cytokinesis producing two viable daughter cells. No two persistent, rounded daughter cells are observed.

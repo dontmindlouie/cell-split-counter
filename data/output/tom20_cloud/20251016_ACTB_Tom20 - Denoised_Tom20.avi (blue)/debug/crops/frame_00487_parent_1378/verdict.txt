@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell shows subtle morphological changes across frames but remains as a single, continuous object throughout the sequence. There is no clear separation into two distinct daughter cells, no rounding-up phase, and no elongation along a cleavage plane. The appearance of slight shape variation is consistent with normal cell movement or focus drift rather than a genuine division event.

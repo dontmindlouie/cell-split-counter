@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The central cell maintains a consistent morphology throughout all frames with no visible rounding, elongation, or separation into distinct daughter cells. The grainy, multi-lobed appearance is consistent with z-plane focus drift or image noise rather than an actual cytokinetic event.

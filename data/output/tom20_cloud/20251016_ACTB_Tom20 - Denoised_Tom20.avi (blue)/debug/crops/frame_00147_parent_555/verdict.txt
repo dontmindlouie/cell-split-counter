@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The frames show no clear evidence of a cell division event. The cell in the center region remains relatively stable in position and morphology throughout the sequence, with only minor intensity fluctuations consistent with focus drift or imaging noise rather than active cytokinesis. No rounding, elongation, cleavage furrow formation, or separation into two distinct persistent daughter cells is observed.

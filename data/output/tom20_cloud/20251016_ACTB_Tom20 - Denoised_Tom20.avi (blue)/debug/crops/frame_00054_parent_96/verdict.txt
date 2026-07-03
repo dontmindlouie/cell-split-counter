@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The candidate event shows a cell that progressively fragments or disintegrates into increasingly smaller, disconnected fragments rather than undergoing organized cell division. This fragmentation pattern is inconsistent with real mitosis, where daughter cells remain cohesive and persistent; instead, it suggests z-plane focus drift, debris, or cell death rather than a true division event.

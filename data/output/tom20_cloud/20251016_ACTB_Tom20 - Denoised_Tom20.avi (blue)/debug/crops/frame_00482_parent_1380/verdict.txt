@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell maintains a consistent two-lobed or dumbbell morphology throughout all frames with no clear progression toward separation into two distinct daughter cells. The shape appears to be a stable feature of this cell rather than evidence of active cytokinesis, suggesting either shape-change flickering or a naturally elongated cell morphology rather than a genuine division event.

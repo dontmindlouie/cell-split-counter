@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell configuration remains essentially static across all five frames with no progressive rounding, elongation, or cleavage furrow formation visible. The two apparent daughter cells in the center-right region are already present in the before-frames and maintain constant morphology and positioning throughout, indicating this is a tracking artifact or pre-existing cell pair rather than a genuine division event.

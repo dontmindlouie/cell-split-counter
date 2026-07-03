@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center region appears slightly elongated across the frames but shows no clear rounding, distinct cleavage furrow formation, or separation into two persistent daughter cells. The morphology remains largely constant with minimal shape change, consistent with normal cell shape variation or z-plane focus drift rather than a genuine mitotic division.

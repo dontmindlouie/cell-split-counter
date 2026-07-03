@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell population remains static across all frames with no morphological changes, rounding, elongation, or separation of any parent cell into distinct daughters. The apparent distribution of cells is identical across frames, consistent with focus drift or tracking artifact rather than a real division event.

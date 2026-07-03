@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell shows morphological changes and fragmentation across frames, but the pattern is inconsistent with a clean cell division. Rather than rounding up and dividing symmetrically, the object progressively fragments into multiple small pieces with irregular morphology, suggesting z-plane focus drift, blebbing, or cell death rather than a real mitotic division. The daughter objects lack the persistent, round nuclear morphology expected from viable daughter cells.

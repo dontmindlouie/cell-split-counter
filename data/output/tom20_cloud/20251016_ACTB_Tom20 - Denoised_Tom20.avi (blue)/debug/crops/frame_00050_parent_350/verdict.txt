@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center maintains a consistent two-lobed or dumbbell morphology throughout all frames with no evidence of rounding, elongation, or separation into persistent daughter cells. The appearance is static and characteristic of shape-change flickering or a cell in a fixed morphological state rather than an active division event.

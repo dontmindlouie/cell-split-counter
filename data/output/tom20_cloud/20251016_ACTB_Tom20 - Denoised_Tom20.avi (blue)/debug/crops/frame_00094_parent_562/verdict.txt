@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central region shows what appears to be z-plane focus drift or flickering rather than a true cell division. The structure in the center transitions between appearing as a single elongated form and two nearby small blobs, but lacks the characteristic morphology of cytokinesis: no clear rounding/elongation cycle, no persistent separation of two distinct daughter cells with normal morphology, and the fragments remain very small and dim throughout. This is consistent with transient blurring or focus drift artifact rather than genuine mitosis.

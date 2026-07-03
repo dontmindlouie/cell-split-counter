@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell on the right (track 1081) appears as two touching lobes throughout the sequence, but there is no clear progression toward cytokinesis. The morphology remains static across all frames—the cell maintains its characteristic dumbbell or bilobed appearance without rounding, elongation along a cleavage plane, or separation into distinct daughter cells. This is consistent with z-plane focus drift or intrinsic cell shape rather than an active division event.

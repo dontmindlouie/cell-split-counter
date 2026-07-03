@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits morphological changes consistent with focus drift or z-plane blur rather than genuine cytokinesis. Across all frames, the cell appears as a single, contiguous structure with variable texture (grainy/speckled appearance), but no clear elongation along a cleavage plane, no persistent daughter cells with distinct membranes, and no transition from rounded to two separate entities. The appearance remains qualitatively similar throughout, suggesting imaging artifact rather than cell division.

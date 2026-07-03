@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central structure appears as a single bright spot in frames 1-2, then briefly separates into two small fragments in frames 3-5. However, the fragments remain dim, poorly defined, and do not develop into persistent, rounded daughter cells with clear nuclear morphology. This pattern is consistent with z-plane focus drift or segmentation flickering rather than a genuine mitotic division.

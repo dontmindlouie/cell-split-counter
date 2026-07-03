@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The object exhibits progressive fragmentation and signal loss rather than clean cytokinesis. In the before-frames, two distinct rounded masses are visible with good signal intensity. Post-split frames show increasing fragmentation into scattered, smaller punctate structures with diminishing total fluorescence intensity, consistent with z-plane focus drift or image degradation rather than a genuine mitotic division producing two viable daughter cells.

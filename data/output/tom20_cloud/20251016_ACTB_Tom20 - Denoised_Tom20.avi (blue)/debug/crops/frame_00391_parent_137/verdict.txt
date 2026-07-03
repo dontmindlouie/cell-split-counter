@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The center cell appears as two touching masks in frames 2-5 but does not demonstrate the characteristic rounding, elongation, and persistent separation expected of a real division. The two objects remain very small, tightly paired, and show minimal growth or morphological change consistent with newly divided daughter cells. This pattern is consistent with z-plane focus drift or shape-change flickering rather than a genuine mitotic event.

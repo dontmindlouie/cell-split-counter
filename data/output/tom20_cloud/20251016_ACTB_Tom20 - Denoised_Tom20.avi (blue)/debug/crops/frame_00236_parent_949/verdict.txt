@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the upper center region shows shape fluctuation and apparent fragmentation across frames, but no clear formation of two distinct, persistent daughter cells. The appearance of multiple small bright spots around the parent mass is consistent with z-plane focus drift or transient blebbing rather than cytokinesis, as the fragments do not develop into stable, separate cells with maintained morphology.

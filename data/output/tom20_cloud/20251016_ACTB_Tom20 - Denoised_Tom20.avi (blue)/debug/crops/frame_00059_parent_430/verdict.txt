@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center region appears fragmented across multiple frames, but this is consistent with z-plane focus drift or imaging artifact rather than a true cytokinetic division. No clear rounding, elongation, or persistent separation into two distinct daughter cells is observed; instead, the signal appears to blur and fragment without coherent morphological progression of a mitotic event.

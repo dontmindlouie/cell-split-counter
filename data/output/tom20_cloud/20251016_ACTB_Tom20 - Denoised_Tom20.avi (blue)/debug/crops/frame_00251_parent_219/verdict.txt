@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central region shows fragmented, low-intensity debris or z-plane focus artifacts rather than a genuine cell division. The fragments appear as poorly-defined, discontinuous structures that persist but do not demonstrate the characteristic morphology of daughter cells (rounded, well-defined boundaries, and size consistency). This is consistent with z-plane drift blurring or segmentation noise rather than a real mitotic division.

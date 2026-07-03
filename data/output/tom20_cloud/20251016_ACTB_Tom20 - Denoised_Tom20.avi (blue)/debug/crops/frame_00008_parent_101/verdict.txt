@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      symmetric: A cell in the center-left region progressively rounds up and elongates vertically between frames 1-2 and frames 3-5, then clearly splits into two distinct daughter cells of approximately equal size arranged vertically. The daughters remain persistent and well-separated in the final frames, consistent with a completed mitotic division.

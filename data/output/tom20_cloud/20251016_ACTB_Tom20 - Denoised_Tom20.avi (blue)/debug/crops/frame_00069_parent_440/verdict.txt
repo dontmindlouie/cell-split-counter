@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center-right region appears to separate into two touching blobs across the transition, but this is consistent with shape-change flickering or z-plane focus drift rather than a genuine division. The two apparent 'daughters' do not maintain persistent, distinct morphologies in subsequent frames—they appear to merge or shift as a single entity, and there is no clear rounding, elongation along a cleavage plane, or stable separation characteristic of a real mitotic event.

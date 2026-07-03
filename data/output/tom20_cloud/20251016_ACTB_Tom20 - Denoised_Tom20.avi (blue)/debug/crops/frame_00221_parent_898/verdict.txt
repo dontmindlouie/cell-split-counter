@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central region shows a bright cell adjacent to a diffuse dark area that appears and persists throughout the sequence, but there is no clear morphological progression of cell rounding, elongation, or formation of two distinct daughter cells. The dark patch likely represents z-plane focus drift or debris rather than a genuine cell division event.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The central object shows only sparse, fragmented debris-like signals across all frames with no clear cell morphology, rounding, elongation, or formation of two distinct daughter cells. This appears to be z-plane focus drift, image noise, or cellular debris rather than a genuine division event.

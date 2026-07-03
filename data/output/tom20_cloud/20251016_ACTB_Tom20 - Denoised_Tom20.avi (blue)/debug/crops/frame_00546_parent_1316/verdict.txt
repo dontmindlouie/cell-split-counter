@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      No clear division event is observable. The cell of interest (upper right region) shows gradual changes in morphology and intensity across frames, consistent with focus drift or z-plane motion rather than cytokinesis. No distinct daughter cells with persistent separation are visible; the apparent changes appear to be artifacts of the imaging modality rather than a genuine cell division event.

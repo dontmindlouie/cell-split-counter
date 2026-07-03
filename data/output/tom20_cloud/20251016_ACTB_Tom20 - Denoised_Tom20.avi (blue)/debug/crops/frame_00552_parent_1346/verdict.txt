@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits consistent morphology across all frames with internal segmentation that appears stable and unchanging, characteristic of a single cell with segmented nuclei or chromosomal structure rather than cytokinesis. No progressive rounding, elongation, cleavage furrow formation, or separation into distinct daughter cells is observed—the appearance remains static throughout, suggesting this is a z-plane focus artifact or internal cellular structure rather than an active division event.

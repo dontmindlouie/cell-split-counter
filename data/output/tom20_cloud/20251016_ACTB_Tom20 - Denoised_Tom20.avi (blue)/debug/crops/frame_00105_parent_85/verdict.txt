@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      symmetric: A small cell in the center-left region progressively rounds up and elongates along a vertical cleavage plane between frames 1-3 (before split), then clearly separates into two distinct daughter cells of approximately equal size in frames 4-6 (after split). The daughters maintain persistent separation and gradually move apart, consistent with a genuine cytokinetic division.

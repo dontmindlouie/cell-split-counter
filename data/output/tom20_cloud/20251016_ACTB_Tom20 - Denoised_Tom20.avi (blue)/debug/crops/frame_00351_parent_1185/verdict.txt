@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The sequence shows no clear cell division event. The cell at the center-left remains relatively static throughout all frames with minor morphological fluctuations consistent with shape-change flickering or z-plane drift. The two cells on the right appear to be separate, persistent structures that do not show evidence of arising from a single parent cell, and there is no visible rounding-up, elongation along a cleavage plane, or emergence of two new daughter cells from a previously single entity.

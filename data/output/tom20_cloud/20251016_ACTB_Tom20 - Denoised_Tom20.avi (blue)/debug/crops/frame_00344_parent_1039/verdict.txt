@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell population shows no clear division event. The central cell (track 1039) remains relatively stable in position and morphology across all frames, appearing slightly elongated but not undergoing the characteristic rounding, cytokinetic furrow formation, or separation into two distinct daughter cells. The apparent blur in the upper-center region is consistent with z-plane focus drift rather than active cytokinesis.

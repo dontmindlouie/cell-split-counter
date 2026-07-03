@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.92
+notes:      The elongated cell visible in the center of the frames maintains a consistent elongated morphology across all time points with no evidence of cytokinesis or formation of distinct daughter cells. This appears to be a single cell undergoing shape-change flickering or z-plane focus artifacts that create a transiently stretched appearance, rather than a genuine mitotic division event.

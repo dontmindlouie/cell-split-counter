@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central object in frames 1-2 appears as a single compact mass with faint internal structure, then fragments into two small, dim, poorly-defined particles in frames 3-6 that do not exhibit the characteristic morphology or persistence of genuine daughter cells. This pattern is consistent with z-plane focus drift or segmentation artifact rather than a bona fide cell division, as real daughters typically round up and maintain clear, persistent nuclear signals.

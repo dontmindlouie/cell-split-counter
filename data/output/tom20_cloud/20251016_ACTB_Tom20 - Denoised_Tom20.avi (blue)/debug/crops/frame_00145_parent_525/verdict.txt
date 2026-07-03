@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits persistent morphological features across all frames with no clear separation into two distinct daughter cells. The irregular, bumpy appearance remains consistent throughout the sequence, suggesting shape-change flickering or z-plane focus drift rather than a genuine cell division event.

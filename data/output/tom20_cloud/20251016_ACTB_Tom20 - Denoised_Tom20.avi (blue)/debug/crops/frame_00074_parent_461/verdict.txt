@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central region shows a small bright structure that appears and persists across frames, but it remains extremely dim and does not exhibit the characteristic morphological changes of a real cell division. The structure does not round up, elongate along a cleavage plane, or resolve into two distinct, persistent daughter cells with proper size and intensity. This appears to be z-plane focus drift or image noise artifacts rather than a genuine cytokinesis event.

@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.92
+notes:      symmetric: A cell in the center of the field undergoes cytokinesis, progressing from a single compact mass (frames 1–2) through an elongated intermediate state (frame 3) to two distinct, well-separated daughter cells of approximately equal size (frames 4–5). The daughters remain persistent and stable in subsequent frames, consistent with a genuine symmetric mitotic division.

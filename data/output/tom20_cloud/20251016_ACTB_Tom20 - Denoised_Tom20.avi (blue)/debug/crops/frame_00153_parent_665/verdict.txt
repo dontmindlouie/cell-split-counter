@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The two cells in the upper-left region remain visually distinct and essentially unchanged across all five frames, with no evidence of rounding, elongation, or cleavage plane formation. This appears to be a tracking ID swap or reassignment rather than an actual cell division event.

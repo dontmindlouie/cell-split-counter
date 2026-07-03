@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The central cell shows no significant morphological changes across the sequence—it remains roughly round and uniform in appearance throughout all frames, with no evidence of rounding, elongation, or cleavage plane formation. The apparent 'split' appears to be a tracking artifact or stationary cell morphology variation, not a genuine cytokinesis event.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits a consistent multi-lobed or clustered morphology across all frames with no clear progression toward separation into two distinct daughter cells. The shape remains relatively static and appears to be a single cell with an irregular, branched appearance rather than undergoing cytokinesis or cell rounding followed by elongation and separation.

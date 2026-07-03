@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell cluster shows no clear morphological progression consistent with mitosis. The cell in the center maintains a similar irregular, multi-lobed shape across all frames without evidence of rounding, elongation along a cleavage plane, or separation into two distinct daughter cells. This appears to be shape-change flickering or a z-plane focus artifact rather than a genuine cell division event.

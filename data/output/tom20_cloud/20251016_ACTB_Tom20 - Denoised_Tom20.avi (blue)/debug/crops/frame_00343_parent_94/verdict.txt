@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell shows minor shape fluctuation and slight intensity variation across frames, but no clear cytokinesis, cleavage furrow, or persistent separation into two distinct daughter cells. The apparent morphological changes are consistent with z-plane focus drift or shape-change flickering rather than a genuine mitotic division.

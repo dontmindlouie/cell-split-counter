@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      asymmetric: A cell undergoing cytokinesis is visible, progressing from a compact rounded form in the before-frames to an elongated, dumbbell-shaped structure with a clear cleavage furrow in frames 3–5. Two distinct daughter cells emerge with visibly different sizes, the left daughter being notably smaller than the right, consistent with asymmetric division. The daughters remain in close proximity immediately post-split, which is typical of early cytokinesis.

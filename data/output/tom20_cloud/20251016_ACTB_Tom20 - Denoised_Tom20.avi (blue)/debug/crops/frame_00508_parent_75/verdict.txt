@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits fragmented, dispersed morphology across all frames with no clear evidence of cytokinesis or formation of two persistent daughter cells. The irregular, scattered appearance is consistent with z-plane focus drift or image artifact rather than a genuine cell division event.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No significant morphological change or division event is observed across the five frames. The cells maintain their consistent shapes and positions throughout the sequence, with no evidence of rounding, elongation, cleavage, or separation into distinct daughter cells. This appears to be a tracking artifact or ID swap rather than an actual cell division.

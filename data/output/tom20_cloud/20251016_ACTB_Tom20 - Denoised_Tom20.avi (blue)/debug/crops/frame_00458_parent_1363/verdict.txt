@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The sequence shows two touching cells that remain in the same configuration across all frames with no evidence of morphological progression toward or away from division. The appearance is consistent with shape-change flickering or a stable multi-cell contact rather than a dynamic mitotic event, as there is no rounding, elongation, or cleavage furrow formation visible.

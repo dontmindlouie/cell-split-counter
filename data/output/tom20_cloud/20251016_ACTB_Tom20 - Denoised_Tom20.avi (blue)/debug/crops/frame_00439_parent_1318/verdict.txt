@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.92
+notes:      No cell division event is observed across the sequence. All cells maintain their positions and morphologies consistently throughout the frames. The small cell on the left side of the image shows minor shape fluctuations typical of z-plane focus drift or natural morphological variation, but no rounding, elongation, cleavage plane formation, or persistent separation into two daughter cells occurs. This is consistent with shape-change flickering rather than a real division event.

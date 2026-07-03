@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No clear division event is visible across the five frames. The cell populations remain stable with consistent morphology and positioning throughout the sequence. There is no evidence of rounding, elongation, cleavage plane formation, or the emergence of two distinct daughter cells that would characterize a real mitotic division.

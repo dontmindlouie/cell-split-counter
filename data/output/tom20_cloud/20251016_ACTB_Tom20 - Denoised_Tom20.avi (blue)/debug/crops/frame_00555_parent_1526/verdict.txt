@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No division event is observed across the five frames. The cell configurations remain static with four distinct cells visible throughout the sequence (top, center-left, center-right, and bottom positions). There is no evidence of rounding, elongation, cleavage plane formation, or the appearance of new daughter cells that would indicate a real mitotic division.

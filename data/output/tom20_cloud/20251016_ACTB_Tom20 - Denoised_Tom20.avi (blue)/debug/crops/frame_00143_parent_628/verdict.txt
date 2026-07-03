@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No observable division event occurs across the five frames. All cells maintain consistent morphology and position throughout the sequence, with no evidence of rounding, elongation, cleavage plane formation, or separation into distinct daughter cells. The appearance is consistent with static or slowly drifting cells without mitotic activity.

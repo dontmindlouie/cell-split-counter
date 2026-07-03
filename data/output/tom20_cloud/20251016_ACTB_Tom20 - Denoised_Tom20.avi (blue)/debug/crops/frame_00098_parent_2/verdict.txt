@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The candidate region in the upper-center area shows fragmentation and appearance of small, elongated structures that persist across multiple frames. However, these fragments do not consolidate into two distinct, round daughter cells with persistent morphology; instead, they remain small and irregular, consistent with z-plane focus drift or image artifacts rather than a genuine mitotic division.

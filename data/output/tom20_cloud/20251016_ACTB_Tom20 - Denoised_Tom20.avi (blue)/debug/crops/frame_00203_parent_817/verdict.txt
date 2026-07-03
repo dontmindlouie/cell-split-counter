@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No cell division event is observed across the five frames. The cell in the center (track 817) maintains a consistent, single morphology throughout—it appears slightly elongated and irregular in shape, but never rounds up, cleaves, or separates into two distinct daughter cells. The apparent morphological variations are minimal and consistent with shape-change flickering or focus drift rather than genuine cytokinesis.

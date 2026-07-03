@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center remains in a relatively stable, slightly elongated morphology across all frames with no clear progression toward distinct daughter cells. The apparent separation visible in some frames appears to be z-plane focus drift or morphological flickering of a single cell rather than a persistent cytokinesis event. No clear rounding, elongation along a cleavage plane, or formation of two distinct persistent daughters is observed.

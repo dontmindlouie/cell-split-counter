@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits subtle shape changes and slight positional drift across frames, but never clearly separates into two distinct, persistent daughter cells with independent motion or identity. The appearance of potential 'two-ness' is consistent with z-plane focus drift or flickering rather than a genuine cytokinetic division event.

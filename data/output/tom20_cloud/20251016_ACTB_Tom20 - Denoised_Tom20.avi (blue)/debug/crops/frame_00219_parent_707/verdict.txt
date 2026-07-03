@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No cell division event is observed across the sequence. All cells maintain stable, individual morphologies throughout the frames with no evidence of rounding, elongation, cytokinesis, or separation into daughter cells. The cell population appears static, suggesting this is a false positive detection.

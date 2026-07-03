@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The object in the center undergoes morphological changes consistent with z-plane focus drift or shape-change flickering rather than true cytokinesis. The structure appears fragmented and irregular across frames, with varying intensity and morphology that suggests imaging artifacts (focus blur or plane shift) rather than organized mitotic progression. No clear daughter cells with persistent, distinct morphologies are observed.

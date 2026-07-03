@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center shows morphological changes consistent with shape-change flickering rather than genuine division. Across all frames, the cell appears as an elongated, sometimes fragmented shape with variable intensity, but no two persistent, distinct daughter cells with separated nuclei emerge. The appearance of potential splitting is transient and the cell does not resolve into two clearly separated entities with stable boundaries.

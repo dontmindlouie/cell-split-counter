@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.92
+notes:      The central cell structure appears as two touching lobes throughout all frames with no significant morphological change or separation. This is consistent with z-plane focus drift or shape-change flickering rather than a genuine cytokinetic division, as the two lobes remain in close contact without increasing separation distance or developing distinct daughter cell characteristics across the time series.

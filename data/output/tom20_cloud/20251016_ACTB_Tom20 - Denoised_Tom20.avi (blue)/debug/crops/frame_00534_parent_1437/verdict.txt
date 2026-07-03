@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The image sequence shows two separate, distinct cells throughout all frames with no evidence of division. The left cell (appearing as a two-lobed or slightly irregular shape) and the right cell remain consistently separated and do not show the characteristic rounding, elongation, and cytokinetic cleavage expected of a real division event. This appears to be either a tracking artifact or misidentification of two pre-existing cells as a split event.

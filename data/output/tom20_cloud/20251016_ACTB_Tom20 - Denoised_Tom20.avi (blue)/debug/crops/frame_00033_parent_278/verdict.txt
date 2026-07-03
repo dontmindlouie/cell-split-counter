@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The object in the center appears as an elongated, rod-like structure in frames 1–2 (before split), then shows two small bright spots in frames 3–5 (after split). However, the morphology is inconsistent with normal cell division: the pre-split structure is extremely thin and elongated (more like debris or an artifact), and the post-split objects remain very small and faint without the expected nuclear material or cytoplasm characteristic of daughter cells. This is most consistent with z-plane focus drift or image noise rather than a genuine mitotic event.

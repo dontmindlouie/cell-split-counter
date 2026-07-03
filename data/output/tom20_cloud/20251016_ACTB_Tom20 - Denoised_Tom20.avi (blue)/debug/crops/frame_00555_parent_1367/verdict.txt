@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the upper right region shows persistent shape changes and protrusions across frames, but no clear cytokinetic division into two distinct daughter cells. The morphological variations appear consistent with z-plane focus drift and shape-change flickering rather than a genuine mitotic split, as the cell never cleanly separates into two independent, persistent structures.

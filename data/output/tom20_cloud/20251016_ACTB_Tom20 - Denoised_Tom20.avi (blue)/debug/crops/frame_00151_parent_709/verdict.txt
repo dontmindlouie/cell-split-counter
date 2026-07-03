@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The candidate object shows progressive fragmentation and degradation rather than a clean cytokinetic division. The structure appears as dispersed, dim fragments that persist across frames without clear rounding, elongation, or formation of two distinct, viable daughter cells with persistent morphology characteristic of real mitosis.

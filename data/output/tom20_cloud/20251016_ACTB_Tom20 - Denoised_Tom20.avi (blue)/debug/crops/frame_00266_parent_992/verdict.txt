@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central structure shows fragmented, irregular morphology that persists across frames without clear evidence of two distinct daughter cells. The appearance is consistent with z-plane focus drift or segmentation artifacts rather than a genuine cytokinetic division, as the fragments remain poorly defined and do not develop into well-demarcated, persistent daughter cells.

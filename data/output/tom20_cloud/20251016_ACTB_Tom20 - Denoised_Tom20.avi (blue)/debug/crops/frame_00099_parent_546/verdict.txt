@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell exhibits morphological flickering between frames, appearing to transition from a rounded to an irregularly lobed shape and back. However, no clear separation into two distinct, persistent daughter cells is observed—the cell remains as a single connected structure throughout all frames, consistent with shape-change artifacts rather than a genuine cytokinetic division.

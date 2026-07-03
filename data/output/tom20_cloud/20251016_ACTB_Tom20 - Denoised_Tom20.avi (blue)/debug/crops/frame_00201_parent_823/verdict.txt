@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The central cell cluster maintains a consistent multi-lobed morphology across all six frames with no evidence of progressive rounding, elongation, or separation into distinct daughter cells. The appearance of multiple bumps or lobes is consistent with flickering segmentation or z-plane focus artifacts rather than genuine cytokinesis.

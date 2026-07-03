@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The candidate region on the right side of the image shows small cellular fragments or debris that appear and persist across frames, but these are not characteristic of a genuine cell division. There is no evidence of a single cell rounding up, elongating along a cleavage plane, or producing two distinct daughter cells with sustained growth. The appearance is consistent with z-plane focus drift or tracking artifacts rather than genuine mitosis.

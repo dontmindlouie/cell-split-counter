@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No observable change in cell morphology or position across all frames. The cells maintain consistent shapes and positions throughout the sequence, with no evidence of rounding, elongation, cleavage plane formation, or separation of daughter cells expected in a real division event.

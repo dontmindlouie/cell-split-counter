@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center region (track 1035) exhibits shape fluctuation and slight morphological changes across frames, appearing transiently elongated but never clearly resolving into two distinct, persistent daughter cells. The apparent elongation is consistent with z-plane focus drift or shape-change flickering rather than genuine cytokinesis, as no clear separation or progression toward two independent cells is observed.

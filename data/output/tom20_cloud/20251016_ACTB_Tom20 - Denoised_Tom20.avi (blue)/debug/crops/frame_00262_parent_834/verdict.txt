@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center-left region appears slightly elongated in frames before the split, but there is no clear rounding, distinct cleavage plane formation, or persistent separation of two daughter cells after the candidate split point. The apparent morphological changes are subtle and consistent with shape-change flickering or z-plane focus drift rather than a genuine cytokinesis event.

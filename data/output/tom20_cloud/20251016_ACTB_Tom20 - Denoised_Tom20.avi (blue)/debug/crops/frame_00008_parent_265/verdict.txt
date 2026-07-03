@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central object shows progressive fragmentation into small, dim debris-like particles that remain scattered and fail to coalesce into two distinct, persistent daughter cells. This pattern is consistent with z-plane focus drift or debris artifact rather than a genuine cell division, which would show rounded daughter cells that persist and maintain clear boundaries.

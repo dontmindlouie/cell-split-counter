@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No significant morphological changes are observed across the five frames. All cells maintain stable, rounded or slightly elongated shapes with no evidence of cell rounding, elongation along a cleavage plane, or the appearance of two distinct daughter cells. The apparent stability suggests this is likely a tracking artifact or ID swap rather than a genuine cell division event.

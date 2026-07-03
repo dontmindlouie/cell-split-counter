@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The central cell shows no significant morphological change across all frames—it remains rounded and intact throughout the sequence. There is no visible elongation, rounding-up, cleavage plane formation, or separation into two distinct daughter cells. The appearance of potential fragmentation in the center is consistent with z-plane focus drift or noise artifacts rather than genuine cytokinesis.

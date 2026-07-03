@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The large irregularly-shaped cell in the upper-left region shows gradual morphological changes and fragmentation across all frames, but no clear cytokinetic division into two persistent daughter cells. The appearance of multiple small fragments and debris suggests cellular blebbing, apoptosis, or z-plane focus drift rather than a clean mitotic division. No two distinct, well-defined daughter cells emerge with sustained separation.

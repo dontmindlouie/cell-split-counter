@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      No clear division event is visible across the five frames. The cell in the center region remains as a single, persistent object with slight morphological fluctuations typical of focus drift or shape-change flickering rather than cytokinesis. No emergence of two distinct, stable daughter cells is observed.

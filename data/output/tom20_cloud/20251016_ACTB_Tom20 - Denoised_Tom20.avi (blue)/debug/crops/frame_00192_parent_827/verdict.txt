@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The central cell maintains a consistently irregular, multi-lobed morphology across all frames with no clear rounding, elongation, or separation into distinct daughter cells. The appearance is consistent with shape-change flickering or a cell in an irregular phase rather than an active cytokinesis event.

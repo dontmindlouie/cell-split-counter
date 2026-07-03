@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center-left region appears as two touching circular masks across frames, but there is no clear evidence of mitotic progression. The two apparent 'daughter' cells remain static in position and morphology across all frames, suggesting this is either a z-plane focus artifact creating the appearance of two distinct objects from a single rounded cell, or persistent shape-change flickering rather than a genuine division event.

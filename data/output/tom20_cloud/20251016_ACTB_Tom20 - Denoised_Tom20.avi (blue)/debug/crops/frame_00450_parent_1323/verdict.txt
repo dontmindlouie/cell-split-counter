@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell in the center-right region shows shape fluctuation and blurring across frames, consistent with z-plane focus drift rather than a true cytokinetic division. No persistent, distinct daughter cells emerge; the structure remains as a single elongated object that varies in appearance due to imaging artifacts.

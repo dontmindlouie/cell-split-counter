@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      symmetric: A cell in the center-left region transitions from a single rounded cell (frames 1-2) to a pair of distinct daughter cells with a clear cleavage plane visible in frames 3-5. The daughters appear approximately equal in size and persist as separate entities, consistent with cytokinesis completion.

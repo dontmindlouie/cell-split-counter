@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      symmetric: A cell in the center of the field transitions from a single rounded object (frames 1-2) to two distinct, well-separated daughter cells of similar size (frames 3-5). The daughters remain persistent and stable across subsequent frames, consistent with a completed cytokinesis event.

@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center maintains a consistent two-lobed or dumbbell morphology across all frames with no progression toward separation into distinct daughter cells. The appearance remains static with no clear cytokinesis, elongation along a cleavage plane, or migration of daughter cells apart, suggesting this is a shape-change flickering artifact or a persistent morphological feature rather than an active division event.

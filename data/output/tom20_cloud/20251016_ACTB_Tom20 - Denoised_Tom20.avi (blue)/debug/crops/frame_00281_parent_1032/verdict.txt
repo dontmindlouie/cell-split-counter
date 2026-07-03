@@ -1,0 +1,3 @@
+verdict:    real
+confidence: 0.85
+notes:      symmetric: A cell in the center of the field transitions from a single, compact object (frames 1-2) to two distinct daughter cells that progressively separate (frames 3-5). The daughters appear approximately equal in size and maintain persistent, well-defined morphology characteristic of a completed mitotic division.

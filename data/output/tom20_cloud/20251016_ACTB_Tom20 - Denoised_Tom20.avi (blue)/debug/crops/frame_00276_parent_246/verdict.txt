@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.95
+notes:      The cell in the center shows minimal morphological change across all five frames, remaining as a single rounded object without evidence of rounding-up, elongation, or cleavage plane formation. The appearance is consistent with shape-change flickering or focus drift rather than a genuine mitotic division, as there is no clear separation into two distinct, persistent daughter cells.

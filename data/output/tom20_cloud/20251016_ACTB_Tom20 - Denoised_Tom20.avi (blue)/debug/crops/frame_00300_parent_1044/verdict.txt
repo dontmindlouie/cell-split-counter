@@ -1,0 +1,3 @@
+verdict:    false_positive
+confidence: 0.85
+notes:      The cell exhibits consistent morphology across all frames with no clear progression toward division. The structure remains in a similar convoluted/lobed state throughout, lacking the characteristic rounding, elongation, and distinct separation typical of real mitotic division. This appears to be shape-change flickering or z-plane focus drift creating apparent segmentation rather than a genuine cell division event.
