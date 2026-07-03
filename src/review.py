@@ -5,6 +5,7 @@ import dataclasses
 import json
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import anthropic
@@ -133,6 +134,7 @@ def review_ambiguous(
     model: str = CLAUDE_MODEL,
     max_reviews: int = 50,
     save_debug_crops: bool = False,
+    max_workers: int = 10,
 ) -> list[LineageEvent]:
     """Three-tier confidence routing for split events.
 
@@ -144,7 +146,9 @@ def review_ambiguous(
       to be confident; pass through unchanged.
 
     max_reviews caps unique split points sent to Claude (daughters share one call).
-    Events beyond the cap pass through unchanged in Tier 2.
+    Events beyond the cap pass through unchanged in Tier 2. Unique split points are
+    reviewed concurrently (max_workers at a time) -- these are network-bound API calls,
+    not local compute, so parallelizing them is safe and doesn't compete with Cellpose/GPU.
     """
     suppressed  = [e for e in events if e.confidence < lower_threshold]
     to_review   = [e for e in events if lower_threshold <= e.confidence < upper_threshold]
@@ -170,29 +174,36 @@ def review_ambiguous(
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    # Cache verdicts per split point (parent_id, frame) so daughters share one API call.
-    split_verdict: dict[tuple[int | None, int], tuple[str, float]] = {}
-    reviewed = []
-
+    # One representative event per unique split point, in order, capped at max_reviews.
+    to_call: dict[tuple[int | None, int], LineageEvent] = {}
     for event in to_review:
         key = (event.parent_id, event.frame)
+        if key not in to_call and len(to_call) < max_reviews:
+            to_call[key] = event
 
-        if key not in split_verdict:
-            if len(split_verdict) >= max_reviews:
-                # Cap reached — pass remaining events through unchanged.
-                reviewed.append(event)
-                continue
+    def _call(key: tuple[int | None, int], event: LineageEvent):
+        try:
+            return key, _review_split(client, event, frame_dir, model, debug_dir=debug_dir)
+        except Exception:
+            return key, ("real", event.confidence, "")
 
-            try:
-                verdict, confidence, notes = _review_split(client, event, frame_dir, model, debug_dir=debug_dir)
-            except Exception:
-                split_verdict[key] = ("real", event.confidence, "")
-                reviewed.append(event)
-                continue
+    split_verdict: dict[tuple[int | None, int], tuple[str, float, str]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_call, key, event) for key, event in to_call.items()]
+        for future in as_completed(futures):
+            key, (verdict, confidence, notes) = future.result()
+            split_verdict[key] = (verdict, confidence, notes)
+            event = to_call[key]
             risk_str = f" bleach={event.bleach_risk:.2f}" if event.bleach_risk is not None else ""
             print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}]{risk_str} {notes}")
-            split_verdict[key] = (verdict, confidence, notes)
 
+    reviewed = []
+    for event in to_review:
+        key = (event.parent_id, event.frame)
+        if key not in split_verdict:
+            # Beyond the max_reviews cap -- pass through unchanged.
+            reviewed.append(event)
+            continue
         verdict, confidence, notes = split_verdict[key]
         reviewed.append(dataclasses.replace(
             event,
@@ -291,6 +302,7 @@ def review_division_type(
     min_confidence: float = 0.5,
     model: str = CLAUDE_MODEL,
     max_reviews: int = 50,
+    max_workers: int = 10,
 ) -> list["LineageEvent"]:
     """Classify division type and chromosomal abnormalities for confirmed high-confidence events.
 
@@ -299,6 +311,8 @@ def review_division_type(
     threshold (including Claude-confirmed FPs at 0.0) pass through unchanged.
 
     Daughters from the same split share one API call. max_reviews caps unique split points.
+    Unique split points are classified concurrently (max_workers at a time) -- see
+    review_ambiguous for why this is safe (network-bound, not local compute).
     """
     to_classify = [e for e in events if e.confidence >= min_confidence]
     passing = [e for e in events if e.confidence < min_confidence]
@@ -312,24 +326,28 @@ def review_division_type(
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    split_result: dict[tuple[int | None, int], dict] = {}
-    classified = []
-
+    to_call: dict[tuple[int | None, int], LineageEvent] = {}
     for event in to_classify:
         key = (event.parent_id, event.frame)
+        if key not in to_call and len(to_call) < max_reviews:
+            to_call[key] = event
 
-        if key not in split_result:
-            if len(split_result) >= max_reviews:
-                classified.append(event)
-                continue
+    def _call(key: tuple[int | None, int], event: LineageEvent):
+        try:
+            return key, _classify_division(client, event, frame_dir, model), None
+        except Exception as exc:
+            return key, None, exc
 
-            try:
-                result = _classify_division(client, event, frame_dir, model)
-            except Exception as exc:
+    split_result: dict[tuple[int | None, int], dict] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_call, key, event) for key, event in to_call.items()]
+        for future in as_completed(futures):
+            key, result, exc = future.result()
+            event = to_call[key]
+            if exc is not None:
                 print(f"  [div-classify] frame={event.frame} parent={event.parent_id} ERROR: {exc}")
-                classified.append(event)
                 continue
-
+            split_result[key] = result
             risk_str = f" bleach={event.bleach_risk:.2f}" if event.bleach_risk is not None else ""
             print(
                 f"  [div-classify] frame={event.frame:3d} parent={event.parent_id}{risk_str}"
@@ -338,8 +356,13 @@ def review_division_type(
                 f" bridge={result.get('anaphase_bridge')} mn={result.get('micronucleus')}"
                 f" conf={result.get('confidence'):.2f}"
             )
-            split_result[key] = result
 
+    classified = []
+    for event in to_classify:
+        key = (event.parent_id, event.frame)
+        if key not in split_result:
+            classified.append(event)
+            continue
         r = split_result[key]
         classified.append(dataclasses.replace(
             event,
