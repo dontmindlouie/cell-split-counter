@@ -5,7 +5,8 @@ For each real division event (confidence >= min_conf), writes a folder containin
   - info.txt with all metadata including ACD classification fields
 
 Folder naming: {acd_type}__frame_{pf:05d}_parent_{pid}__conf_{conf}
-ACD type is "unclassified" if --classify-divisions was not run.
+ACD type is "unclassified" if the event predates the combined verify+classify review
+(older events.csv files from before that merge won't have acd_division_type populated).
 
 Daughters from the same split share one folder (deduplicated by parent_id + peak_frame).
 

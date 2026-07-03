@@ -34,7 +34,6 @@ cmd = [
     "--output-dir", str(output_dir),
     "--frame-dir", str(output_dir / "frames"),
     "--debug-crops",
-    "--classify-divisions",
 ]
 if END_FRAME:
     cmd += ["--end-frame", END_FRAME]

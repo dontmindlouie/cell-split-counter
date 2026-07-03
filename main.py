@@ -21,15 +21,17 @@ if __name__ == "__main__":
     parser.add_argument("--end-frame", type=int, default=None, help="last frame index (exclusive); default = all")
     parser.add_argument("--debug-crops", action="store_true", help="save Claude review crops to data/review_crops/")
     parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from data/frames/_memmap/")
-    parser.add_argument("--output-dir", type=Path, default=Path("data/output"), help="directory for events.csv and summary.json (default: data/output)")
+    parser.add_argument("--output-dir", type=Path, default=None, help="directory for events.csv and summary.json (default: data/output/<video filename stem>)")
     parser.add_argument("--frame-dir", type=Path, default=Path("data/frames"), help="directory for extracted frames (default: data/frames)")
     args = parser.parse_args()
+
+    output_dir = args.output_dir or Path("data/output") / args.video_path.stem
 
     config = IngestConfig(video_path=args.video_path, frame_step=args.frame_step, roi=None)
     run(
         config,
         frame_dir=args.frame_dir,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         tracker=args.tracker,
         tracker_mode=args.tracker_mode,
         start_frame=args.start_frame,
