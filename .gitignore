@@ -1,16 +1,13 @@
-data/raw/
-data/frames/
-data/output/
-data/ground_truth/
+# Deny-by-default: everything under data/ is ignored unless explicitly allowed below.
+# This is deliberate -- new pipeline output/cache directories should be private by
+# default, not tracked until someone consciously decides otherwise.
+data/*
+!data/smoke_test.avi
+
 __pycache__/
 *.pyc
 .venv/
 venv/
 .venv-spike/
 .pytest_cache/
-data/cellacdc_input/
-data/*.log
 .env
-data/review_crops/
-data/debug/
-data/packages/
