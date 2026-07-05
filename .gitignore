@@ -12,3 +12,5 @@ data/cellacdc_input/
 data/*.log
 .env
 data/review_crops/
+data/debug/
+data/packages/

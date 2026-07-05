@@ -53,7 +53,7 @@ def parse_detected_peaks(csv_path: Path, min_conf: float = 0.0) -> list[int]:
     peaks = []
     with open(csv_path, newline="") as f:
         for row in csv.DictReader(f):
-            conf = float(row["confidence"])
+            conf = float(row["claude_confidence"])
             if conf < min_conf:
                 continue
             # skip Claude-confirmed false positives -- review.py forces confidence=0.0

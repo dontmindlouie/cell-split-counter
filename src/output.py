@@ -21,7 +21,7 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
         writer = csv.writer(f)
         writer.writerow([
             "event_id", "source_video", "frame_range", "peak_frame", "split_topology",
-            "track_id", "parent_id", "confidence", "tracker_confidence", "classification_source",
+            "track_id", "parent_id", "claude_confidence", "tracker_persistence_score", "classification_source",
             "centroid_x", "centroid_y", "claude_notes", "bleach_risk",
             "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
             "anaphase_bridge", "micronucleus", "anomaly_notes",

@@ -10,7 +10,8 @@ Detects and classifies cell division events in microscopy video (Fiji/AVI etc).
 5. **Review** ✅ — `src/review.py` sends ambiguous events to Claude Haiku for real/FP verdict + split topology.
 6. **Classify divisions** ✅ — `--classify-divisions` flag runs ACD classifier on confirmed events (bipolar/tripolar/multipolar + 4 abnormality flags).
 7. **Package** ✅ — `scripts/package_events.py` outputs per-event folders with before/after crops + info.txt for papers/presentations.
-8. **Output** ✅ — `events.csv` (19 columns) + `summary.json`.
+8. **Output** ✅ — `events.csv` (20 columns) + `summary.json`.
+9. **Document** ✅ — `scripts/generate_package_readme.py` writes a self-contained README.md + index.csv into an output package directory, so it's self-describing when handed to someone (or their AI assistant) without repo access.
 
 ## Status
 Full pipeline implemented and validated against a 575-frame test video (33 ground-truth division events).
@@ -58,6 +59,9 @@ python main.py --reuse-masks --classify-divisions
 
 # Package confirmed events into per-event folders for papers/presentations
 python scripts/package_events.py
+
+# Generate a self-contained README + index for a delivered output package
+python scripts/generate_package_readme.py data/output/your_run_folder
 ```
 
 For development/tests only:

@@ -22,8 +22,10 @@ class LineageEvent:
     frame: int
     event_type: EventType
     classification_source: str  # "rule" or "claude"
-    confidence: float           # current best estimate (tracker initially; Claude overwrites on review)
-    tracker_confidence: float | None = None  # original trackastra persistence score, never overwritten
+    confidence: float           # current best estimate (tracker initially; Claude overwrites on review).
+                                 # written to CSV as "claude_confidence" -- see docs/output_schema.md
+    tracker_confidence: float | None = None  # original trackastra persistence score, never overwritten.
+                                              # written to CSV as "tracker_persistence_score"
     centroid: tuple[float, float] | None = None  # (cx, cy) of parent cell at split frame
     claude_notes: str | None = None  # "split_type: reason" from Claude vision review
     bleach_risk: float | None = None  # frame / total_frames; proxy for photobleaching accumulation

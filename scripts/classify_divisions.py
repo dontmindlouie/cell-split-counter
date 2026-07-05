@@ -45,7 +45,7 @@ def _row_to_event(row: dict) -> LineageEvent:
         frame=int(row["peak_frame"]),
         event_type=EventType(topology_val),
         classification_source=row["classification_source"],
-        confidence=float(row["confidence"]),
+        confidence=float(row["claude_confidence"]),
         centroid=(cx, cy) if cx is not None and cy is not None else None,
         claude_notes=row.get("claude_notes") or None,
         bleach_risk=float(bleach) if bleach else None,

@@ -61,8 +61,8 @@ def main() -> None:
         cy = float(r["centroid_y"]) if r.get("centroid_y") else None
         centroid = (cx, cy) if cx is not None and cy is not None else None
 
-        conf = r["confidence"]
-        tracker_conf = r.get("tracker_confidence", "")
+        conf = r["claude_confidence"]
+        tracker_conf = r.get("tracker_persistence_score", "")
         src = r["classification_source"]
         label = f"REAL" if float(conf) > 0 else "FP"
         folder_name = f"{label}__frame_{pf:05d}_parent_{r['parent_id']}__src_{src}__conf_{conf}__tc_{tracker_conf}"
@@ -88,8 +88,8 @@ def main() -> None:
         (event_dir / "info.txt").write_text(
             f"peak_frame:        {pf}\n"
             f"parent_id:         {r['parent_id']}\n"
-            f"confidence:        {conf}\n"
-            f"tracker_confidence:{tracker_conf}\n"
+            f"claude_confidence:        {conf}\n"
+            f"tracker_persistence_score:{tracker_conf}\n"
             f"source:            {src}\n"
             f"claude_notes:      {notes}\n"
             f"centroid:          {centroid}\n"

@@ -34,7 +34,7 @@ def _row_to_event(row: dict) -> LineageEvent:
         frame=int(row["peak_frame"]),
         event_type=EventType(row.get("split_topology") or row.get("division_type") or "normal_split"),
         classification_source=row["classification_source"],
-        confidence=float(row["confidence"]),
+        confidence=float(row["claude_confidence"]),
         centroid=(cx, cy) if cx is not None and cy is not None else None,
     )
 
@@ -55,7 +55,7 @@ def main() -> None:
     targets = [
         r for r in rows
         if r["classification_source"] == "rule"
-        and args.min_conf <= float(r["confidence"]) < args.max_conf
+        and args.min_conf <= float(r["claude_confidence"]) < args.max_conf
     ]
 
     # Deduplicate by (parent_id, peak_frame) — daughters share one API call
@@ -130,10 +130,10 @@ def main() -> None:
             description = r.get("description", "")
             notes = f"{split_type}: {description}".strip(": ") if split_type else description
             # preserve original tracker score before overwriting confidence
-            if not row.get("tracker_confidence"):
-                row["tracker_confidence"] = row["confidence"]
+            if not row.get("tracker_persistence_score"):
+                row["tracker_persistence_score"] = row["claude_confidence"]
             row["classification_source"] = "claude"
-            row["confidence"] = str(confidence if is_real else 0.0)
+            row["claude_confidence"] = str(confidence if is_real else 0.0)
             row["claude_notes"] = notes if is_real else ""
             row["acd_division_type"] = (r.get("acd_division_type") or "") if is_real else ""
             row["misaligned_chromosomes"] = _flag(r.get("misaligned_chromosomes")) if is_real else ""

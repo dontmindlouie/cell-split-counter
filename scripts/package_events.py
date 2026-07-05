@@ -58,7 +58,7 @@ def main() -> None:
     targets = []
     for r in rows:
         try:
-            conf = float(r["confidence"])
+            conf = float(r["claude_confidence"])
         except (KeyError, ValueError):
             continue
         if conf < args.min_conf:
@@ -79,12 +79,12 @@ def main() -> None:
     for r in targets:
         pf     = int(r["peak_frame"])
         pid    = r.get("parent_id", "?")
-        conf   = r["confidence"]
+        conf   = r["claude_confidence"]
         src    = r.get("classification_source", "")
         acd    = r.get("acd_division_type", "") or "unclassified"
         br     = r.get("bleach_risk", "")
         notes  = r.get("claude_notes", "")
-        tc     = r.get("tracker_confidence", "")
+        tc     = r.get("tracker_persistence_score", "")
 
         cx = float(r["centroid_x"]) if r.get("centroid_x") else None
         cy = float(r["centroid_y"]) if r.get("centroid_y") else None
@@ -118,13 +118,13 @@ def main() -> None:
         (event_dir / "info.txt").write_text(
             f"peak_frame:             {pf}\n"
             f"parent_id:              {pid}\n"
-            f"confidence:             {conf}\n"
-            f"tracker_confidence:     {tc}\n"
+            f"claude_confidence:      {conf}\n"
+            f"tracker_persistence_score: {tc}\n"
             f"source:                 {src}\n"
             f"bleach_risk:            {br}\n"
             f"claude_notes:           {notes}\n"
             f"acd_division_type:      {acd}\n"
-            f"abnormalities:          {abn}\n"
+            f"abnormalities:          {_abn_tag(r)}\n"
             f"centroid:               {centroid}\n"
             f"frames_saved:           {frame_count}\n"
         )
