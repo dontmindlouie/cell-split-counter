@@ -63,6 +63,11 @@ COLUMN_DOCS = [
         "skepticism than the other three flags."),
     ("anomaly_notes", "Claude's free-text notes on anything unusual about the event "
         "(artifacts, nearby debris, atypical morphology) beyond the four flagged categories."),
+    ("near_edge", "'1'/'0' -- centroid within ~100px of any frame boundary. Partial visibility "
+        "at the image boundary produces messier/more uncertain classifications. Flag, don't "
+        "exclude: near-edge splits still belong in total confirmed-split counts, but exclude "
+        "them when computing abnormality-rate percentages (micronucleus %, etc.), since those "
+        "need the whole cell visible."),
 ]
 
 README_INTRO = """# {label} -- cell division analysis output
@@ -94,9 +99,12 @@ FOLDER_DOCS = {
         "filter to `claude_confidence > 0` to get only confirmed divisions. See 'How to "
         "filter this data' and the column reference below.",
     "events_formatted.xlsx": "Same data as events.csv, reformatted as a real Excel Table "
-        "(sortable/filterable columns, frozen header). Regenerate anytime from the CSV via "
-        "scripts/csv_to_xlsx.py -- this file is a derived convenience copy, not a second "
-        "source of truth.",
+        "(sortable/filterable columns, frozen header), plus a second `confirmed_splits` tab: "
+        "one row per unique split (deduplicated by parent_id+peak_frame, confidence > 0 only), "
+        "with an added `is_fallback_review` flag for the rare rows where the review step's error "
+        "fallback fired instead of a real Claude verdict (see Known limitations). Regenerate "
+        "anytime from the CSV via scripts/csv_to_xlsx.py -- this file is a derived convenience "
+        "copy, not a second source of truth.",
     "review_crops": "Per-candidate before/split/after frame crops (centered on the dividing "
         "cell, ~384px) plus a verdict.txt with Claude's raw verdict/confidence/notes for "
         "that specific review call. Folder name format: `frame_<peak_frame, 5 digits>_parent_"
@@ -110,8 +118,9 @@ FOLDER_DOCS = {
         "is always 0.0 for false_positive rows regardless of Claude's raw confidence.",
     "frames": "Raw extracted video frames (one PNG per frame, 0-indexed to match peak_frame "
         "and centroid coordinates directly, no transform needed).",
-    "summary.json": "Aggregate counts only (total_events, event_counts by type). Not present "
-        "in every package.",
+    "summary.json": "Aggregate counts only (total_events, event_counts by type), plus a "
+        "claude_usage block (api_calls, input/output tokens, estimated_cost_usd) on runs "
+        "generated after 2026-07-06. Not present in every package.",
 }
 
 
@@ -145,6 +154,18 @@ def main() -> None:
     label = args.video_label or source_video or package_dir.name
 
     real_pairs = {k: r for k, r in pairs.items() if r.get("claude_confidence") and float(r["claude_confidence"]) > 0}
+
+    # Sibling count per split point, across ALL rows (not just confirmed) -- a genuine
+    # normal_split always has exactly 2, a genuine multi_way_split should have 3+. If a
+    # confirmed multi_way_split has only 1, it's not actually a multi-daughter division --
+    # it's a single-child node mislabeled by classify.py's `else EventType.MULTI_WAY_SPLIT`
+    # branch (catches len(children) == 1, not just 3+). Found 2026-07-06 on the aggressive-
+    # threshold + gap-bridging run: every multi_way_split row in that run was a singleton.
+    sibling_counts = Counter((r.get("parent_id", ""), r.get("peak_frame", "")) for r in rows)
+    suspect_multiway = {
+        k: r for k, r in real_pairs.items()
+        if r.get("split_topology") == "multi_way_split" and sibling_counts[k] == 1
+    }
     acd_counts = Counter(r.get("acd_division_type") or "unclassified" for r in real_pairs.values())
     abn_labels = {
         "misaligned_chromosomes": "misaligned_chromosomes",
@@ -199,6 +220,12 @@ def main() -> None:
     lines.append("## Summary stats (computed from events.csv at generation time)\n")
     lines.append(f"- {len(rows)} total daughter-cell rows, {len(pairs)} unique candidate split points")
     lines.append(f"- {len(real_pairs)} confirmed real events (claude_confidence > 0)")
+    if suspect_multiway:
+        n_clean = len(real_pairs) - len(suspect_multiway)
+        lines.append(f"  - **{n_clean} are solid** (normal_split with 2 daughter rows, or multi_way_split with 3+)")
+        lines.append(f"  - **{len(suspect_multiway)} are labeled multi_way_split but only have 1 recorded daughter row "
+                      f"-- likely NOT a genuine 3+-daughter division, see Known limitations below. Don't report "
+                      f"the headline confirmed count without this caveat.**")
     for acd_type, count in sorted(acd_counts.items(), key=lambda kv: -kv[1]):
         lines.append(f"  - {acd_type}: {count}")
     flagged_any = sum(1 for r in real_pairs.values() if any(r.get(c) == "1" for c in abn_labels))
@@ -229,6 +256,18 @@ def main() -> None:
                   "division-type/abnormality classifications -- treat those with extra skepticism.")
     lines.append("- `anaphase_bridge` is the least reliable abnormality flag; has a history of over-calling on "
                   "subtle nuclear indentations that aren't real bridges.")
+    if suspect_multiway:
+        lines.append(f"- **`split_topology == 'multi_way_split'` rows with only 1 sibling row are a known labeling "
+                      f"bug, not a verified 3+-daughter division.** `classify_events` labels any split as "
+                      f"multi_way_split whenever it doesn't have exactly 2 daughters -- that includes a node with "
+                      f"only 1 recorded child, which isn't a division at all as far as the code's own bookkeeping "
+                      f"goes. Best current guess (not fully confirmed): the gap-bridging fix can occasionally merge "
+                      f"one real daughter into an unrelated track's \"continuation,\" leaving its true sibling "
+                      f"looking like a lone child -- so these events may still be real, just mislabeled and missing "
+                      f"a row, rather than fabricated. This run has {len(suspect_multiway)} such rows out of "
+                      f"{sum(1 for r in real_pairs.values() if r.get('split_topology')=='multi_way_split')} total "
+                      f"confirmed multi_way_split rows. Treat them as \"needs a human look,\" not as confirmed "
+                      f"triple/quadruple divisions.")
     lines.append("")
 
     (package_dir / "README.md").write_text("\n".join(lines))
