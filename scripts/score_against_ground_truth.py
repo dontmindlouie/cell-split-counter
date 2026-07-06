@@ -11,8 +11,22 @@ is a 0-indexed frame index (frame_step=1), so we add 1 before comparing.
 
 Detected events are deduplicated by (parent_id, peak_frame) — each unique split
 contributes one detected peak, not one per daughter track.
+
+KNOWN LIMITATION (2026-07-05): matching is by frame proximity ONLY -- there is no
+spatial (x/y) check, because the ground-truth sheet has no coordinates at all (frame
+ranges + freeform text only). This means "false credit" is possible and has been
+confirmed multiple times by manual Fiji cross-reference: a detected event that is
+spatially wrong (a different, unrelated cell) can still count as a "match" here purely
+because its frame number happens to fall within tolerance of a real GT event elsewhere
+in the same crowded field. Confirmed false-credit cases so far: GT frame 56 (matched
+detection was 738px from the real cell), GT frames 514/520 (the real division, tracked
+correctly at 5px from ground truth, was rejected by Claude at confidence=0.0 and excluded;
+a spatially-wrong detection 132px away was what actually satisfied the match). Treat any
+recall number from this script as an upper bound, not a verified number, unless spatial
+correctness has been separately confirmed for the specific events in question.
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -23,27 +37,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import EVENTS_CSV
 
-GROUND_TRUTH_XLSX = Path("data/ground_truth/ground_truth.xlsx")  # configure for your dataset
-GROUND_TRUTH_SHEET = "Sheet1"  # configure: name of the sheet containing division events
+# Overridable via env vars so real dataset identifiers never need to be hardcoded
+# into this tracked (public) file -- set these in your shell/.env for local runs.
+GROUND_TRUTH_XLSX = Path(os.environ.get("GT_XLSX_PATH", "data/ground_truth/ground_truth.xlsx"))
+GROUND_TRUTH_SHEET = os.environ.get("GT_SHEET_NAME", "Sheet1")
 
-GT_ROW_START = 19  # configure: first data row (1-indexed)
-GT_ROW_END = 51    # configure: last data row (inclusive)
+GT_ROW_START = int(os.environ.get("GT_ROW_START", 19))  # first data row (1-indexed)
+GT_ROW_END = int(os.environ.get("GT_ROW_END", 51))      # last data row (inclusive)
 
 
-def parse_ground_truth_peaks(sheet) -> list[int]:
+def parse_ground_truth_peaks(sheet) -> tuple[list[int], list[tuple[int, str]]]:
+    """Returns (peaks, excluded) where excluded is [(peak_frame, note), ...] for rows
+    with a non-blank Division Type/notes column (column D) -- these are annotator
+    uncertainty notes (e.g. "2 to 2 non-division") or non-bipolar outcomes (e.g.
+    "1-1 can not separate", a failed split) that the current binary 1->2 split
+    detector was never built to catch, so scoring them as plain misses inflates
+    the miss count for reasons unrelated to detector quality.
+    """
     peaks = []
+    excluded = []
     for row in sheet.iter_rows(min_row=GT_ROW_START, max_row=GT_ROW_END, values_only=True):
         value = row[2] if len(row) > 2 else None
+        note = row[3] if len(row) > 3 else None
         if value is None:
             continue
+        peak = None
         if isinstance(value, (int, float)):
-            peaks.append(int(value))
+            peak = int(value)
         elif isinstance(value, str):
             match = re.match(r"(\d+)\s*-\s*(\d+)", value.strip())
             if match:
                 start, end = int(match.group(1)), int(match.group(2))
-                peaks.append((start + end) // 2)
-    return peaks
+                peak = (start + end) // 2
+        if peak is None:
+            continue
+        if note is not None and str(note).strip():
+            excluded.append((peak, str(note).strip()))
+        else:
+            peaks.append(peak)
+    return peaks, excluded
 
 
 def parse_detected_peaks(csv_path: Path, min_conf: float = 0.0) -> list[int]:
@@ -81,7 +113,7 @@ def main() -> None:
             tolerance = int(a)
 
     wb = openpyxl.load_workbook(GROUND_TRUTH_XLSX, data_only=True)
-    ground_truth_peaks = parse_ground_truth_peaks(wb[GROUND_TRUTH_SHEET])
+    ground_truth_peaks, excluded = parse_ground_truth_peaks(wb[GROUND_TRUTH_SHEET])
     detected_peaks = parse_detected_peaks(EVENTS_CSV, min_conf=min_conf)
 
     matched_gt, missed_gt = [], []
@@ -106,6 +138,10 @@ def main() -> None:
     print(f"F1        : {f1:.3f}")
     print(f"missed GT frames: {sorted(missed_gt)}")
     print(f"false positive detected frames (sample): {sorted(false_positives)[:20]}")
+    if excluded:
+        print(f"excluded from GT denominator ({len(excluded)} rows, non-blank Division Type/notes column):")
+        for peak, note in excluded:
+            print(f"  frame {peak}: {note!r}")
 
 
 if __name__ == "__main__":
