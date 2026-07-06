@@ -21,6 +21,8 @@ if __name__ == "__main__":
     parser.add_argument("--end-frame", type=int, default=None, help="last frame index (exclusive); default = all")
     parser.add_argument("--debug-crops", action="store_true", help="save Claude review crops to data/review_crops/")
     parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from data/frames/_memmap/")
+    parser.add_argument("--cellprob-threshold", type=float, default=0.0, help="Cellpose sensitivity knob; lower = more permissive (default 0.0, library default)")
+    parser.add_argument("--flow-threshold", type=float, default=0.4, help="Cellpose sensitivity knob; higher = more permissive (default 0.4, library default)")
     parser.add_argument("--output-dir", type=Path, default=None, help="directory for events.csv and summary.json (default: data/output/<video filename stem>)")
     parser.add_argument("--frame-dir", type=Path, default=Path("data/frames"), help="directory for extracted frames (default: data/frames)")
     args = parser.parse_args()
@@ -38,4 +40,6 @@ if __name__ == "__main__":
         end_frame=args.end_frame,
         save_debug_crops=args.debug_crops,
         reuse_masks=args.reuse_masks,
+        cellprob_threshold=args.cellprob_threshold,
+        flow_threshold=args.flow_threshold,
     )

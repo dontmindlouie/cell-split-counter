@@ -83,6 +83,8 @@ _EVAL_BATCH = 64  # frames per Cellpose eval() call — amortizes per-call overh
 def segment_video_arrays(
     frame_paths: list[Path],
     memmap_dir: Path | None = None,
+    cellprob_threshold: float = 0.0,
+    flow_threshold: float = 0.4,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Segment all frames and return raw arrays for Trackastra input.
 
@@ -98,6 +100,15 @@ def segment_video_arrays(
     Frames are sent to Cellpose in batches (model.eval() accepts a list of
     images) rather than one call per frame — each call carries its own fixed
     dispatch/normalization overhead, which one-at-a-time calls pay per frame.
+
+    cellprob_threshold/flow_threshold default to Cellpose's own library defaults
+    (0.0, 0.4). Lowering cellprob_threshold and/or raising flow_threshold makes
+    detection more permissive/sensitive -- validated 2026-07-05 via
+    scripts/test_sensitive_thresholds.py against known small/dim objects that
+    default settings miss entirely (GT events 9/10 on Tom20): cellprob=-4.0,
+    flow=0.8 recovered mask presence at a known-real, previously-undetected
+    location on 6/7 tested frames vs. 3/7 at default, with modest mask-count
+    increase (no runaway over-segmentation observed in that spot-check).
     """
     model = _get_model()
     first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE)
@@ -120,7 +131,10 @@ def segment_video_arrays(
         end = min(start + _EVAL_BATCH, T)
         print(f"  segmenting frames {start+1}-{end}/{T}", end="\r", flush=True)
         imgs = [cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) for p in frame_paths[start:end]]
-        masks, _, _ = model.eval(imgs, diameter=None, channels=[0, 0])
+        masks, _, _ = model.eval(
+            imgs, diameter=None, channels=[0, 0],
+            cellprob_threshold=cellprob_threshold, flow_threshold=flow_threshold,
+        )
         for offset, (img, mask) in enumerate(zip(imgs, masks)):
             raw_frames[start + offset] = img
             label_maps[start + offset] = mask.astype(np.uint16)

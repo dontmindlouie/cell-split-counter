@@ -21,6 +21,8 @@ def run(
     end_frame: int | None = None,
     save_debug_crops: bool = False,
     reuse_masks: bool = False,
+    cellprob_threshold: float = 0.0,
+    flow_threshold: float = 0.4,
 ) -> None:
     frame_paths = extract_frames(config, frame_dir)
 
@@ -32,7 +34,9 @@ def run(
         if reuse_masks:
             frames_arr, labels_arr = load_video_arrays(frame_paths)
         else:
-            frames_arr, labels_arr = segment_video_arrays(frame_paths)
+            frames_arr, labels_arr = segment_video_arrays(
+                frame_paths, cellprob_threshold=cellprob_threshold, flow_threshold=flow_threshold
+            )
         tracks = link_frames_trackastra(frames_arr, labels_arr, mode=tracker_mode)
     else:
         masks_by_frame = segment_all(frame_paths)
