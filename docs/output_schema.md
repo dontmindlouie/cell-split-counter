@@ -22,6 +22,7 @@ and parent_id).
 | `acd_division_type` | `bipolar` / `tripolar` / `multipolar` — spindle geometry from the ACD classifier. Only populated for confirmed real events (`claude_confidence > 0`). |
 | `misaligned_chromosomes` / `lagging_chromosome` / `anaphase_bridge` / `micronucleus` | `1`/`0` abnormality flags from Claude's read, only populated for confirmed real events. `anaphase_bridge` has a documented history of over-calling subtle nuclear indentations as bridges — treat it with more skepticism than the other three. |
 | `anomaly_notes` | Claude's free-text notes on anything unusual beyond the four flagged categories. |
+| `near_edge` | `1`/`0` — centroid within `NEAR_EDGE_MARGIN_PX` (100px) of any frame boundary. Partial visibility at the image boundary produces messier/more uncertain classifications. **Flag, don't exclude**: near-edge splits are still real and belong in total confirmed-split counts, but exclude them (`near_edge != 1`) when computing anomaly-subtype rates (micronucleus %, anaphase_bridge %, etc.), since those need the whole cell visible. |
 
 **Important gotcha:** `claude_confidence` is forced to `0.0` whenever Claude's verdict was
 `false_positive`, regardless of how confident Claude actually was in that rejection.

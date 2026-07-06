@@ -15,6 +15,14 @@ class EventType(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+# Centroid distance (px) from any frame boundary below which an event is flagged near_edge.
+# Partial visibility at the image boundary produces messier/more uncertain classifications
+# (see 2026-07-04 finding: a near-edge event got the most complex label stack in the dataset).
+# Decision: flag, don't exclude -- keep near-edge splits in total confirmed-split counts (the
+# division is still real) but exclude them from anomaly-subtype-rate analysis downstream.
+NEAR_EDGE_MARGIN_PX = 100
+
+
 @dataclass
 class LineageEvent:
     track_id: int
@@ -36,6 +44,7 @@ class LineageEvent:
     anaphase_bridge: bool | None = None
     micronucleus: bool | None = None
     anomaly_notes: str | None = None  # interesting anomaly flagged for case study
+    near_edge: bool | None = None  # centroid within NEAR_EDGE_MARGIN_PX of any frame boundary
 
 
 def _daughter_persistence(
