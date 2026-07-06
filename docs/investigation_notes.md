@@ -3,6 +3,137 @@
 Running log of spot-check findings that don't belong in code comments but shouldn't
 be lost between sessions. Newest entries on top.
 
+## 2026-07-04 (follow-up): raw Cellpose mask trace for GT events 9/10 — refines the condensation hypothesis: it's intermittent low-confidence detection, not fragmentation
+
+Wrote `scripts/debug_raw_masks.py` to dump raw per-frame Cellpose mask count/area/
+centroid for a spatial ROI directly from `labels.dat`, bypassing every tracker.
+Ran it on the events-9/10 region (`--roi 200 320 440 580 --frames 44 70`) to check
+the manual-Fiji hypothesis below (pre-division chromatin condensation confusing
+segmentation into fragments). The raw data tells a more specific story than that
+guess:
+
+- **Frame 52:** the object first appears in Cellpose's output at all — area 684
+  (~43% of a normal nucleus's ~1580px in this frame), centroid (260, 526).
+- **Frames 53-54: gone.** No mask anywhere near this location.
+- **Frames 55-58:** reappears, area 419-920, drifting position frame to frame.
+- **Frame 59: gone again.**
+- **Frame 60:** reappears at area 286 (~18% of normal size).
+- **Frames 61-62:** splits into two spatially distinct small pieces — (263, 485)
+  and (265, 519), areas ~230-300 each. This is `ilp`'s candidate (frame 62,
+  centroid 264.7/520.1, event_id 70/71 in `tom20_ilp_stride3/events.csv` —
+  matches the (265, 519) piece almost exactly).
+- **Frames 63-66:** both pieces persist, drifting apart.
+- **Frame 67: the (265, 520) piece — the one daughter `ilp` actually
+  candidated — disappears from segmentation entirely.** Matches the "bottom
+  sister disappears" observation from the manual Fiji check below, but now
+  confirmed at the raw-mask level, not just visually.
+- **Frames 68-70:** only the other daughter piece remains.
+
+(Two unrelated normal-sized cells also pass through this ROI across these frames —
+a ~1550-1800px nucleus drifting steadily through the whole window, and a second
+one entering around frame 61 — inflating the raw `n_masks` count per frame; neither
+is part of this event.)
+
+**Revised conclusion:** this isn't fragmentation from condensed/punctate chromatin
+confusing Cellpose into multiple pieces — it's an object that's small/dim enough
+that Cellpose's detection is unreliable on it, full stop. It flickers in and out of
+the segmentation output *before* the split (frames 53-54, 59) and the identical
+thing happens to one daughter *after* the split (frame 67). This explains `greedy`'s
+complete miss structurally: no frame-to-frame overlap linker, however good, can
+bridge a gap where the object has zero mask on the missing frame — it's not a
+linking-algorithm shortcoming, there's nothing there to link to.
+
+**Cheaper thing to try before building the "interesting event" detector:**
+Cellpose's `cellprob_threshold`/`flow_threshold` params (currently left at
+defaults) directly control sensitivity to dim/small objects like this one. Worth
+testing a lower `cellprob_threshold` on just this ROI/frame range first — if that
+stops the flickering, it's a one-line config change instead of new architecture.
+Not yet tried.
+
+**Also noticed, not chased down:** `ilp`'s two daughter rows for this event
+(track_id 570/571) both store the *identical* centroid (264.7, 520.1) in
+`events.csv`, despite the raw masks showing two clearly distinct daughter
+locations at frame 62 ((263, 485) and (265, 519)). Something in how per-daughter
+centroids get written looks off for this event specifically — worth a quick look
+whenever someone's back in `src/output.py`/`src/classify.py`, but not investigated
+this session.
+
+## 2026-07-04: manual Fiji cross-reference on GT events 9/10 (frames 60/62) — greedy never candidates the real cell at all; ilp does, but Claude still rejects it even with the stride-3 fix
+
+Followed up the "remaining open thread" from follow-up 3 (60, 62 still listed as
+genuinely missed) by scrubbing the raw video by hand in Fiji around the frame 55-70
+region instead of relying on crops. Found the real dividing cell by tracking a
+faint punctate signal backward and forward from frame ~60:
+
+- Frame 46: clean, nothing unusual at this location.
+- Frames ~49-51: a bright, fragmented/punctate chromatin cluster appears — reads as
+  a cell entering mitosis (condensation), well before any mask-visible split.
+- Frames ~59-60: still a messy fragmented signal, not yet two clean lobes — this is
+  the object visible at 75% zoom that looked "obviously dividing but small."
+- Frame ~66: resolves into two distinct small puncta (the daughters).
+- Frame ~68: one of the two ("bottom sister") has disappeared.
+
+Raw pixel location: approximately (250-270, 490-540). Cross-referenced this against
+`events.csv` from all 6 archived Tom20 run variants
+(`H:\Archives\cell-split-counter\output-2026-07-04\`):
+
+| run variant | candidate near (260, 520) / frame 55-70? |
+|---|---|
+| `tom20_greedy_fresh` | none |
+| `tom20_greedy_fresh_stride3` | none |
+| `tom20_greedy_rereviewed` | none |
+| `tom20_ilp` | **event_id 70/71**, frame_range 52-62, peak_frame 62, centroid (264.7, 520.1), tracker_confidence 0.50, **confidence 0.0 (Claude: false_positive)** |
+| `tom20_ilp_rereviewed` | same event, same verdict |
+| `tom20_ilp_stride3` | same event, same verdict — **the 8+8-frame review-window fix that rescued frame 56 does not rescue this one** |
+
+**`greedy` never candidates this real division in any config, including the
+"recovered" 8+8@stride-3 config that follow-up 4's sweep table credits with only
+missing frame 177.** That table's recall number for GT events 9/10 is almost
+certainly a **false credit** — the scorer matches purely by frame proximity (the
+ground-truth spreadsheet has no x/y coordinates at all, per the standing caveat in
+follow-up/follow-up-2 above), so `greedy` picking up *some* nearby candidate within
+tolerance at roughly the right frame gets scored as a "hit" even though it isn't the
+cell manually confirmed here. **97% recall (8+8@stride-3, greedy) should not be
+trusted at face value for GT events 9/10 without spatial cross-referencing** —
+same "wrong cell" failure mode already documented for `parent_411`/frame 55, now
+confirmed for this event specifically.
+
+**`ilp` does find the real cell** (centroid match within ~15px of the manual
+Fiji location, tracker_confidence 0.50 — correctly in the "route to Claude" middle
+band) **but Claude rejects it as a false positive in all three ilp variants
+tested**, unaffected by the stride-3 window widening. `claude_notes` is empty for
+this event in the stored CSV despite `classification_source=claude`, so the actual
+rejection reasoning wasn't preserved — possibly a re-occurrence of the "notes
+discarded on false_positive verdict" bug supposedly fixed 2026-07-02, or this
+archived run predates that fix; not yet determined which.
+
+**Why Claude likely rejects it, unlike frame 56:** frame 56's fix worked because the
+prompt now explicitly credits gradual elongation-then-constriction of *one coherent
+nucleus shape* as a division in progress. This event looks visually different — a
+fragmented, multi-punctate cluster (condensed/condensing chromatin) for ~10 frames
+*before* resolving into two objects, not a single shape progressively pinching in
+two. The existing prompt hint may not cover "starts as scattered fragments, not one
+shape" as a valid division pattern. Additionally, even if accepted, the disappearing
+"bottom sister" by frame 68 (~2 frames after resolving) would likely then trip the
+`min_daughter_persistence>=3` filter as a shape-change artifact, even though this
+looks like a genuine division whose daughter drops out of focus/detection shortly
+after splitting.
+
+**Net conclusion:** this GT event is a compound miss like frame 56, but a *harder*
+one — `greedy` never tracks it (segmentation/tracking-stage failure, unresolved),
+and `ilp` tracks it correctly but Claude's review still rejects it even after the
+fix that worked for frame 56 (review-stage failure, distinct visual pattern from
+frame 56's). Fixing this class of event would need either a segmentation-side fix
+(so `greedy` doesn't lose a fragmenting/condensing nucleus) or a prompt addition
+specifically for "fragmented punctate cluster resolving into two objects" as a
+distinct division signature from simple elongation-constriction.
+
+**Not yet checked:** GT event 10 (frame 62) may be the same physical event as
+event 9 (frame 60) given the tight frame proximity and shared centroid match above
+(peak_frame 62 in the ilp candidate) — worth confirming with the researcher whether her sheet's
+rows 27/28 are actually two separate divisions or one event logged with an uncertain
+peak frame, similar to the frame-65 double-row issue already found.
+
 ## 2026-07-03 (follow-up 4): more frames beats a bigger gap — settled on 8+8 @ stride-3
 
 After merging the combined verify+classify architecture (5+5 frames @ stride-3) with the
