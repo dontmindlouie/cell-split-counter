@@ -7,6 +7,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Claude's returned descriptions can contain non-ASCII characters (e.g. "->" as an
+# actual arrow glyph). Windows defaults redirected stdout to the system codepage
+# (cp1252), which can't encode them -- crashing mid-review with all prior work lost
+# since events.csv is only written after review_ambiguous returns. Force UTF-8 with
+# replacement instead of erroring.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from src.ingest import IngestConfig
 from src.pipeline import run
 

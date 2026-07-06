@@ -186,7 +186,8 @@ def _review_and_classify(
         (event_debug_dir / "verdict.txt").write_text(
             f"verdict:    {parsed.get('verdict', '')}\n"
             f"confidence: {float(parsed.get('confidence', 0.0)):.2f}\n"
-            f"notes:      {parsed.get('description', '')}\n"
+            f"notes:      {parsed.get('description', '')}\n",
+            encoding="utf-8",
         )
 
     return parsed
