@@ -17,6 +17,98 @@ class TrackNode:
     children: list[int] = field(default_factory=list)  # track_ids spawned from this node
 
 
+def _bridge_track_gaps(
+    df_ctc,
+    tracked_video,
+    l_col: str,
+    b_col: str,
+    e_col: str,
+    max_gap_frames: int = 3,
+    max_gap_dist: float = 40.0,
+) -> dict[int, int]:
+    """Bridge single-successor tracking gaps into one continuous lineage.
+
+    Confirmed root cause (2026-07-06): Cellpose's mask for a real, continuously-
+    dividing cell can briefly vanish for 1+ frames (small/dim object, borderline
+    detection), and Trackastra creates a brand-new, disconnected track when it
+    reappears rather than continuing the original one -- even with Trackastra's
+    own delta_t parameter raised (tested up to 4, and in ilp mode; the edge is
+    either never generated across the gap or the model's learned feature
+    similarity doesn't recognize the object as continuous). A project-wide scan
+    found this pattern implicated in the majority of this project's confirmed
+    real missed divisions (Tom20 GT events near frames 60/62, 185, 212, and a
+    previously-uncounted division near frame 59) -- worth fixing here rather
+    than relying on Trackastra to solve it internally.
+
+    A REAL split produces two nearby successors (the daughters) -- that's normal
+    and must NOT be bridged. Only tracks with EXACTLY ONE nearby successor within
+    the gap window are merged; two or more successors are left alone.
+
+    Returns a mapping from every original Trackastra label to its canonical
+    (post-merge) label -- labels merged into the same lineage share one value.
+    """
+    from collections import defaultdict
+
+    begin_of = {int(row[l_col]): int(row[b_col]) for _, row in df_ctc.iterrows()}
+    end_of = {int(row[l_col]): int(row[e_col]) for _, row in df_ctc.iterrows()}
+    video_end = len(tracked_video) - 1
+
+    from skimage.measure import regionprops
+
+    centroid_cache: dict[int, dict[int, tuple[float, float]]] = {}
+
+    def _centroid(label: int, frame: int) -> tuple[float, float] | None:
+        if frame not in centroid_cache:
+            frame_arr = np.asarray(tracked_video[frame])
+            centroid_cache[frame] = {
+                int(p.label): (float(p.centroid[1]), float(p.centroid[0]))
+                for p in regionprops(frame_arr)
+            }
+        return centroid_cache[frame].get(label)
+
+    starts_by_frame: dict[int, list[int]] = defaultdict(list)
+    for lbl, f0 in begin_of.items():
+        starts_by_frame[f0].append(lbl)
+
+    parent_uf: dict[int, int] = {lbl: lbl for lbl in begin_of}
+
+    def find(x: int) -> int:
+        while parent_uf[x] != x:
+            parent_uf[x] = parent_uf[parent_uf[x]]
+            x = parent_uf[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent_uf[rb] = ra
+
+    for lbl, f_end in end_of.items():
+        if f_end >= video_end:
+            continue  # track runs to the end of the video, not a gap
+        end_c = _centroid(lbl, f_end)
+        if end_c is None:
+            continue
+        ex, ey = end_c
+        successors = []
+        for gap in range(1, max_gap_frames + 1):
+            f_start = f_end + gap
+            if f_start > video_end:
+                break
+            for other in starts_by_frame.get(f_start, []):
+                if other == lbl:
+                    continue
+                start_c = _centroid(other, f_start)
+                if start_c is None:
+                    continue
+                if ((start_c[0] - ex) ** 2 + (start_c[1] - ey) ** 2) ** 0.5 <= max_gap_dist:
+                    successors.append(other)
+        if len(successors) == 1:
+            union(lbl, successors[0])
+
+    return {lbl: find(lbl) for lbl in begin_of}
+
+
 def _overlap_fraction(a: CellMask, b: CellMask) -> float:
     """Intersection over the smaller mask's area.
 
@@ -160,7 +252,9 @@ def _make_float32_memmap(frames: np.ndarray) -> np.ndarray:
     return float_frames
 
 
-def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "greedy") -> list[TrackNode]:
+def link_frames_trackastra(
+    frames: np.ndarray, labels: np.ndarray, mode: str = "greedy", delta_t: int = 1
+) -> list[TrackNode]:
     """Track cells using Trackastra and return a TrackNode list with lineage.
 
     frames: (T, H, W) uint8 grayscale
@@ -169,6 +263,14 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "
         catches divisions where two daughters are compact/adjacent enough that
         greedy's local frame-to-frame matching collapses them into one track;
         see docs/investigation_notes.md 2026-07-03 entry)
+    delta_t: how many frames apart the candidate graph will consider linking
+        (Trackastra's own parameter, library default 1 = adjacent frames only).
+        Raising this bridges brief gaps where a cell's mask is missing for 1+
+        frames -- validated 2026-07-06 via direct track-ID tracing: a real
+        division's daughter (track 410) vanished for exactly one frame and
+        reappeared as a disconnected new track (678) under delta_t=1, breaking
+        the lineage link back to the split. delta_t=2 lets the graph consider
+        edges across that gap directly.
 
     Trackastra assigns stable Cell_IDs across frames and detects divisions.
     The returned TrackNodes have parent_id and children set for split events,
@@ -211,7 +313,7 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "
 
     try:
         # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
-        track_graph, tracked_video = model.track(frames, labels, mode=mode)
+        track_graph, tracked_video = model.track(frames, labels, mode=mode, delta_t=delta_t)
     finally:
         _model_api.normalize = _orig_normalize
         _model_api.apply_solution_graph_to_masks = _orig_asm
@@ -254,6 +356,18 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "
         int(row[l_col]): int(row[b_col]) for _, row in df_ctc.iterrows()
     }
 
+    # Bridge single-successor tracking gaps (see _bridge_track_gaps docstring) before
+    # building nodes, so downstream classify_events sees one continuous lineage instead
+    # of an artificially orphaned track when a real division's daughter briefly vanishes.
+    canonical_of = _bridge_track_gaps(df_ctc, tracked_video, l_col, b_col, e_col)
+
+    # For each merged group, only the earliest (true) birth label may carry a real
+    # parent -- later "resumed" labels in the same group are continuations, not births.
+    true_birth_label: dict[int, int] = {}  # canonical_id -> raw label with min begin_of
+    for lbl, canon in canonical_of.items():
+        if canon not in true_birth_label or begin_of[lbl] < begin_of[true_birth_label[canon]]:
+            true_birth_label[canon] = lbl
+
     # Build nodes — one TrackNode per (label, frame) occurrence in tracked_video.
     # Use regionprops for a single pass per frame: instead of N separate boolean array
     # comparisons (label_map == label_id for each label), compute all cell properties in
@@ -268,14 +382,17 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "
         label_arr = np.asarray(label_map)  # load frame from memmap once
         for prop in regionprops(label_arr):
             label_id = int(prop.label)
-            parent_label = parent_of.get(label_id, 0)
-            is_birth_frame = (begin_of.get(label_id, 0) == t)
+            track_id = canonical_of.get(label_id, label_id)
+            birth_label = true_birth_label.get(track_id, label_id)
+            parent_label_raw = parent_of.get(birth_label, 0)
+            parent_label = canonical_of.get(parent_label_raw, parent_label_raw)
+            is_birth_frame = (label_id == birth_label and begin_of.get(birth_label, 0) == t)
             parent_id = parent_label if (parent_label > 0 and is_birth_frame) else None
 
             # regionprops bbox: (min_row, min_col, max_row, max_col) exclusive
             r0, c0, r1, c1 = prop.bbox
             node = TrackNode(
-                track_id=label_id,
+                track_id=track_id,
                 parent_id=parent_id,
                 frame=t,
                 mask=CellMask(
@@ -292,9 +409,9 @@ def link_frames_trackastra(frames: np.ndarray, labels: np.ndarray, mode: str = "
             # Wire children onto the parent's last-seen node
             if parent_id is not None and parent_label in last_node:
                 parent_node = last_node[parent_label]
-                if label_id not in parent_node.children:
-                    parent_node.children.append(label_id)
+                if track_id not in parent_node.children:
+                    parent_node.children.append(track_id)
 
-            last_node[label_id] = node
+            last_node[track_id] = node
 
     return nodes
