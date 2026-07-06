@@ -3,7 +3,9 @@
 import dataclasses
 from pathlib import Path
 
-from src.classify import classify_events
+import cv2
+
+from src.classify import NEAR_EDGE_MARGIN_PX, classify_events
 from src.ingest import IngestConfig, extract_frames
 from src.output import write_events_csv, write_summary_json
 from src.review import review_ambiguous
@@ -45,16 +47,34 @@ def run(
     events = classify_events(tracks, config.roi)
 
     total_frames = len(frame_paths)
-    events = [dataclasses.replace(e, bleach_risk=e.frame / total_frames) for e in events]
+    frame_h, frame_w = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE).shape
+
+    def _is_near_edge(centroid: tuple[float, float] | None) -> bool | None:
+        if centroid is None:
+            return None
+        cx, cy = centroid
+        m = NEAR_EDGE_MARGIN_PX
+        return cx < m or cx > frame_w - m or cy < m or cy > frame_h - m
+
+    events = [
+        dataclasses.replace(
+            e, bleach_risk=e.frame / total_frames, near_edge=_is_near_edge(e.centroid)
+        )
+        for e in events
+    ]
 
     # upper_threshold=inf: every non-suppressed event gets a Claude verdict, notes, AND
     # division-type/abnormality classification in one combined call, instead of
     # persistence-confirmed (confidence>=1.0) events skipping review.
     # max_reviews raised so busy videos don't silently fall back to rule-only
     # classification once the default 50-split-point cap is hit.
+    claude_usage: dict = {}
     events = review_ambiguous(
-        events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000, save_debug_crops=save_debug_crops
+        events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
+        save_debug_crops=save_debug_crops, usage_out=claude_usage,
     )
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
-    write_summary_json(events, {"video_path": str(config.video_path)}, output_dir / "summary.json")
+    write_summary_json(
+        events, {"video_path": str(config.video_path)}, output_dir / "summary.json", claude_usage=claude_usage
+    )

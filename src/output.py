@@ -17,7 +17,11 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
     out of scope for v1. See docs/output_schema.md for full column definitions.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", newline="") as f:
+    # Explicit utf-8: Claude's text can contain non-ASCII characters (en-dashes, arrows).
+    # Without this, open() falls back to the OS default codepage on Windows (cp1252),
+    # which either mangles those characters or, if this write itself throws, is a second
+    # place the encoding bug from main.py could resurface (that fix only covers stdout).
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
             "event_id", "source_video", "frame_range", "peak_frame", "split_topology",
@@ -42,7 +46,9 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
             ])
 
 
-def write_summary_json(events: list[LineageEvent], video_metadata: dict, out_path: Path) -> None:
+def write_summary_json(
+    events: list[LineageEvent], video_metadata: dict, out_path: Path, claude_usage: dict | None = None
+) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     counts = Counter(e.event_type.value for e in events)
     summary = {
@@ -50,5 +56,7 @@ def write_summary_json(events: list[LineageEvent], video_metadata: dict, out_pat
         "total_events": len(events),
         "event_counts": dict(counts),
     }
+    if claude_usage is not None:
+        summary["claude_usage"] = claude_usage
     with open(out_path, "w") as f:
         json.dump(summary, f, indent=2)

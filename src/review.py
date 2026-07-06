@@ -19,6 +19,19 @@ _FRAMES_AFTER = 8   # see cytokinesis + any micronuclei forming; widened 2026-07
 _FRAME_STRIDE = 3   # sample every Nth frame instead of consecutive frames, see docs/investigation_notes.md 2026-07-03
 _CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + both daughters
 
+# USD per million tokens. Only models we've actually used are listed; an unrecognized
+# model reports token counts but skips the cost estimate rather than guessing pricing.
+_MODEL_PRICING_PER_MTOK = {
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+
+
+def _estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    for prefix, (in_price, out_price) in _MODEL_PRICING_PER_MTOK.items():
+        if model.startswith(prefix):
+            return (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price
+    return None
+
 # System prompt — uses .format() so JSON braces must be doubled.
 # Single call does both false-positive verification and division-type/abnormality
 # classification, so every reviewed event comes back fully annotated instead of
@@ -107,6 +120,7 @@ def _review_and_classify(
     frame_dir: Path,
     model: str,
     debug_dir: Path | None = None,
+    usage_log: list[dict] | None = None,
 ) -> dict:
     """Single API call: verify the split is real AND classify type/abnormalities.
 
@@ -156,6 +170,12 @@ def _review_and_classify(
         messages=[{"role": "user", "content": content}],
     )
 
+    if usage_log is not None:
+        usage_log.append({
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        })
+
     text = (
         response.content[0].text.strip()
         .removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -182,6 +202,7 @@ def review_ambiguous(
     max_reviews: int = 50,
     save_debug_crops: bool = False,
     max_workers: int = 10,
+    usage_out: dict | None = None,
 ) -> list[LineageEvent]:
     """Three-tier confidence routing for split events.
 
@@ -196,6 +217,10 @@ def review_ambiguous(
     Events beyond the cap pass through unchanged in Tier 2. Unique split points are
     reviewed concurrently (max_workers at a time) -- these are network-bound API calls,
     not local compute, so parallelizing them is safe and doesn't compete with Cellpose/GPU.
+
+    If usage_out is given, it's populated (in place) with token/cost totals for this
+    review pass: {"api_calls", "input_tokens", "output_tokens", "estimated_cost_usd"}.
+    estimated_cost_usd is None for models without a known price in _MODEL_PRICING_PER_MTOK.
     """
     suppressed  = [e for e in events if e.confidence < lower_threshold]
     to_review   = [e for e in events if lower_threshold <= e.confidence < upper_threshold]
@@ -228,10 +253,16 @@ def review_ambiguous(
         if key not in to_call and len(to_call) < max_reviews:
             to_call[key] = event
 
+    usage_log: list[dict] = []
+
     def _call(key: tuple[int | None, int], event: LineageEvent):
         try:
-            return key, _review_and_classify(client, event, frame_dir, model, debug_dir=debug_dir)
-        except Exception:
+            return key, _review_and_classify(client, event, frame_dir, model, debug_dir=debug_dir, usage_log=usage_log)
+        except Exception as exc:
+            # Fail open (treat as real, at the tracker's own confidence) rather than silently
+            # dropping a possibly-genuine division -- but log why, since this used to swallow
+            # the error entirely and looked identical to a real Claude confirmation downstream.
+            print(f"  [review error] frame={event.frame} parent={event.parent_id}: {type(exc).__name__}: {exc}")
             return key, {"verdict": "real", "confidence": event.confidence, "split_type": None,
                          "description": "", "acd_division_type": None, "misaligned_chromosomes": None,
                          "lagging_chromosome": None, "anaphase_bridge": None, "micronucleus": None,
@@ -247,6 +278,19 @@ def review_ambiguous(
             verdict = result.get("verdict", "real")
             risk_str = f" bleach={event.bleach_risk:.2f}" if event.bleach_risk is not None else ""
             print(f"  frame={event.frame:3d} parent={event.parent_id} [{verdict}]{risk_str} {result.get('description', '')}")
+
+    total_input = sum(u["input_tokens"] for u in usage_log)
+    total_output = sum(u["output_tokens"] for u in usage_log)
+    cost = _estimate_cost_usd(model, total_input, total_output)
+    cost_str = f", est. ${cost:.4f}" if cost is not None else ""
+    print(f"  Claude usage: {len(usage_log)} calls, {total_input:,} input tokens, {total_output:,} output tokens{cost_str}")
+    if usage_out is not None:
+        usage_out.update({
+            "api_calls": len(usage_log),
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "estimated_cost_usd": cost,
+        })
 
     reviewed = []
     for event in to_review:
