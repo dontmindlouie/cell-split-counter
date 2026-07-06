@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from azure.storage.blob import BlobServiceClient
@@ -43,11 +44,20 @@ result = subprocess.run(cmd, check=False)
 print("Uploading output...")
 out_container = client.get_container_client(OUTPUT_CONTAINER)
 run_prefix = Path(VIDEO_BLOB).stem
-for f in output_dir.rglob("*"):
-    if f.is_file() and "_memmap" not in f.parts:
-        blob_name = f"{run_prefix}/{f.relative_to(output_dir)}"
-        with open(f, "rb") as data:
-            out_container.upload_blob(blob_name, data, overwrite=True)
-        print(f"  uploaded {blob_name}")
+files_to_upload = [
+    f for f in output_dir.rglob("*")
+    if f.is_file() and "_memmap" not in f.parts and "frames" not in f.parts
+]
+
+def _upload(f: Path) -> str:
+    blob_name = f"{run_prefix}/{f.relative_to(output_dir)}"
+    with open(f, "rb") as data:
+        out_container.upload_blob(blob_name, data, overwrite=True)
+    return blob_name
+
+with ThreadPoolExecutor(max_workers=16) as pool:
+    futures = {pool.submit(_upload, f): f for f in files_to_upload}
+    for future in as_completed(futures):
+        print(f"  uploaded {future.result()}")
 
 sys.exit(result.returncode)
