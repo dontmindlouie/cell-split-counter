@@ -57,6 +57,34 @@ def test_three_way_split_is_classified_as_multi_way():
     assert all(e.event_type == EventType.MULTI_WAY_SPLIT for e in events)
 
 
+def test_single_child_node_emits_no_event():
+    # A node with exactly 1 child is a track-ID continuation artifact, not a real
+    # division -- previously mislabeled MULTI_WAY_SPLIT by the `else` branch
+    # catching len(children) == 1 (found 2026-07-06).
+    tracks = split_nodes(1, [2], parent_frame=10, persist=5)
+    events = classify_events(tracks, None)
+
+    assert events == []
+
+
+def test_single_child_continuation_still_propagates_origin_for_cascade_suppression():
+    # track 1 splits into 2,3 at frame 11 (real event). track 2 then has a
+    # single-child "continuation" to track 4 at frame 12 (not a real split --
+    # should emit nothing). track 4 then re-splits at frame 13, well within
+    # cascade_window of the ORIGINAL frame-11 split -- should still be suppressed
+    # as cascade noise via the propagated origin, not treated as a fresh event.
+    tracks = (
+        split_nodes(1, [2, 3], parent_frame=10, persist=1)
+        + [node(2, None, 12, children=[4])]
+        + split_nodes(4, [5, 6], parent_frame=12, persist=5)
+        + [node(3, None, f) for f in range(12, 17)]
+    )
+    events = classify_events(tracks, None, cascade_window=20)
+
+    assert {e.track_id for e in events} == {2, 3}
+    assert {e.frame for e in events} == {11}
+
+
 def test_cascade_within_window_is_suppressed_but_descendant_origin_still_tracked():
     # track 1 splits into 2,3 at frame 11 (real event).
     # track 2 'splits' again at frame 12 into 4,5 -- mask-flicker noise, same underlying event.

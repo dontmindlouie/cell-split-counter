@@ -43,6 +43,7 @@ class LineageEvent:
     lagging_chromosome: bool | None = None
     anaphase_bridge: bool | None = None
     micronucleus: bool | None = None
+    binucleation: bool | None = None  # one cell body, two nuclei that don't progressively separate
     anomaly_notes: str | None = None  # interesting anomaly flagged for case study
     near_edge: bool | None = None  # centroid within NEAR_EDGE_MARGIN_PX of any frame boundary
     cell_area_px: float | None = None  # parent cell's Cellpose mask area at the split frame
@@ -80,6 +81,9 @@ def classify_events(
     Failed splits, ROI exits, death, and abnormality review are deferred -- see
     project scope notes -- so `roi` is accepted but unused for now.
 
+    A node with exactly 1 child is not a split at all (a track-ID continuation
+    artifact -- see the 1-child branch below) and emits no event.
+
     Two mechanisms:
 
     1. Cascade noise (binary suppress): a real division's daughters sit adjacent and
@@ -104,6 +108,18 @@ def classify_events(
 
     for node in tracks:
         if not node.children:
+            continue
+        if len(node.children) == 1:
+            # Not a real division -- a single-child node is a track-ID continuation
+            # artifact (e.g. from the gap-bridging fix occasionally merging one real
+            # daughter into an unrelated track), not a split. Previously fell through
+            # to the `else` branch below and got mislabeled MULTI_WAY_SPLIT (found
+            # 2026-07-06: every multi_way_split row in one run was a singleton).
+            # Propagate any existing origin so cascade-noise detection still works
+            # correctly for a later real split on this continued lineage.
+            child_track_id = node.children[0]
+            if node.track_id in origin_frame:
+                origin_frame[child_track_id] = origin_frame[node.track_id]
             continue
         split_frame = node.frame + 1
         parent_origin = origin_frame.get(node.track_id)
