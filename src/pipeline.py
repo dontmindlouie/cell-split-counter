@@ -25,6 +25,7 @@ def run(
     reuse_masks: bool = False,
     cellprob_threshold: float = 0.0,
     flow_threshold: float = 0.4,
+    vision_backend: str = "claude",
 ) -> None:
     frame_paths = extract_frames(config, frame_dir)
 
@@ -68,13 +69,13 @@ def run(
     # persistence-confirmed (confidence>=1.0) events skipping review.
     # max_reviews raised so busy videos don't silently fall back to rule-only
     # classification once the default 50-split-point cap is hit.
-    claude_usage: dict = {}
+    vision_usage: dict = {}
     events = review_ambiguous(
         events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
-        save_debug_crops=save_debug_crops, usage_out=claude_usage,
+        backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=vision_usage,
     )
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(
-        events, {"video_path": str(config.video_path)}, output_dir / "summary.json", claude_usage=claude_usage
+        events, {"video_path": str(config.video_path)}, output_dir / "summary.json", claude_usage=vision_usage
     )

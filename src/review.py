@@ -199,7 +199,8 @@ def review_ambiguous(
     *,
     lower_threshold: float = 0.05,
     upper_threshold: float = 1.0,
-    model: str = CLAUDE_MODEL,
+    backend: str = "claude",
+    model: str | None = None,
     max_reviews: int = 50,
     save_debug_crops: bool = False,
     max_workers: int = 10,
@@ -209,20 +210,28 @@ def review_ambiguous(
 
     Tier 1 — suppress (confidence < lower_threshold): daughters vanished in 0 frames,
       definitely noise. Dropped from output entirely.
-    Tier 2 — Claude review (lower_threshold <= confidence < upper_threshold): ambiguous;
-      Claude inspects the frame window and returns a verdict.
+    Tier 2 — vision review (lower_threshold <= confidence < upper_threshold): ambiguous;
+      the model inspects the frame window and returns a verdict.
     Tier 3 — auto-confirm (confidence >= upper_threshold): daughters persisted long enough
       to be confident; pass through unchanged.
 
-    max_reviews caps unique split points sent to Claude (daughters share one call).
+    backend selects the vision model: "claude" (default, Claude Haiku 4.5 via the
+    Anthropic API -- higher precision) or "gpt" (GPT via Azure OpenAI, config.GPT_DEPLOYMENT
+    -- recall parity with Claude but notably lower precision per the 2026-07-06 spike;
+    useful mainly to spend down Azure credit once Claude usage isn't the constraint).
+    model overrides the default deployment/model name for the chosen backend.
+
+    max_reviews caps unique split points sent for review (daughters share one call).
     Events beyond the cap pass through unchanged in Tier 2. Unique split points are
     reviewed concurrently (max_workers at a time) -- these are network-bound API calls,
     not local compute, so parallelizing them is safe and doesn't compete with Cellpose/GPU.
 
     If usage_out is given, it's populated (in place) with token/cost totals for this
     review pass: {"api_calls", "input_tokens", "output_tokens", "estimated_cost_usd"}.
-    estimated_cost_usd is None for models without a known price in _MODEL_PRICING_PER_MTOK.
+    estimated_cost_usd is None for models without a known price in the backend's pricing table.
     """
+    if backend not in ("claude", "gpt"):
+        raise ValueError(f"backend must be 'claude' or 'gpt', got {backend!r}")
     suppressed  = [e for e in events if e.confidence < lower_threshold]
     to_review   = [e for e in events if lower_threshold <= e.confidence < upper_threshold]
     passing     = [e for e in events if e.confidence >= upper_threshold]
@@ -241,11 +250,26 @@ def review_ambiguous(
         debug_dir.mkdir(parents=True)
         print(f"  saving crops to {debug_dir}")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise EnvironmentError("ANTHROPIC_API_KEY not set — cannot run Claude vision review")
+    if backend == "claude":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise EnvironmentError("ANTHROPIC_API_KEY not set — cannot run Claude vision review")
+        client = anthropic.Anthropic(api_key=api_key)
+        resolved_model = model or CLAUDE_MODEL
+        review_fn = _review_and_classify
+    else:
+        from openai import AzureOpenAI
 
-    client = anthropic.Anthropic(api_key=api_key)
+        from src.config import GPT_DEPLOYMENT
+        from src.review_gpt import review_and_classify_gpt
+
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+        if not endpoint or not api_key:
+            raise EnvironmentError("AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY not set — cannot run GPT vision review")
+        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview")
+        resolved_model = model or GPT_DEPLOYMENT
+        review_fn = review_and_classify_gpt
 
     # One representative event per unique split point, in order, capped at max_reviews.
     to_call: dict[tuple[int | None, int], LineageEvent] = {}
@@ -258,7 +282,7 @@ def review_ambiguous(
 
     def _call(key: tuple[int | None, int], event: LineageEvent):
         try:
-            return key, _review_and_classify(client, event, frame_dir, model, debug_dir=debug_dir, usage_log=usage_log)
+            return key, review_fn(client, event, frame_dir, resolved_model, debug_dir=debug_dir, usage_log=usage_log)
         except Exception as exc:
             # Fail open (treat as real, at the tracker's own confidence) rather than silently
             # dropping a possibly-genuine division -- but log why, since this used to swallow
@@ -282,9 +306,13 @@ def review_ambiguous(
 
     total_input = sum(u["input_tokens"] for u in usage_log)
     total_output = sum(u["output_tokens"] for u in usage_log)
-    cost = _estimate_cost_usd(model, total_input, total_output)
+    if backend == "claude":
+        cost = _estimate_cost_usd(resolved_model, total_input, total_output)
+    else:
+        from src.review_gpt import estimate_cost_usd as _estimate_cost_usd_gpt
+        cost = _estimate_cost_usd_gpt(resolved_model, total_input, total_output)
     cost_str = f", est. ${cost:.4f}" if cost is not None else ""
-    print(f"  Claude usage: {len(usage_log)} calls, {total_input:,} input tokens, {total_output:,} output tokens{cost_str}")
+    print(f"  {backend} usage: {len(usage_log)} calls, {total_input:,} input tokens, {total_output:,} output tokens{cost_str}")
     if usage_out is not None:
         usage_out.update({
             "api_calls": len(usage_log),
