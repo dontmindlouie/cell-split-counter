@@ -15,6 +15,7 @@ VIDEO_BLOB = os.environ["VIDEO_BLOB"]
 FRAME_STEP = os.environ.get("FRAME_STEP", "1")
 TRACKER = os.environ.get("TRACKER", "trackastra")
 END_FRAME = os.environ.get("END_FRAME")
+VISION_BACKEND = os.environ.get("VISION_BACKEND", "claude")
 
 client = BlobServiceClient.from_connection_string(STORAGE_CONN)
 
@@ -35,6 +36,7 @@ cmd = [
     "--output-dir", str(output_dir),
     "--frame-dir", str(output_dir / "frames"),
     "--debug-crops",
+    "--vision-backend", VISION_BACKEND,
 ]
 if END_FRAME:
     cmd += ["--end-frame", END_FRAME]
