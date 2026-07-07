@@ -15,9 +15,13 @@ _PROFILE = os.environ.get("PROFILE_SEGMENTATION") == "1"
 
 
 def _log_memory(label: str) -> None:
-    import resource  # Linux-only; only imported when actually profiling (cloud)
     import torch
-    ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB->MB on Linux
+    try:
+        import resource  # Linux/macOS: genuine peak RSS
+        ram_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB->MB on Linux
+    except ImportError:
+        import psutil  # Windows: no `resource` module; peak_wset is the equivalent peak figure
+        ram_mb = psutil.Process().memory_info().peak_wset / 1e6
     gpu_alloc_mb = torch.cuda.max_memory_allocated() / 1e6 if torch.cuda.is_available() else 0
     gpu_reserved_mb = torch.cuda.max_memory_reserved() / 1e6 if torch.cuda.is_available() else 0
     print(f"  [mem] {label}: RAM peak={ram_mb:.0f}MB  GPU alloc peak={gpu_alloc_mb:.0f}MB  GPU reserved peak={gpu_reserved_mb:.0f}MB", flush=True)
