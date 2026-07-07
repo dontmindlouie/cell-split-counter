@@ -24,25 +24,29 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "event_id", "source_video", "frame_range", "peak_frame", "split_topology",
-            "track_id", "parent_id", "claude_confidence", "tracker_persistence_score", "classification_source",
-            "centroid_x", "centroid_y", "claude_notes", "bleach_risk",
+            "event_id", "source_video", "frame_range", "peak_frame",
+            "centroid_x", "centroid_y", "near_edge", "cell_area_px", "cell_size_um2",
+            "split_topology", "track_id", "parent_id", "classification_source",
+            "claude_confidence", "tracker_persistence_score", "claude_notes", "bleach_risk",
             "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
-            "anaphase_bridge", "micronucleus", "anomaly_notes", "near_edge",
+            "anaphase_bridge", "micronucleus", "anomaly_notes",
         ])
         for i, e in enumerate(events):
             range_start = max(e.frame - frame_range_lookback, 0)
             cx, cy = (e.centroid[0], e.centroid[1]) if e.centroid else ("", "")
             bleach = f"{e.bleach_risk:.3f}" if e.bleach_risk is not None else ""
             tracker_conf = f"{e.tracker_confidence:.4f}" if e.tracker_confidence is not None else ""
+            area_px = f"{e.cell_area_px:.1f}" if e.cell_area_px is not None else ""
+            size_um2 = f"{e.cell_size_um2:.2f}" if e.cell_size_um2 is not None else ""
             def _flag(v): return "" if v is None else ("1" if v else "0")
             writer.writerow([
-                i, source_video, f"{range_start}-{e.frame}", e.frame, e.event_type.value,
-                e.track_id, e.parent_id, e.confidence, tracker_conf, e.classification_source,
-                cx, cy, e.claude_notes or "", bleach,
+                i, source_video, f"{range_start}-{e.frame}", e.frame,
+                cx, cy, _flag(e.near_edge), area_px, size_um2,
+                e.event_type.value, e.track_id, e.parent_id, e.classification_source,
+                e.confidence, tracker_conf, e.claude_notes or "", bleach,
                 e.acd_division_type or "", _flag(e.misaligned_chromosomes),
                 _flag(e.lagging_chromosome), _flag(e.anaphase_bridge), _flag(e.micronucleus),
-                e.anomaly_notes or "", _flag(e.near_edge),
+                e.anomaly_notes or "",
             ])
 
 

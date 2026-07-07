@@ -4,25 +4,33 @@ One row per **daughter cell** produced by a detected split (a normal 1->2 split
 produces 2 rows; a multi-way split produces N rows, all sharing the same frame
 and parent_id).
 
+Column order groups by what you'd use together: identity, then location/geometry
+(frame + coordinates + size, since finding an event and checking its size both
+start from "where is it"), then lineage, then review/confidence, then
+classification. (Reordered 2026-07-07 -- `centroid_x`/`centroid_y` used to sit
+near the end, far from `peak_frame`, despite usually being needed together.)
+
 | Column | Meaning |
 |---|---|
 | `event_id` | Row counter, no other meaning. |
 | `source_video` | Filename of the input video this row came from. One run = one video; this column makes the CSV self-describing if you're comparing output from multiple runs side by side. |
 | `frame_range` | **Approximation only.** `[peak_frame - 10, peak_frame]` -- a fixed lookback window, not a real measurement of the metaphase-anaphase window like the ground-truth sheet's `Frame` column. Detecting the true window needs per-frame morphology classification, which is out of scope for v1. |
 | `peak_frame` | The actual detected frame: the first frame the daughter cells appear as 2+ separate masks instead of 1. **0-indexed** (frame 0 = the first frame of the video) -- the ground-truth sheet is 1-indexed, so add 1 before comparing (`scripts/score_against_ground_truth.py` already does this). |
-| `split_topology` | `normal_split` (1->2 daughters) or `multi_way_split` (1->3+). Tracks the number of daughters from the lineage graph. Distinct from ACD division type (bipolar/tripolar/multipolar), which describes spindle geometry and will be a separate column when the division classifier is wired in. |
+| `centroid_x` / `centroid_y` | Pixel coordinates of the dividing cell at `peak_frame`, raw frame space (no transform). Matches `review_crops` crop centers. Placed next to `peak_frame` since locating an event needs both together. |
+| `near_edge` | `1`/`0` — centroid within `NEAR_EDGE_MARGIN_PX` (100px) of any frame boundary. Partial visibility at the image boundary produces messier/more uncertain classifications. **Flag, don't exclude**: near-edge splits are still real and belong in total confirmed-split counts, but exclude them (`near_edge != 1`) when computing anomaly-subtype rates (micronucleus %, anaphase_bridge %, etc.), since those need the whole cell visible. |
+| `cell_area_px` | The parent cell's Cellpose mask area (pixel count) at the split frame. Always populated regardless of pixel-size availability. |
+| `cell_size_um2` | `cell_area_px` converted to real units via the acquisition's µm/pixel, when known. **Blank if pixel size is unknown** -- auto-detected from ND2 metadata (varies per acquisition, e.g. Bewo's ND2s are 0.57 µm/px, Tom20's M2 ND2 is 0.432 µm/px; never a fixed constant), or set explicitly via `--pixel-size-um` for AVI sources. Check `summary.json`'s `pixel_size_um` field to see what value (if any) was used for a given run. |
+| `split_topology` | `normal_split` (1->2 daughters) or `multi_way_split` (1->3+). Tracks the number of daughters from the lineage graph. Distinct from ACD division type (bipolar/tripolar/multipolar), which describes spindle geometry and will be a separate column when the division classifier is wired in. **Known bug (2026-07-06):** `multi_way_split` rows with only 1 sibling row (no matching daughter at the same `parent_id`+`peak_frame`) are not genuine 3+-daughter divisions -- `classify_events` mislabels any non-2-daughter split this way, including a lone child. Check sibling count before trusting a `multi_way_split` count. |
 | `track_id` | The track ID assigned to *this* daughter cell going forward. |
 | `parent_id` | The track ID of the cell that split to produce this daughter -- i.e. look up other rows with this same `track_id` value to trace lineage back another generation. |
-| `claude_confidence` | Rule stage: `persistence_frames / confidence_max_frames` capped at 1.0 (same number as `tracker_persistence_score`, before Claude looks at it). After Claude review: Claude's own 0.0–1.0 confidence if verdict was real, forced to `0.0` if false positive. **Filter on `claude_confidence > 0` to get confirmed events — there is no validated stricter cutoff (e.g. >=0.5, >=0.7) for the current pipeline version; see gotcha below and `tracker_persistence_score`'s entry for why not to sweep a threshold.** |
-| `classification_source` | `"rule"` for auto-confirmed events; `"claude"` once vision review has run on the event. |
-| `bleach_risk` | `peak_frame / total_frames` (0.0–1.0). Proxy for photobleaching accumulation — higher values mean the event occurred later in the timelapse, where SiR-DNA signal may be degraded. Treat Claude division-type classifications with higher skepticism as this value approaches 1.0. |
-| `tracker_persistence_score` | The persistence-based score computed *before* Claude ever reviews the candidate (daughter masks surviving N frames / max frames) — kept after review so you can compare tracker behavior against Claude's verdict. **Not a reliable real-vs-noise discriminator on its own**: in crowded fields, real divisions and false positives have scored similarly on this metric (0.1–0.2 for both). Don't filter on this column — filter on `claude_confidence`. |
-| `centroid_x` / `centroid_y` | Pixel coordinates of the dividing cell at `peak_frame`, raw frame space (no transform). Matches `review_crops` crop centers. |
-| `claude_notes` | Claude's free-text description from the review call. Populated regardless of verdict (real or false_positive). |
+| `classification_source` | `"rule"` for auto-confirmed events; `"claude"` once vision review has run on the event (also used for the `gpt` backend -- the column name predates that option). |
+| `claude_confidence` | Rule stage: `persistence_frames / confidence_max_frames` capped at 1.0 (same number as `tracker_persistence_score`, before the vision model looks at it). After review: the model's own 0.0–1.0 confidence if verdict was real, forced to `0.0` if false positive. **Filter on `claude_confidence > 0` to get confirmed events — there is no validated stricter cutoff (e.g. >=0.5, >=0.7) for the current pipeline version; see gotcha below and `tracker_persistence_score`'s entry for why not to sweep a threshold.** |
+| `tracker_persistence_score` | The persistence-based score computed *before* the vision model ever reviews the candidate (daughter masks surviving N frames / max frames) — kept after review so you can compare tracker behavior against the model's verdict. **Not a reliable real-vs-noise discriminator on its own**: in crowded fields, real divisions and false positives have scored similarly on this metric (0.1–0.2 for both). Don't filter on this column — filter on `claude_confidence`. |
+| `claude_notes` | The vision model's free-text description from the review call. Populated regardless of verdict (real or false_positive). |
+| `bleach_risk` | `peak_frame / total_frames` (0.0–1.0). Proxy for photobleaching accumulation — higher values mean the event occurred later in the timelapse, where SiR-DNA signal may be degraded. Treat division-type classifications with higher skepticism as this value approaches 1.0. |
 | `acd_division_type` | `bipolar` / `tripolar` / `multipolar` — spindle geometry from the ACD classifier. Only populated for confirmed real events (`claude_confidence > 0`). |
-| `misaligned_chromosomes` / `lagging_chromosome` / `anaphase_bridge` / `micronucleus` | `1`/`0` abnormality flags from Claude's read, only populated for confirmed real events. `anaphase_bridge` has a documented history of over-calling subtle nuclear indentations as bridges — treat it with more skepticism than the other three. |
-| `anomaly_notes` | Claude's free-text notes on anything unusual beyond the four flagged categories. |
-| `near_edge` | `1`/`0` — centroid within `NEAR_EDGE_MARGIN_PX` (100px) of any frame boundary. Partial visibility at the image boundary produces messier/more uncertain classifications. **Flag, don't exclude**: near-edge splits are still real and belong in total confirmed-split counts, but exclude them (`near_edge != 1`) when computing anomaly-subtype rates (micronucleus %, anaphase_bridge %, etc.), since those need the whole cell visible. |
+| `misaligned_chromosomes` / `lagging_chromosome` / `anaphase_bridge` / `micronucleus` | `1`/`0` abnormality flags from the review model's read, only populated for confirmed real events. `anaphase_bridge` has a documented history of over-calling subtle nuclear indentations as bridges — treat it with more skepticism than the other three. |
+| `anomaly_notes` | The vision model's free-text notes on anything unusual beyond the four flagged categories. |
 
 **Important gotcha:** `claude_confidence` is forced to `0.0` whenever Claude's verdict was
 `false_positive`, regardless of how confident Claude actually was in that rejection.
@@ -55,5 +63,7 @@ so treating it as a precise dial isn't warranted yet.
 
 ## `data/output/summary.json`
 
-Aggregate counts only: `video_path`, `total_events`, `event_counts` (by
-`division_type`).
+Aggregate counts only: `video_path`, `pixel_size_um` (µm/pixel actually used for
+this run's `cell_size_um2` column, `null` if unknown), `total_events`,
+`event_counts` (by `division_type`), and `claude_usage` (api_calls/tokens/cost,
+on runs generated after 2026-07-06).

@@ -24,8 +24,24 @@ COLUMN_DOCS = [
         "metaphase-anaphase window -- just a fixed lookback for display/crops."),
     ("peak_frame", "The frame the split was actually detected at (first frame with 2+ "
         "separate daughter masks). 0-indexed."),
+    ("centroid_x / centroid_y", "Pixel coordinates (raw frame space, no transform needed) "
+        "of the dividing cell at peak_frame. Matches review_crops crop centers. Placed next "
+        "to peak_frame since locating an event needs both together."),
+    ("near_edge", "'1'/'0' -- centroid within ~100px of any frame boundary. Partial visibility "
+        "at the image boundary produces messier/more uncertain classifications. Flag, don't "
+        "exclude: near-edge splits still belong in total confirmed-split counts, but exclude "
+        "them when computing abnormality-rate percentages (micronucleus %, etc.), since those "
+        "need the whole cell visible."),
+    ("cell_area_px", "The parent cell's Cellpose mask area (pixel count) at the split frame. "
+        "Always populated regardless of pixel-size availability."),
+    ("cell_size_um2", "cell_area_px converted to real units via the acquisition's µm/pixel, "
+        "when known. Blank if pixel size is unknown -- auto-detected from ND2 metadata (varies "
+        "per acquisition, never a fixed constant), or set via --pixel-size-um for AVI sources. "
+        "Check summary.json's pixel_size_um field for what value (if any) this run used."),
     ("split_topology", "'normal_split' (1->2 daughters) or 'multi_way_split' (1->3+). "
-        "Purely geometric (how many daughters), distinct from acd_division_type."),
+        "Purely geometric (how many daughters), distinct from acd_division_type. KNOWN BUG: "
+        "multi_way_split rows with only 1 sibling row are not genuine 3+-daughter divisions -- "
+        "check sibling count (see Known limitations) before trusting this count."),
     ("track_id", "Track ID assigned to THIS daughter cell going forward."),
     ("parent_id", "Track ID of the cell that split to produce this daughter. Rows sharing "
         "the same (parent_id, peak_frame) are daughters of the same split event -- "
@@ -47,8 +63,6 @@ COLUMN_DOCS = [
         "claude_confidence."),
     ("classification_source", "'claude' once Claude vision review ran on this event, 'rule' "
         "if it was auto-confirmed by the tracker without a Claude call."),
-    ("centroid_x / centroid_y", "Pixel coordinates (raw frame space, no transform needed) "
-        "of the dividing cell at peak_frame. Matches review_crops crop centers."),
     ("claude_notes", "Claude's free-text description from the review call, populated "
         "regardless of verdict (real or false_positive)."),
     ("bleach_risk", "peak_frame / total_frames. Higher = later in the timelapse = more "
@@ -63,11 +77,6 @@ COLUMN_DOCS = [
         "skepticism than the other three flags."),
     ("anomaly_notes", "Claude's free-text notes on anything unusual about the event "
         "(artifacts, nearby debris, atypical morphology) beyond the four flagged categories."),
-    ("near_edge", "'1'/'0' -- centroid within ~100px of any frame boundary. Partial visibility "
-        "at the image boundary produces messier/more uncertain classifications. Flag, don't "
-        "exclude: near-edge splits still belong in total confirmed-split counts, but exclude "
-        "them when computing abnormality-rate percentages (micronucleus %, etc.), since those "
-        "need the whole cell visible."),
 ]
 
 README_INTRO = """# {label} -- cell division analysis output
@@ -270,10 +279,10 @@ def main() -> None:
                       f"triple/quadruple divisions.")
     lines.append("")
 
-    (package_dir / "README.md").write_text("\n".join(lines))
+    (package_dir / "README.md").write_text("\n".join(lines), encoding="utf-8")
 
     index_path = package_dir / "index.csv"
-    with open(index_path, "w", newline="") as f:
+    with open(index_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["parent_id", "peak_frame", "claude_confidence", "classification_source",
                           "acd_division_type", "abnormalities", "has_review_crop", "review_crop_path"])

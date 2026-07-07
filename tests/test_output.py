@@ -32,11 +32,12 @@ def test_csv_header_columns(tmp_path):
     reader = csv.reader(out.open())
     header = next(reader)
     assert header == [
-        "event_id", "source_video", "frame_range", "peak_frame", "split_topology",
-        "track_id", "parent_id", "claude_confidence", "tracker_persistence_score", "classification_source",
-        "centroid_x", "centroid_y", "claude_notes", "bleach_risk",
+        "event_id", "source_video", "frame_range", "peak_frame",
+        "centroid_x", "centroid_y", "near_edge", "cell_area_px", "cell_size_um2",
+        "split_topology", "track_id", "parent_id", "classification_source",
+        "claude_confidence", "tracker_persistence_score", "claude_notes", "bleach_risk",
         "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
-        "anaphase_bridge", "micronucleus", "anomaly_notes", "near_edge",
+        "anaphase_bridge", "micronucleus", "anomaly_notes",
     ]
 
 
@@ -106,3 +107,25 @@ def test_csv_acd_columns_empty_when_not_classified(tmp_path):
     assert rows[0]["acd_division_type"] == ""
     assert rows[0]["lagging_chromosome"] == ""
     assert rows[0]["micronucleus"] == ""
+
+
+def test_csv_cell_size_written_when_pixel_size_known(tmp_path):
+    from src.classify import LineageEvent
+    event = LineageEvent(
+        track_id=2, parent_id=1, frame=10,
+        event_type=EventType.NORMAL_SPLIT, classification_source="rule",
+        confidence=1.0, centroid=(50.0, 75.0),
+        cell_area_px=100.0, cell_size_um2=18.7,
+    )
+    write_events_csv([event], tmp_path / "events.csv", source_video="v.avi")
+    rows = _read_csv(tmp_path)
+    assert rows[0]["cell_area_px"] == "100.0"
+    assert rows[0]["cell_size_um2"] == "18.70"
+
+
+def test_csv_cell_size_empty_when_pixel_size_unknown(tmp_path):
+    event = make_event(2)  # cell_area_px/cell_size_um2 both default to None
+    write_events_csv([event], tmp_path / "events.csv", source_video="v.avi")
+    rows = _read_csv(tmp_path)
+    assert rows[0]["cell_area_px"] == ""
+    assert rows[0]["cell_size_um2"] == ""

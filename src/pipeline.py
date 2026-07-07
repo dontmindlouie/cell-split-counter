@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 
 from src.classify import NEAR_EDGE_MARGIN_PX, classify_events
-from src.ingest import IngestConfig, extract_frames
+from src.ingest import IngestConfig, extract_frames, get_pixel_size_um
 from src.output import write_events_csv, write_summary_json
 from src.review import review_ambiguous
 from src.segment import load_video_arrays, segment_all, segment_video_arrays
@@ -26,10 +26,14 @@ def run(
     cellprob_threshold: float = 0.0,
     flow_threshold: float = 0.4,
     segmentation_model: str = "cyto3",
+    pixel_size_um: float | None = None,
     vision_backend: str = "claude",
     gpt_reasoning_effort: str = "medium",
     min_gpt_confidence: float = 0.85,
 ) -> None:
+    if pixel_size_um is None:
+        pixel_size_um = get_pixel_size_um(config.video_path)
+
     frame_paths = extract_frames(config, frame_dir)
 
     if start_frame != 0 or end_frame is not None:
@@ -61,9 +65,15 @@ def run(
         m = NEAR_EDGE_MARGIN_PX
         return cx < m or cx > frame_w - m or cy < m or cy > frame_h - m
 
+    def _cell_size_um2(area_px: float | None) -> float | None:
+        if area_px is None or pixel_size_um is None:
+            return None
+        return area_px * pixel_size_um ** 2
+
     events = [
         dataclasses.replace(
-            e, bleach_risk=e.frame / total_frames, near_edge=_is_near_edge(e.centroid)
+            e, bleach_risk=e.frame / total_frames, near_edge=_is_near_edge(e.centroid),
+            cell_size_um2=_cell_size_um2(e.cell_area_px),
         )
         for e in events
     ]
@@ -82,5 +92,6 @@ def run(
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(
-        events, {"video_path": str(config.video_path)}, output_dir / "summary.json", claude_usage=vision_usage
+        events, {"video_path": str(config.video_path), "pixel_size_um": pixel_size_um},
+        output_dir / "summary.json", claude_usage=vision_usage
     )

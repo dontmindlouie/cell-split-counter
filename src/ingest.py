@@ -14,6 +14,24 @@ class IngestConfig:
     roi: tuple[int, int, int, int] | None  # x, y, w, h; None = full frame
 
 
+def get_pixel_size_um(video_path: Path) -> float | None:
+    """Return the acquisition's µm/pixel, if the source format carries it.
+
+    ND2 files (Nikon NIS-Elements) embed real per-acquisition voxel size --
+    varies by objective/zoom, so this is NOT a fixed constant even within one
+    imaging project (confirmed 2026-07-03: Bewo's ND2s are 0.57 µm/px, Tom20's
+    M2 ND2 is 0.432 µm/px). AVI exports carry no reliable equivalent metadata --
+    returns None, and callers should fall back to an explicit override or leave
+    size-in-µm fields blank rather than guess.
+    """
+    if video_path.suffix.lower() != ".nd2":
+        return None
+    import nd2
+
+    with nd2.ND2File(video_path) as f:
+        return f.voxel_size().x
+
+
 def extract_frames(config: IngestConfig, out_dir: Path) -> list[Path]:
     """Extract every config.frame_step'th frame from the video, cropped to config.roi.
 

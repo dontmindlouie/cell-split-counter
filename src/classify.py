@@ -45,6 +45,8 @@ class LineageEvent:
     micronucleus: bool | None = None
     anomaly_notes: str | None = None  # interesting anomaly flagged for case study
     near_edge: bool | None = None  # centroid within NEAR_EDGE_MARGIN_PX of any frame boundary
+    cell_area_px: float | None = None  # parent cell's Cellpose mask area at the split frame
+    cell_size_um2: float | None = None  # cell_area_px converted via per-acquisition pixel size, if known
 
 
 def _daughter_persistence(
@@ -128,6 +130,7 @@ def classify_events(
                     classification_source="rule",
                     confidence=confidence,
                     centroid=node.mask.centroid,
+                    cell_area_px=node.mask.area,
                 )
             )
     return events
