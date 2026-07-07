@@ -59,6 +59,7 @@ def review_and_classify_gpt(
     deployment: str,
     debug_dir: Path | None = None,
     usage_log: list[dict] | None = None,
+    reasoning_effort: str = "low",
 ) -> dict:
     """GPT equivalent of review._review_and_classify. Identical crop window and prompt."""
     before_indices = [event.frame - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]
@@ -99,7 +100,7 @@ def review_and_classify_gpt(
     response = client.chat.completions.create(
         model=deployment,
         max_completion_tokens=2000,
-        reasoning_effort="low",
+        reasoning_effort=reasoning_effort,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": _SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE)},

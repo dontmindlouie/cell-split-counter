@@ -34,7 +34,9 @@ if __name__ == "__main__":
     parser.add_argument("--flow-threshold", type=float, default=0.4, help="Cellpose sensitivity knob; higher = more permissive (default 0.4, library default)")
     parser.add_argument("--output-dir", type=Path, default=None, help="directory for events.csv and summary.json (default: data/output/<video filename stem>)")
     parser.add_argument("--frame-dir", type=Path, default=Path("data/frames"), help="directory for extracted frames (default: data/frames)")
-    parser.add_argument("--vision-backend", choices=["claude", "gpt"], default="claude", help="vision review model: claude (default, higher precision) or gpt (Azure OpenAI, lower precision but draws down Azure credit instead of Anthropic API spend -- see src/review_gpt.py)")
+    parser.add_argument("--vision-backend", choices=["claude", "gpt"], default="claude", help="vision review model: claude (default) or gpt (Azure OpenAI, draws down Azure credit instead of Anthropic API spend -- see src/review_gpt.py; with --gpt-reasoning-effort medium and the default --min-gpt-confidence floor, precision is close to/slightly better than Claude on the 2026-07-06/07 spike)")
+    parser.add_argument("--gpt-reasoning-effort", choices=["low", "medium", "high"], default="medium", help="GPT backend only. 'high' is currently unusable -- burns its token budget on hidden reasoning and fails ~68%% of calls (2026-07-07 finding)")
+    parser.add_argument("--min-gpt-confidence", type=float, default=0.85, help="GPT backend only: verdicts below this self-reported confidence are downgraded to false_positive. 0.0 disables filtering.")
     args = parser.parse_args()
 
     output_dir = args.output_dir or Path("data/output") / args.video_path.stem
@@ -53,4 +55,6 @@ if __name__ == "__main__":
         cellprob_threshold=args.cellprob_threshold,
         flow_threshold=args.flow_threshold,
         vision_backend=args.vision_backend,
+        gpt_reasoning_effort=args.gpt_reasoning_effort,
+        min_gpt_confidence=args.min_gpt_confidence,
     )

@@ -26,6 +26,8 @@ def run(
     cellprob_threshold: float = 0.0,
     flow_threshold: float = 0.4,
     vision_backend: str = "claude",
+    gpt_reasoning_effort: str = "medium",
+    min_gpt_confidence: float = 0.85,
 ) -> None:
     frame_paths = extract_frames(config, frame_dir)
 
@@ -73,6 +75,7 @@ def run(
     events = review_ambiguous(
         events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
         backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=vision_usage,
+        gpt_reasoning_effort=gpt_reasoning_effort, min_gpt_confidence=min_gpt_confidence,
     )
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)

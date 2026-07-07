@@ -205,6 +205,8 @@ def review_ambiguous(
     save_debug_crops: bool = False,
     max_workers: int = 10,
     usage_out: dict | None = None,
+    gpt_reasoning_effort: str = "medium",
+    min_gpt_confidence: float = 0.85,
 ) -> list[LineageEvent]:
     """Three-tier confidence routing for split events.
 
@@ -216,10 +218,18 @@ def review_ambiguous(
       to be confident; pass through unchanged.
 
     backend selects the vision model: "claude" (default, Claude Haiku 4.5 via the
-    Anthropic API -- higher precision) or "gpt" (GPT via Azure OpenAI, config.GPT_DEPLOYMENT
-    -- recall parity with Claude but notably lower precision per the 2026-07-06 spike;
-    useful mainly to spend down Azure credit once Claude usage isn't the constraint).
-    model overrides the default deployment/model name for the chosen backend.
+    Anthropic API) or "gpt" (GPT via Azure OpenAI, config.GPT_DEPLOYMENT). model overrides
+    the default deployment/model name for the chosen backend.
+
+    GPT-backend tuning, per the 2026-07-06/07 spike on the same 180-candidate baseline:
+    - gpt_reasoning_effort: "low" (20.0% precision), "medium" (22.1% raw, best option --
+      "high" burns most of its 2000-token budget on invisible reasoning tokens and fails
+      outright on ~68% of calls with an empty response, not currently usable).
+    - min_gpt_confidence: real verdicts below this (using GPT's own self-reported
+      confidence, not the tracker's) are downgraded to false_positive. At 0.85 with
+      medium effort this brings precision to 36.5% (recall 90.0%, F1 0.519) -- slightly
+      beating Claude's F1 (0.504) on this same dataset. Set to 0.0 to disable filtering.
+      Only applied to the "gpt" backend; no effect on "claude".
 
     max_reviews caps unique split points sent for review (daughters share one call).
     Events beyond the cap pass through unchanged in Tier 2. Unique split points are
@@ -282,6 +292,8 @@ def review_ambiguous(
 
     def _call(key: tuple[int | None, int], event: LineageEvent):
         try:
+            if backend == "gpt":
+                return key, review_fn(client, event, frame_dir, resolved_model, debug_dir=debug_dir, usage_log=usage_log, reasoning_effort=gpt_reasoning_effort)
             return key, review_fn(client, event, frame_dir, resolved_model, debug_dir=debug_dir, usage_log=usage_log)
         except Exception as exc:
             # Fail open (treat as real, at the tracker's own confidence) rather than silently
@@ -330,8 +342,10 @@ def review_ambiguous(
             continue
         r = split_result[key]
         verdict = r.get("verdict", "real")
-        is_real = verdict == "real"
         confidence = float(r.get("confidence", event.confidence))
+        if backend == "gpt" and verdict == "real" and confidence < min_gpt_confidence:
+            verdict = "false_positive"
+        is_real = verdict == "real"
         split_type = r.get("split_type") or ""
         description = r.get("description", "")
         notes = f"{split_type}: {description}".strip(": ") if split_type else description
