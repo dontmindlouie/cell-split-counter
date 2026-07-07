@@ -69,6 +69,48 @@ def _daughter_persistence(
     return max_lookahead
 
 
+def classify_track_ends(tracks: list[TrackNode], last_frame: int) -> list[LineageEvent]:
+    """Emit a DEATH event for every track that stops before the video ends without splitting.
+
+    A track's last node has no children in two distinct cases: it split (already
+    covered by classify_events) or it just stops -- the cell died, drifted out of
+    the focal plane, or Cellpose/Trackastra simply lost it. Tracking topology alone
+    can't tell those apart, so every non-split stop is labeled DEATH here; pipeline.py
+    reclassifies stops near the frame boundary as ROI_EXIT afterward (same near_edge
+    check already used for split events), since a cell last seen at the edge most
+    likely walked out of frame rather than died in place.
+
+    Tracks still alive at last_frame are excluded -- the video simply ended first,
+    that's not a death.
+    """
+    last_node_by_track: dict[int, TrackNode] = {}
+    parent_of_track: dict[int, int] = {}
+    for node in tracks:
+        prev = last_node_by_track.get(node.track_id)
+        if prev is None or node.frame > prev.frame:
+            last_node_by_track[node.track_id] = node
+        if node.parent_id is not None:
+            parent_of_track[node.track_id] = node.parent_id
+
+    events = []
+    for track_id, node in last_node_by_track.items():
+        if node.children or node.frame >= last_frame:
+            continue
+        events.append(
+            LineageEvent(
+                track_id=track_id,
+                parent_id=parent_of_track.get(track_id),
+                frame=node.frame,
+                event_type=EventType.DEATH,
+                classification_source="rule",
+                confidence=1.0,
+                centroid=node.mask.centroid,
+                cell_area_px=node.mask.area,
+            )
+        )
+    return events
+
+
 def classify_events(
     tracks: list[TrackNode],
     roi: tuple[int, int, int, int] | None,
@@ -77,9 +119,11 @@ def classify_events(
 ) -> list[LineageEvent]:
     """Walk the lineage graph and emit one LineageEvent per split point.
 
-    v1 scope: only split events (NORMAL_SPLIT / MULTI_WAY_SPLIT) are classified.
-    Failed splits, ROI exits, death, and abnormality review are deferred -- see
-    project scope notes -- so `roi` is accepted but unused for now.
+    v1 scope: only split events (NORMAL_SPLIT / MULTI_WAY_SPLIT) are classified here.
+    Track ends (DEATH / ROI_EXIT) are handled separately by classify_track_ends, since
+    they need to know where the video ends, not just the lineage graph. Failed splits
+    and ambiguous-abnormality-only tracks are still deferred -- so `roi` is accepted
+    but unused for now.
 
     A node with exactly 1 child is not a split at all (a track-ID continuation
     artifact -- see the 1-child branch below) and emits no event.

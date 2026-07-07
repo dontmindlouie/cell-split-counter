@@ -1,8 +1,9 @@
 # `data/output/events.csv` column reference
 
-One row per **daughter cell** produced by a detected split (a normal 1->2 split
-produces 2 rows; a multi-way split produces N rows, all sharing the same frame
-and parent_id).
+One row per detected event: either a **daughter cell** produced by a split (a
+normal 1->2 split produces 2 rows; a multi-way split produces N rows, all
+sharing the same frame and parent_id), or a **track end** (`death` /
+`roi_exit`) -- a track that stops without splitting, one row per track.
 
 Column order groups by what you'd use together: identity, then location/geometry
 (frame + coordinates + size, since finding an event and checking its size both
@@ -20,7 +21,7 @@ near the end, far from `peak_frame`, despite usually being needed together.)
 | `near_edge` | `1`/`0` — centroid within `NEAR_EDGE_MARGIN_PX` (100px) of any frame boundary. Partial visibility at the image boundary produces messier/more uncertain classifications. **Flag, don't exclude**: near-edge splits are still real and belong in total confirmed-split counts, but exclude them (`near_edge != 1`) when computing anomaly-subtype rates (micronucleus %, anaphase_bridge %, etc.), since those need the whole cell visible. |
 | `cell_area_px` | The parent cell's Cellpose mask area (pixel count) at the split frame. Always populated regardless of pixel-size availability. |
 | `cell_size_um2` | `cell_area_px` converted to real units via the acquisition's µm/pixel, when known. **Blank if pixel size is unknown** -- auto-detected from ND2 metadata (varies per acquisition, e.g. Bewo's ND2s are 0.57 µm/px, Tom20's M2 ND2 is 0.432 µm/px; never a fixed constant), or set explicitly via `--pixel-size-um` for AVI sources. Check `summary.json`'s `pixel_size_um` field to see what value (if any) was used for a given run. |
-| `split_topology` | `normal_split` (1->2 daughters) or `multi_way_split` (1->3+). Tracks the number of daughters from the lineage graph. Distinct from ACD division type (bipolar/tripolar/multipolar), which describes spindle geometry and will be a separate column when the division classifier is wired in. **Bug fixed 2026-07-07:** a single-child node (a track-ID continuation artifact, not a real division) used to be mislabeled `multi_way_split` -- `classify_events` now skips these entirely, emitting no event. Output from runs before this fix may still have singleton `multi_way_split` rows; check sibling count before trusting `multi_way_split` counts in older packages. |
+| `split_topology` | Despite the column name (predates non-split events), this is the general event-type column: `normal_split` (1->2 daughters), `multi_way_split` (1->3+), `death` (track stopped away from the frame boundary, before the video ended), or `roi_exit` (track stopped within `NEAR_EDGE_MARGIN_PX` of the frame boundary -- most likely walked out of frame rather than died). `death`/`roi_exit` are rule-only (`classification_source="rule"`, `claude_confidence=1.0`) -- v1 can't distinguish a real death from a tracking dropout (segmentation losing the cell), so treat both event types as "track ended here," not a confirmed biological death. Distinct from ACD division type (bipolar/tripolar/multipolar), which describes spindle geometry and will be a separate column when the division classifier is wired in. **Bug fixed 2026-07-07:** a single-child node (a track-ID continuation artifact, not a real division) used to be mislabeled `multi_way_split` -- `classify_events` now skips these entirely, emitting no event. Output from runs before this fix may still have singleton `multi_way_split` rows; check sibling count before trusting `multi_way_split` counts in older packages. |
 | `track_id` | The track ID assigned to *this* daughter cell going forward. |
 | `parent_id` | The track ID of the cell that split to produce this daughter -- i.e. look up other rows with this same `track_id` value to trace lineage back another generation. |
 | `classification_source` | `"rule"` for auto-confirmed events; `"claude"` once vision review has run on the event (also used for the `gpt` backend -- the column name predates that option). |
@@ -65,5 +66,6 @@ so treating it as a precise dial isn't warranted yet.
 
 Aggregate counts only: `video_path`, `pixel_size_um` (µm/pixel actually used for
 this run's `cell_size_um2` column, `null` if unknown), `total_events`,
-`event_counts` (by `division_type`), and `claude_usage` (api_calls/tokens/cost,
-on runs generated after 2026-07-06).
+`event_counts` (by `division_type`), and `vision_usage` (api_calls/tokens/cost
+for whichever `--vision-backend` was used, on runs generated after 2026-07-06;
+named `claude_usage` before 2026-07-08).

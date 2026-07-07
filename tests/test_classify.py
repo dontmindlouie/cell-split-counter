@@ -1,4 +1,4 @@
-from src.classify import EventType, classify_events
+from src.classify import EventType, classify_events, classify_track_ends
 from src.segment import CellMask
 from src.track import TrackNode
 
@@ -145,3 +145,55 @@ def test_partial_persistence_gives_fractional_confidence():
 
     assert len(events) == 2
     assert all(abs(e.confidence - 0.5) < 1e-6 for e in events)
+
+
+def test_track_stopping_before_video_end_emits_death():
+    tracks = [node(1, None, 0), node(1, None, 1), node(1, None, 2)]
+    events = classify_track_ends(tracks, last_frame=10)
+
+    assert len(events) == 1
+    e = events[0]
+    assert e.track_id == 1
+    assert e.frame == 2
+    assert e.event_type == EventType.DEATH
+    assert e.classification_source == "rule"
+    assert e.confidence == 1.0
+
+
+def test_track_alive_at_last_frame_emits_no_event():
+    # The track's last node IS the video's last frame -- the video ended, not the cell.
+    tracks = [node(1, None, 0), node(1, None, 1), node(1, None, 2)]
+    events = classify_track_ends(tracks, last_frame=2)
+
+    assert events == []
+
+
+def test_split_track_end_emits_no_death_event():
+    # The node right before a split has children set -- classify_events already covers
+    # it, classify_track_ends must not double-emit a DEATH for the same stop.
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=5)
+    events = classify_track_ends(tracks, last_frame=100)
+
+    assert all(e.track_id != 1 for e in events)
+
+
+def test_death_parent_id_traced_from_birth_node():
+    # parent_id is only set on a track's birth-frame node -- classify_track_ends must
+    # look it up from there, not from the (parent_id=None) final node.
+    tracks = [node(2, parent_id=1, frame=5), node(2, None, 6), node(2, None, 7)]
+    events = classify_track_ends(tracks, last_frame=100)
+
+    assert len(events) == 1
+    assert events[0].parent_id == 1
+    assert events[0].frame == 7
+
+
+def test_multiple_tracks_evaluated_independently():
+    tracks = [
+        node(1, None, 0), node(1, None, 1), node(1, None, 2),  # dies at frame 2
+        node(2, None, 0), node(2, None, 1), node(2, None, 5),  # still alive at video end
+    ]
+    events = classify_track_ends(tracks, last_frame=5)
+
+    assert len(events) == 1
+    assert events[0].track_id == 1

@@ -65,8 +65,12 @@ def _build_confirmed_splits(header: list[str], data_rows: list[list[str]]) -> li
     parent_idx = header.index("parent_id")
     frame_idx = header.index("peak_frame")
     conf_idx = header.index("claude_confidence")
+    topology_idx = header.index("split_topology")
 
     for row in data_rows:
+        # death/roi_exit rows are track ends, not splits -- this sheet is splits only.
+        if row[topology_idx] not in ("normal_split", "multi_way_split"):
+            continue
         try:
             confidence = float(row[conf_idx])
         except ValueError:

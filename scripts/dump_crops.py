@@ -55,6 +55,9 @@ def main() -> None:
     seen: set[tuple] = set()
     targets = []
     for r in rows:
+        # death/roi_exit rows never went to Claude -- this tool is about split review crops.
+        if r["split_topology"] not in ("normal_split", "multi_way_split"):
+            continue
         pf = int(r["peak_frame"])
         if pf < args.start_frame:
             continue

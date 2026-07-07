@@ -38,8 +38,14 @@ COLUMN_DOCS = [
         "when known. Blank if pixel size is unknown -- auto-detected from ND2 metadata (varies "
         "per acquisition, never a fixed constant), or set via --pixel-size-um for AVI sources. "
         "Check summary.json's pixel_size_um field for what value (if any) this run used."),
-    ("split_topology", "'normal_split' (1->2 daughters) or 'multi_way_split' (1->3+). "
-        "Purely geometric (how many daughters), distinct from acd_division_type. Fixed "
+    ("split_topology", "General event-type column (name predates non-split events): "
+        "'normal_split' (1->2 daughters), 'multi_way_split' (1->3+), 'death' (track stopped "
+        "away from the frame boundary before the video ended), or 'roi_exit' (track stopped "
+        "near the frame boundary -- likely walked out of frame rather than died). death/"
+        "roi_exit rows are rule-only (claude_confidence=1.0, never sent for vision review) -- "
+        "v1 can't distinguish a real death from the tracker just losing the cell, so treat "
+        "both as 'track ended here,' not a confirmed biological death. Split counts are "
+        "purely geometric (how many daughters), distinct from acd_division_type. Fixed "
         "2026-07-07: a single-child node (track-ID continuation, not a real division) used "
         "to be mislabeled multi_way_split. Packages generated before that fix may still have "
         "singleton multi_way_split rows -- check sibling count (see Known limitations) before "
@@ -132,7 +138,7 @@ FOLDER_DOCS = {
     "frames": "Raw extracted video frames (one PNG per frame, 0-indexed to match peak_frame "
         "and centroid coordinates directly, no transform needed).",
     "summary.json": "Aggregate counts only (total_events, event_counts by type), plus a "
-        "claude_usage block (api_calls, input/output tokens, estimated_cost_usd) on runs "
+        "vision_usage block (api_calls, input/output tokens, estimated_cost_usd) on runs "
         "generated after 2026-07-06. Not present in every package.",
 }
 

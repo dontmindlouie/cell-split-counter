@@ -5,7 +5,7 @@ from pathlib import Path
 
 import cv2
 
-from src.classify import NEAR_EDGE_MARGIN_PX, classify_events
+from src.classify import NEAR_EDGE_MARGIN_PX, EventType, classify_events, classify_track_ends
 from src.ingest import IngestConfig, extract_frames, get_pixel_size_um
 from src.output import write_events_csv, write_summary_json
 from src.review import review_ambiguous
@@ -53,9 +53,9 @@ def run(
         masks_by_frame = segment_all(frame_paths, model_type=segmentation_model)
         tracks = link_frames(masks_by_frame)
 
-    events = classify_events(tracks, config.roi)
-
     total_frames = len(frame_paths)
+    events = classify_events(tracks, config.roi) + classify_track_ends(tracks, last_frame=total_frames - 1)
+
     frame_h, frame_w = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE).shape
 
     def _is_near_edge(centroid: tuple[float, float] | None) -> bool | None:
@@ -78,20 +78,34 @@ def run(
         for e in events
     ]
 
-    # upper_threshold=inf: every non-suppressed event gets a Claude verdict, notes, AND
-    # division-type/abnormality classification in one combined call, instead of
+    # A DEATH stop right at the frame boundary is more likely the cell walking out of
+    # frame than actually dying -- reuse the near_edge flag just computed to relabel it.
+    events = [
+        dataclasses.replace(e, event_type=EventType.ROI_EXIT)
+        if e.event_type == EventType.DEATH and e.near_edge else e
+        for e in events
+    ]
+
+    # Only split candidates go to vision review -- the split-verification prompt in
+    # review.py doesn't apply to DEATH/ROI_EXIT stops, which carry no ambiguity to
+    # resolve (tracking topology + video-end position is the whole signal for those).
+    splits = [e for e in events if e.event_type in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
+    track_ends = [e for e in events if e.event_type not in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
+
+    # upper_threshold=inf: every non-suppressed split event gets a Claude verdict, notes,
+    # AND division-type/abnormality classification in one combined call, instead of
     # persistence-confirmed (confidence>=1.0) events skipping review.
     # max_reviews raised so busy videos don't silently fall back to rule-only
     # classification once the default 50-split-point cap is hit.
     vision_usage: dict = {}
     events = review_ambiguous(
-        events, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
+        splits, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
         backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=vision_usage,
         gpt_reasoning_effort=gpt_reasoning_effort, min_gpt_confidence=min_gpt_confidence,
-    )
+    ) + track_ends
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(
         events, {"video_path": str(config.video_path), "pixel_size_um": pixel_size_um},
-        output_dir / "summary.json", claude_usage=vision_usage
+        output_dir / "summary.json", vision_usage=vision_usage
     )
