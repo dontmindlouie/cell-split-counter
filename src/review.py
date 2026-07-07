@@ -72,6 +72,9 @@ Chromosomal abnormalities — examine each frame carefully:
 - lagging_chromosome: a single chromosome or fragment trailing between the two separating masses
 - anaphase_bridge: a thin continuous chromatin thread connecting the two separating chromosome masses
 - micronucleus: a small distinct bright spot separate from the main daughter nucleus in post-split frames
+- binucleation: a single cell body containing two separate, similarly-sized nuclei that do NOT \
+progressively separate (karyokinesis without cytokinesis) -- distinct from a normal division still \
+in progress, and distinct from split_type "failed" (which re-fuses back into one nucleus)
 
 Also note any other interesting anomaly worth case study (unusual morphology, unexpected behavior, etc.)
 
@@ -85,6 +88,7 @@ Respond with a JSON object — no other text:
 "lagging_chromosome": true | false | null, \
 "anaphase_bridge": true | false | null, \
 "micronucleus": true | false | null, \
+"binucleation": true | false | null, \
 "anomaly_notes": "<describe any interesting anomaly worth case study, or null>"}}
 
 Set split_type, acd_division_type, all boolean fields, and anomaly_notes to null for false positives."""
@@ -126,7 +130,7 @@ def _review_and_classify(
 
     Returns the full parsed JSON dict (verdict, confidence, split_type, description,
     acd_division_type, misaligned_chromosomes, lagging_chromosome, anaphase_bridge,
-    micronucleus, anomaly_notes).
+    micronucleus, binucleation, anomaly_notes).
     """
     before_indices = [event.frame - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]
     after_indices = [event.frame + i * _FRAME_STRIDE for i in range(1, _FRAMES_AFTER + 1)]
@@ -138,7 +142,8 @@ def _review_and_classify(
             "verdict": "false_positive", "confidence": 0.0, "split_type": None,
             "description": "no frames found", "acd_division_type": None,
             "misaligned_chromosomes": None, "lagging_chromosome": None,
-            "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None,
+            "anaphase_bridge": None, "micronucleus": None, "binucleation": None,
+            "anomaly_notes": None,
         }
 
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
@@ -303,7 +308,7 @@ def review_ambiguous(
             return key, {"verdict": "real", "confidence": event.confidence, "split_type": None,
                          "description": "", "acd_division_type": None, "misaligned_chromosomes": None,
                          "lagging_chromosome": None, "anaphase_bridge": None, "micronucleus": None,
-                         "anomaly_notes": None}
+                         "binucleation": None, "anomaly_notes": None}
 
     split_result: dict[tuple[int | None, int], dict] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -360,6 +365,7 @@ def review_ambiguous(
             lagging_chromosome=r.get("lagging_chromosome") if is_real else None,
             anaphase_bridge=r.get("anaphase_bridge") if is_real else None,
             micronucleus=r.get("micronucleus") if is_real else None,
+            binucleation=r.get("binucleation") if is_real else None,
             anomaly_notes=r.get("anomaly_notes") if is_real else None,
         ))
 

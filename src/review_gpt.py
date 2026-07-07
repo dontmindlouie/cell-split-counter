@@ -72,7 +72,8 @@ def review_and_classify_gpt(
             "verdict": "false_positive", "confidence": 0.0, "split_type": None,
             "description": "no frames found", "acd_division_type": None,
             "misaligned_chromosomes": None, "lagging_chromosome": None,
-            "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None,
+            "anaphase_bridge": None, "micronucleus": None, "binucleation": None,
+            "anomaly_notes": None,
         }
 
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)

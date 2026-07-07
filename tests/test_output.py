@@ -37,7 +37,7 @@ def test_csv_header_columns(tmp_path):
         "split_topology", "track_id", "parent_id", "classification_source",
         "claude_confidence", "tracker_persistence_score", "claude_notes", "bleach_risk",
         "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
-        "anaphase_bridge", "micronucleus", "anomaly_notes",
+        "anaphase_bridge", "micronucleus", "binucleation", "anomaly_notes",
     ]
 
 
@@ -90,6 +90,7 @@ def test_csv_acd_columns_written(tmp_path):
         lagging_chromosome=True,
         anaphase_bridge=False,
         micronucleus=True,
+        binucleation=True,
     )
     write_events_csv([event], tmp_path / "events.csv", source_video="v.avi")
     rows = _read_csv(tmp_path)
@@ -98,6 +99,7 @@ def test_csv_acd_columns_written(tmp_path):
     assert rows[0]["micronucleus"] == "1"
     assert rows[0]["misaligned_chromosomes"] == "0"
     assert rows[0]["anaphase_bridge"] == "0"
+    assert rows[0]["binucleation"] == "1"
 
 
 def test_csv_acd_columns_empty_when_not_classified(tmp_path):
@@ -107,6 +109,7 @@ def test_csv_acd_columns_empty_when_not_classified(tmp_path):
     assert rows[0]["acd_division_type"] == ""
     assert rows[0]["lagging_chromosome"] == ""
     assert rows[0]["micronucleus"] == ""
+    assert rows[0]["binucleation"] == ""
 
 
 def test_csv_cell_size_written_when_pixel_size_known(tmp_path):

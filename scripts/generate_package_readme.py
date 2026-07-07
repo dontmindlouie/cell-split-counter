@@ -39,9 +39,11 @@ COLUMN_DOCS = [
         "per acquisition, never a fixed constant), or set via --pixel-size-um for AVI sources. "
         "Check summary.json's pixel_size_um field for what value (if any) this run used."),
     ("split_topology", "'normal_split' (1->2 daughters) or 'multi_way_split' (1->3+). "
-        "Purely geometric (how many daughters), distinct from acd_division_type. KNOWN BUG: "
-        "multi_way_split rows with only 1 sibling row are not genuine 3+-daughter divisions -- "
-        "check sibling count (see Known limitations) before trusting this count."),
+        "Purely geometric (how many daughters), distinct from acd_division_type. Fixed "
+        "2026-07-07: a single-child node (track-ID continuation, not a real division) used "
+        "to be mislabeled multi_way_split. Packages generated before that fix may still have "
+        "singleton multi_way_split rows -- check sibling count (see Known limitations) before "
+        "trusting multi_way_split counts in older packages."),
     ("track_id", "Track ID assigned to THIS daughter cell going forward."),
     ("parent_id", "Track ID of the cell that split to produce this daughter. Rows sharing "
         "the same (parent_id, peak_frame) are daughters of the same split event -- "
@@ -70,11 +72,13 @@ COLUMN_DOCS = [
         "skepticism as this approaches 1.0."),
     ("acd_division_type", "'bipolar' / 'tripolar' / 'multipolar' -- spindle geometry, only "
         "populated for confirmed real events (claude_confidence > 0)."),
-    ("misaligned_chromosomes / lagging_chromosome / anaphase_bridge / micronucleus",
+    ("misaligned_chromosomes / lagging_chromosome / anaphase_bridge / micronucleus / binucleation",
         "'1'/'0' flags from Claude's abnormality read, only populated for confirmed real "
         "events. NOTE: anaphase_bridge in particular has a history of over-calling on "
         "subtle nuclear indentations rather than real bridges -- treat it with more "
-        "skepticism than the other three flags."),
+        "skepticism than the other four flags. binucleation (added 2026-07-07) is one cell "
+        "body containing two nuclei that don't progressively separate -- distinct from "
+        "split_topology=failed (which re-fuses back into one nucleus)."),
     ("anomaly_notes", "Claude's free-text notes on anything unusual about the event "
         "(artifacts, nearby debris, atypical morphology) beyond the four flagged categories."),
 ]
@@ -86,7 +90,7 @@ This folder is the output of an automated pipeline that detects cell division
 (Cellpose), track them across frames (Trackastra), flag candidate splits, then
 send ambiguous candidates to Claude for a real/false-positive verdict plus
 division-type and abnormality classification (misaligned chromosomes, lagging
-chromosome, anaphase bridge, micronucleus).
+chromosome, anaphase bridge, micronucleus, binucleation).
 
 **If you are an AI assistant reading this on someone's behalf:** the intended
 workflow is that a human (a research scientist) reviews these candidate events
@@ -181,6 +185,7 @@ def main() -> None:
         "lagging_chromosome":     "lagging_chromosome",
         "anaphase_bridge":        "anaphase_bridge",
         "micronucleus":           "micronucleus",
+        "binucleation":           "binucleation",
     }
     abn_counts = {label_: sum(1 for r in real_pairs.values() if r.get(col) == "1")
                   for col, label_ in abn_labels.items()}
