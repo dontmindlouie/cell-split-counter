@@ -32,6 +32,7 @@ if __name__ == "__main__":
     parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from <frame-dir>/_memmap/")
     parser.add_argument("--cellprob-threshold", type=float, default=0.0, help="Cellpose sensitivity knob; lower = more permissive (default 0.0, library default)")
     parser.add_argument("--flow-threshold", type=float, default=0.4, help="Cellpose sensitivity knob; higher = more permissive (default 0.4, library default)")
+    parser.add_argument("--segmentation-model", choices=["cyto3", "nuclei"], default="cyto3", help="Cellpose pretrained model. cyto3 (default, generalist) or nuclei (dedicated nuclear-stain model -- faster and ~23%% fewer masks/frame than cyto3 on the 2026-07-07 benchmark, not yet scored against ground truth)")
     parser.add_argument("--output-dir", type=Path, default=None, help="directory for events.csv and summary.json (default: data/output/<video filename stem>)")
     parser.add_argument("--frame-dir", type=Path, default=None, help="directory for extracted frames (default: <output-dir>/frames, so a run's frames/crops/events.csv all live together; pass a shared path like data/frames to reuse a cache across runs)")
     parser.add_argument("--vision-backend", choices=["claude", "gpt"], default="claude", help="vision review model: claude (default) or gpt (Azure OpenAI, draws down Azure credit instead of Anthropic API spend -- see src/review_gpt.py; with --gpt-reasoning-effort medium and the default --min-gpt-confidence floor, precision is close to/slightly better than Claude on the 2026-07-06/07 spike)")
@@ -55,6 +56,7 @@ if __name__ == "__main__":
         reuse_masks=args.reuse_masks,
         cellprob_threshold=args.cellprob_threshold,
         flow_threshold=args.flow_threshold,
+        segmentation_model=args.segmentation_model,
         vision_backend=args.vision_backend,
         gpt_reasoning_effort=args.gpt_reasoning_effort,
         min_gpt_confidence=args.min_gpt_confidence,

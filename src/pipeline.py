@@ -25,6 +25,7 @@ def run(
     reuse_masks: bool = False,
     cellprob_threshold: float = 0.0,
     flow_threshold: float = 0.4,
+    segmentation_model: str = "cyto3",
     vision_backend: str = "claude",
     gpt_reasoning_effort: str = "medium",
     min_gpt_confidence: float = 0.85,
@@ -40,11 +41,12 @@ def run(
             frames_arr, labels_arr = load_video_arrays(frame_paths)
         else:
             frames_arr, labels_arr = segment_video_arrays(
-                frame_paths, cellprob_threshold=cellprob_threshold, flow_threshold=flow_threshold
+                frame_paths, cellprob_threshold=cellprob_threshold, flow_threshold=flow_threshold,
+                model_type=segmentation_model,
             )
         tracks = link_frames_trackastra(frames_arr, labels_arr, mode=tracker_mode)
     else:
-        masks_by_frame = segment_all(frame_paths)
+        masks_by_frame = segment_all(frame_paths, model_type=segmentation_model)
         tracks = link_frames(masks_by_frame)
 
     events = classify_events(tracks, config.roi)

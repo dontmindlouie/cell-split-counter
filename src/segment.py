@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from cellpose import models
 
-_model: models.CellposeModel | None = None
+_models: dict[str, models.CellposeModel] = {}
 _PROFILE = os.environ.get("PROFILE_SEGMENTATION") == "1"
 
 
@@ -23,11 +23,10 @@ def _log_memory(label: str) -> None:
     print(f"  [mem] {label}: RAM peak={ram_mb:.0f}MB  GPU alloc peak={gpu_alloc_mb:.0f}MB  GPU reserved peak={gpu_reserved_mb:.0f}MB", flush=True)
 
 
-def _get_model() -> models.CellposeModel:
-    global _model
-    if _model is None:
-        _model = models.CellposeModel(gpu=True, model_type="cyto3")
-    return _model
+def _get_model(model_type: str = "cyto3") -> models.CellposeModel:
+    if model_type not in _models:
+        _models[model_type] = models.CellposeModel(gpu=True, model_type=model_type)
+    return _models[model_type]
 
 
 @dataclass
@@ -40,7 +39,7 @@ class CellMask:
     area: float
 
 
-def segment_frame(frame_path: Path, frame_index: int) -> list[CellMask]:
+def segment_frame(frame_path: Path, frame_index: int, model_type: str = "cyto3") -> list[CellMask]:
     """Run Cellpose on a single frame and return one CellMask per detected cell.
 
     Masks are stored cropped to each cell's bounding box rather than at full frame
@@ -49,7 +48,7 @@ def segment_frame(frame_path: Path, frame_index: int) -> list[CellMask]:
     KB instead.
     """
     img = cv2.imread(str(frame_path), cv2.IMREAD_GRAYSCALE)
-    label_map, _, _ = _get_model().eval(img, diameter=None, channels=[0, 0])
+    label_map, _, _ = _get_model(model_type).eval(img, diameter=None, channels=[0, 0])
 
     cell_masks = []
     for mask_id in np.unique(label_map):
@@ -72,9 +71,9 @@ def segment_frame(frame_path: Path, frame_index: int) -> list[CellMask]:
     return cell_masks
 
 
-def segment_all(frame_paths: list[Path]) -> dict[int, list[CellMask]]:
+def segment_all(frame_paths: list[Path], model_type: str = "cyto3") -> dict[int, list[CellMask]]:
     """Segment every frame, keyed by frame index."""
-    return {i: segment_frame(p, i) for i, p in enumerate(frame_paths)}
+    return {i: segment_frame(p, i, model_type) for i, p in enumerate(frame_paths)}
 
 
 _EVAL_BATCH = 64  # frames per Cellpose eval() call — amortizes per-call overhead
@@ -85,6 +84,7 @@ def segment_video_arrays(
     memmap_dir: Path | None = None,
     cellprob_threshold: float = 0.0,
     flow_threshold: float = 0.4,
+    model_type: str = "cyto3",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Segment all frames and return raw arrays for Trackastra input.
 
@@ -110,7 +110,7 @@ def segment_video_arrays(
     location on 6/7 tested frames vs. 3/7 at default, with modest mask-count
     increase (no runaway over-segmentation observed in that spot-check).
     """
-    model = _get_model()
+    model = _get_model(model_type)
     first = cv2.imread(str(frame_paths[0]), cv2.IMREAD_GRAYSCALE)
     T, H, W = len(frame_paths), first.shape[0], first.shape[1]
 
