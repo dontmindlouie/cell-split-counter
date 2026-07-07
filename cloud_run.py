@@ -35,7 +35,6 @@ cmd = [
     "--tracker", TRACKER,
     "--output-dir", str(output_dir),
     "--frame-dir", str(output_dir / "frames"),
-    "--debug-crops",
     "--vision-backend", VISION_BACKEND,
 ]
 if END_FRAME:

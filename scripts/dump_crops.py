@@ -3,9 +3,9 @@
 Reads an events.csv and a cached frame directory; saves cropped PNGs without making
 any Claude API calls (frames must already be extracted/cached from a prior run --
 this does not re-segment or re-track). Use this to inspect exactly what Claude saw,
-or to backfill review_crops/ for a run that wasn't launched with --debug-crops.
+or to backfill review_crops/ for a run that skipped them via --no-debug-crops.
 
-Output folder naming matches src/review.py's own --debug-crops convention exactly
+Output folder naming matches src/review.py's own debug-crops convention exactly
 (frame_<peak_frame, 5 digits>_parent_<parent_id>, with a verdict.txt) so crops
 generated after the fact are indistinguishable from ones saved during a live review
 call, and so scripts/generate_package_readme.py's review_crops detection picks them up.

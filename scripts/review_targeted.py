@@ -44,7 +44,7 @@ def main() -> None:
     parser.add_argument("--max-reviews", type=int, default=200)
     parser.add_argument("--min-conf", type=float, default=HIGH_CONFIDENCE)
     parser.add_argument("--max-conf", type=float, default=1.0)
-    parser.add_argument("--debug-crops", action="store_true", help="save review crops to data/debug/crops/")
+    parser.add_argument("--no-debug-crops", dest="debug_crops", action="store_false", default=True, help="skip saving review crops to data/debug/crops/ (saved by default)")
     args = parser.parse_args()
 
     with open(EVENTS_CSV, newline="") as f:

@@ -28,23 +28,24 @@ if __name__ == "__main__":
     parser.add_argument("--tracker-mode", choices=["greedy", "ilp"], default="greedy", help="Trackastra linking mode (default: greedy; ilp catches compact/adjacent divisions greedy collapses, see docs/investigation_notes.md)")
     parser.add_argument("--start-frame", type=int, default=0, help="first frame index to process (0-indexed)")
     parser.add_argument("--end-frame", type=int, default=None, help="last frame index (exclusive); default = all")
-    parser.add_argument("--debug-crops", action="store_true", help="save Claude review crops to data/review_crops/")
-    parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from data/frames/_memmap/")
+    parser.add_argument("--no-debug-crops", dest="debug_crops", action="store_false", default=True, help="skip saving review crops to data/review_crops/ (saved by default)")
+    parser.add_argument("--reuse-masks", action="store_true", help="skip Cellpose and load existing memmaps from <frame-dir>/_memmap/")
     parser.add_argument("--cellprob-threshold", type=float, default=0.0, help="Cellpose sensitivity knob; lower = more permissive (default 0.0, library default)")
     parser.add_argument("--flow-threshold", type=float, default=0.4, help="Cellpose sensitivity knob; higher = more permissive (default 0.4, library default)")
     parser.add_argument("--output-dir", type=Path, default=None, help="directory for events.csv and summary.json (default: data/output/<video filename stem>)")
-    parser.add_argument("--frame-dir", type=Path, default=Path("data/frames"), help="directory for extracted frames (default: data/frames)")
+    parser.add_argument("--frame-dir", type=Path, default=None, help="directory for extracted frames (default: <output-dir>/frames, so a run's frames/crops/events.csv all live together; pass a shared path like data/frames to reuse a cache across runs)")
     parser.add_argument("--vision-backend", choices=["claude", "gpt"], default="claude", help="vision review model: claude (default) or gpt (Azure OpenAI, draws down Azure credit instead of Anthropic API spend -- see src/review_gpt.py; with --gpt-reasoning-effort medium and the default --min-gpt-confidence floor, precision is close to/slightly better than Claude on the 2026-07-06/07 spike)")
     parser.add_argument("--gpt-reasoning-effort", choices=["low", "medium", "high"], default="medium", help="GPT backend only. 'high' is currently unusable -- burns its token budget on hidden reasoning and fails ~68%% of calls (2026-07-07 finding)")
     parser.add_argument("--min-gpt-confidence", type=float, default=0.85, help="GPT backend only: verdicts below this self-reported confidence are downgraded to false_positive. 0.0 disables filtering.")
     args = parser.parse_args()
 
     output_dir = args.output_dir or Path("data/output") / args.video_path.stem
+    frame_dir = args.frame_dir or (output_dir / "frames")
 
     config = IngestConfig(video_path=args.video_path, frame_step=args.frame_step, roi=None)
     run(
         config,
-        frame_dir=args.frame_dir,
+        frame_dir=frame_dir,
         output_dir=output_dir,
         tracker=args.tracker,
         tracker_mode=args.tracker_mode,
