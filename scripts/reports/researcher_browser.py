@@ -227,9 +227,7 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .crop-wrap{position:relative;display:inline-block;line-height:0;border-radius:4px;overflow:hidden;border:1px solid var(--border);cursor:zoom-in;flex-shrink:0;}
 .crop-thumb{display:block;width:120px;height:120px;background-repeat:no-repeat;background-color:var(--border);}
 .crop-thumb.loading{background-image:none!important;}
-.crosshair{position:absolute;width:28px;height:28px;transform:translate(-50%,-50%);pointer-events:none;overflow:visible;}
-.crosshair .halo{stroke:rgba(255,255,255,0.85);stroke-width:1.5;stroke-linecap:round;}
-.crosshair .mark{stroke:#ff2d55;stroke-width:0.7;stroke-linecap:round;}
+
 .no-crops-note{font-size:12px;color:var(--text-muted);padding:8px 0;}
 .ai-notes{font-size:13px;color:var(--text-secondary);line-height:1.55;margin:6px 0 10px;font-style:italic;}
 .ai-notes:empty{display:none;}
@@ -324,7 +322,6 @@ def _render_html(
   <button class="lightbox-nav prev" id="lightbox-prev">&lsaquo;</button>
   <div class="lightbox-img-wrap">
     <img id="lightbox-img" alt="">
-    <div id="lightbox-crosshair-slot"></div>
     <div class="lightbox-caption" id="lightbox-caption"></div>
   </div>
   <button class="lightbox-nav next" id="lightbox-next">&rsaquo;</button>
@@ -349,29 +346,18 @@ def _render_html(
   var lightbox = document.getElementById('lightbox');
   var lbImg = document.getElementById('lightbox-img');
   var lbCaption = document.getElementById('lightbox-caption');
-  var lbCrosshairSlot = document.getElementById('lightbox-crosshair-slot');
   var lbPrev = document.getElementById('lightbox-prev');
   var lbNext = document.getElementById('lightbox-next');
   var lbClose = document.getElementById('lightbox-close');
-  var lbImages = [], lbIdx = 0, lbXPct = 50, lbYPct = 50;
+  var lbImages = [], lbIdx = 0;
 
-  function crosshairHtml(xPct, yPct, id) {{
-    var ticks = '<line x1="12" y1="0" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="24"/>' +
-      '<line x1="0" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="24" y2="12"/>';
-    var idAttr = id ? ' id="' + id + '"' : '';
-    return '<svg class="crosshair" viewBox="0 0 24 24"' + idAttr +
-      ' style="left:' + xPct + '%;top:' + yPct + '%;">' +
-      '<g class="halo">' + ticks + '</g><g class="mark">' + ticks + '</g></svg>';
-  }}
-
-  function openLightbox(images, startIdx, xPct, yPct) {{
-    lbImages = images; lbIdx = startIdx; lbXPct = xPct; lbYPct = yPct;
+  function openLightbox(images, startIdx) {{
+    lbImages = images; lbIdx = startIdx;
     showLbFrame();
     lightbox.classList.add('open');
   }}
   function showLbFrame() {{
     lbImg.src = lbImages[lbIdx];
-    lbCrosshairSlot.innerHTML = crosshairHtml(lbXPct, lbYPct, '');
     lbCaption.textContent = (lbIdx + 1) + ' / ' + lbImages.length + '  \u2014  ' + lbImages[lbIdx].split('/').pop();
     lbPrev.disabled = lbIdx === 0;
     lbNext.disabled = lbIdx === lbImages.length - 1;
@@ -459,7 +445,6 @@ def _render_html(
           'background-image:url(' + src + ');' +
           'background-position:' + ev.crosshair_x_pct + '% ' + ev.crosshair_y_pct + '%;' +
           'background-size:' + thumbZoom + '%;" style=""></span>' +
-          crosshairHtml(ev.crosshair_x_pct, ev.crosshair_y_pct, '') +
           '</span>';
       }}).join('');
     }} else {{
@@ -507,8 +492,7 @@ def _render_html(
         var parentId = card.getAttribute('data-parent');
         var ev = manifest.find(function(e) {{ return e.parent_id === parentId; }});
         if (ev && ev.images.length) {{
-          openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10),
-            ev.crosshair_x_pct, ev.crosshair_y_pct);
+          openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10));
         }}
       }});
     }});
