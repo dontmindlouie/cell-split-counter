@@ -5,10 +5,11 @@ Writes two sheets:
   - "confirmed_splits": one row per unique split (deduplicated by parent_id + peak_frame,
     since every daughter row of the same split shares the same parent_id/peak_frame/centroid
     -- centroid is the PARENT's position at the split frame, see classify.py), filtered to
-    claude_confidence > 0 (the documented "confirmed real" filter, see docs/output_schema.md),
+    ai_confidence > 0 (the documented "confirmed real" filter, see docs/output_schema.md),
     with an added is_fallback_review flag for the rare rows where review.py's error fallback
-    fired (claude_confidence == tracker_persistence_score with no Claude notes/classification --
-    these were never actually reviewed by Claude, just accepted at the tracker's own confidence).
+    fired (review_error==1, or on older CSVs: ai_confidence == tracker_persistence_score
+    with no AI notes/classification -- these were never actually reviewed by an AI model,
+    just accepted at the tracker's own confidence).
 
 Usage:
     python scripts/csv_to_xlsx.py data/output/events.csv
@@ -42,16 +43,19 @@ def _add_table_sheet(ws, table_name: str, rows: list[list[str]]) -> None:
 
 def _is_fallback_review(row: dict) -> bool:
     """True for review.py's silent error-fallback rows: accepted at the tracker's own
-    confidence with no real Claude verdict behind it (see project memory 2026-07-06)."""
+    confidence with no real AI verdict behind it (see project memory 2026-07-06).
+    Checks the explicit review_error flag first; falls back to heuristic for older CSVs."""
+    if row.get("review_error", "0") == "1":
+        return True
     try:
-        conf = float(row["claude_confidence"])
+        conf = float(row["ai_confidence"])
         persist = float(row["tracker_persistence_score"])
     except (ValueError, KeyError):
         return False
     return (
         conf > 0
         and abs(conf - persist) < 1e-6
-        and row.get("claude_notes", "") == ""
+        and row.get("ai_notes", "") == ""
         and row.get("acd_division_type", "") == ""
     )
 
@@ -64,7 +68,7 @@ def _build_confirmed_splits(header: list[str], data_rows: list[list[str]]) -> li
 
     parent_idx = header.index("parent_id")
     frame_idx = header.index("peak_frame")
-    conf_idx = header.index("claude_confidence")
+    conf_idx = header.index("ai_confidence")
     topology_idx = header.index("split_topology")
 
     for row in data_rows:

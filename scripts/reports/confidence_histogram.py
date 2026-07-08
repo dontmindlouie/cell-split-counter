@@ -36,8 +36,8 @@ def main() -> None:
     # one row per daughter track -- dedupe by parent_id so each split event counts once.
     seen: dict[str, float] = {}
     for r in rows:
-        if r["claude_confidence"]:
-            seen[r["parent_id"]] = float(r["claude_confidence"])
+        if r["ai_confidence"]:
+            seen[r["parent_id"]] = float(r["ai_confidence"])
     values = list(seen.values())
 
     labels, counts = histogram_bins(values, n_bins=args.bins)
@@ -47,7 +47,7 @@ def main() -> None:
     render_bar_html(
         labels, counts,
         out_path=out_path,
-        title="claude_confidence distribution",
+        title="ai_confidence distribution",
         subtitle=f"{run_dir.name} · {len(values)} split events, bin start shown per bar",
         y_label="events",
         stats={

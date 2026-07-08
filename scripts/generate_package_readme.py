@@ -43,7 +43,7 @@ COLUMN_DOCS = [
         "stopped, without splitting, before the video ended and away from the frame "
         "boundary -- edge-adjacent stops are dropped entirely, not reported, since a cell "
         "walking out of frame carries no biological information). death rows are rule-only "
-        "(claude_confidence is a track-duration persistence score, never sent for vision "
+        "(ai_confidence is a track-duration persistence score, never sent for vision "
         "review) -- v1 can't distinguish a real death from the tracker just losing the "
         "cell, so treat it as 'track ended here, lived at least a few frames first,' not a "
         "confirmed biological death. Split counts are "
@@ -56,30 +56,30 @@ COLUMN_DOCS = [
     ("parent_id", "Track ID of the cell that split to produce this daughter. Rows sharing "
         "the same (parent_id, peak_frame) are daughters of the same split event -- "
         "a normal split produces 2 rows, a multi-way split produces 3+."),
-    ("claude_confidence", "0.0-1.0. For classification_source=claude: this is Claude's real/split "
-        "confidence IF the verdict was 'real' -- it is forced to 0.0 whenever Claude's "
-        "verdict was false_positive, even if Claude's raw confidence in that FP call was "
-        "high. So claude_confidence=0.0 does not mean 'unreviewed' or 'low-confidence guess' -- "
-        "it means Claude actively rejected this candidate. For classification_source=rule: "
-        "this is a tracker-persistence heuristic (daughter masks surviving N frames), not a "
-        "Claude judgment -- see tracker_persistence_score below, which is the same kind of "
+    ("ai_confidence", "0.0-1.0. For classification_source set to an AI model: this is the "
+        "model's real/split confidence IF the verdict was 'real' -- it is forced to 0.0 whenever "
+        "the verdict was false_positive, even if the model's raw confidence in that FP call was "
+        "high. So ai_confidence=0.0 does not mean 'unreviewed' or 'low-confidence guess' -- "
+        "it means the AI actively rejected this candidate. For classification_source=rule: "
+        "this is a tracker-persistence heuristic (daughter masks surviving N frames), not an "
+        "AI judgment -- see tracker_persistence_score below, which is the same kind of "
         "number under a clearer name."),
     ("tracker_persistence_score", "The persistence-based score computed BEFORE Claude ever "
         "looked at the candidate (daughter masks surviving N frames / max frames) -- a tracker "
-        "stability signal, not a probability that the split is real. Kept even after Claude "
-        "review so you can compare tracker behavior vs. Claude's verdict. On its own this has "
+        "stability signal, not a probability that the split is real. Kept even after AI "
+        "review so you can compare tracker behavior vs. the AI's verdict. On its own this has "
         "NOT been a reliable real-vs-noise discriminator in crowded fields (real divisions and "
         "false positives can score similarly) -- don't filter on this column, filter on "
-        "claude_confidence."),
-    ("classification_source", "'claude' once Claude vision review ran on this event, 'rule' "
-        "if it was auto-confirmed by the tracker without a Claude call."),
-    ("claude_notes", "Claude's free-text description from the review call, populated "
+        "ai_confidence."),
+    ("classification_source", "'<model-name>' once AI vision review ran on this event, 'rule' "
+        "if it was auto-confirmed by the tracker without an AI call."),
+    ("ai_notes", "AI's free-text description from the review call, populated "
         "regardless of verdict (real or false_positive)."),
     ("bleach_risk", "peak_frame / total_frames. Higher = later in the timelapse = more "
         "accumulated photobleaching. Treat acd_division_type / abnormality calls with more "
         "skepticism as this approaches 1.0."),
     ("acd_division_type", "'bipolar' / 'tripolar' / 'multipolar' -- spindle geometry, only "
-        "populated for confirmed real events (claude_confidence > 0)."),
+        "populated for confirmed real events (ai_confidence > 0)."),
     ("misaligned_chromosomes / lagging_chromosome / anaphase_bridge / micronucleus / binucleation",
         "'1'/'0' flags from Claude's abnormality read, only populated for confirmed real "
         "events. NOTE: anaphase_bridge in particular has a history of over-calling on "
@@ -116,27 +116,27 @@ final/infallible, especially for `anaphase_bridge` calls (see column notes below
 FOLDER_DOCS = {
     "events.csv": "One row per **daughter cell** produced by a detected split candidate "
         "(a normal split = 2 rows sharing the same parent_id + peak_frame, multi-way = 3+). "
-        "This includes BOTH Claude-confirmed real events and rejected false positives -- "
-        "filter to `claude_confidence > 0` to get only confirmed divisions. See 'How to "
+        "This includes BOTH AI-confirmed real events and rejected false positives -- "
+        "filter to `ai_confidence > 0` to get only confirmed divisions. See 'How to "
         "filter this data' and the column reference below.",
     "events_formatted.xlsx": "Same data as events.csv, reformatted as a real Excel Table "
         "(sortable/filterable columns, frozen header), plus a second `confirmed_splits` tab: "
         "one row per unique split (deduplicated by parent_id+peak_frame, confidence > 0 only), "
         "with an added `is_fallback_review` flag for the rare rows where the review step's error "
-        "fallback fired instead of a real Claude verdict (see Known limitations). Regenerate "
+        "fallback fired instead of a real AI verdict (see Known limitations). Regenerate "
         "anytime from the CSV via scripts/csv_to_xlsx.py -- this file is a derived convenience "
         "copy, not a second source of truth.",
     "review_crops": "Per-candidate before/split/after frame crops (centered on the dividing "
-        "cell, ~384px) plus a verdict.txt with Claude's raw verdict/confidence/notes for "
+        "cell, ~384px) plus a verdict.txt with the AI's raw verdict/confidence/notes for "
         "that specific review call. Folder name format: `frame_<peak_frame, 5 digits>_parent_"
         "<parent_id>`. IMPORTANT: this is not guaranteed to cover every row in events.csv "
         "-- crop coverage can be partial or come from a different run than the current CSV. "
         "Absence of a crop folder for a given event does NOT mean the event is less real or "
         "less important; use index.csv (generated alongside this README) to see exactly "
         "which confirmed events do/don't have a crop available. Also note: verdict.txt's "
-        "`confidence` field is Claude's raw confidence in whatever verdict it gave (real OR "
-        "false_positive) -- this differs from events.csv's `claude_confidence` column, which "
-        "is always 0.0 for false_positive rows regardless of Claude's raw confidence.",
+        "`confidence` field is the AI's raw confidence in whatever verdict it gave (real OR "
+        "false_positive) -- this differs from events.csv's `ai_confidence` column, which "
+        "is always 0.0 for false_positive rows regardless of the AI's raw confidence.",
     "frames": "Raw extracted video frames (one PNG per frame, 0-indexed to match peak_frame "
         "and centroid coordinates directly, no transform needed).",
     "summary.json": "Aggregate counts only (total_events, event_counts by type), plus a "
@@ -174,7 +174,7 @@ def main() -> None:
     source_video = rows[0].get("source_video", "") if rows else ""
     label = args.video_label or source_video or package_dir.name
 
-    real_pairs = {k: r for k, r in pairs.items() if r.get("claude_confidence") and float(r["claude_confidence"]) > 0}
+    real_pairs = {k: r for k, r in pairs.items() if r.get("ai_confidence") and float(r["ai_confidence"]) > 0}
 
     # Sibling count per split point, across ALL rows (not just confirmed) -- a genuine
     # normal_split always has exactly 2, a genuine multi_way_split should have 3+. If a
@@ -216,14 +216,14 @@ def main() -> None:
     lines.append("")
 
     lines.append("## How to filter this data\n")
-    lines.append("**Filter on `claude_confidence > 0` to get confirmed real events -- don't "
+    lines.append("**Filter on `ai_confidence > 0` to get confirmed real events -- don't "
                   "sweep a numeric threshold like >=0.5 or >=0.7.** There is no validated "
                   "cutoff stricter than 0>0 for this pipeline version: `tracker_persistence_score` "
-                  "(the pre-Claude signal) has been shown NOT to separate real divisions from "
-                  "noise reliably in crowded fields, and Claude's own confidence *value* (0.75 "
+                  "(the pre-AI signal) has been shown NOT to separate real divisions from "
+                  "noise reliably in crowded fields, and the AI's own confidence *value* (0.75 "
                   "vs 0.85 vs 0.92) varies run-to-run by several points since there's no fixed "
                   "temperature/seed -- it isn't precise enough to threshold on. If you want to "
-                  "prioritize which confirmed events to look at first, sort by claude_confidence "
+                  "prioritize which confirmed events to look at first, sort by ai_confidence "
                   "descending or by bleach_risk, don't filter by a cutoff.")
     lines.append("")
     lines.append("**For simple column filtering/sorting (e.g. \"just show me confirmed events\"), "
@@ -241,7 +241,7 @@ def main() -> None:
 
     lines.append("## Summary stats (computed from events.csv at generation time)\n")
     lines.append(f"- {len(rows)} total daughter-cell rows, {len(pairs)} unique candidate split points")
-    lines.append(f"- {len(real_pairs)} confirmed real events (claude_confidence > 0)")
+    lines.append(f"- {len(real_pairs)} confirmed real events (ai_confidence > 0)")
     if suspect_multiway:
         n_clean = len(real_pairs) - len(suspect_multiway)
         lines.append(f"  - **{n_clean} are solid** (normal_split with 2 daughter rows, or multi_way_split with 3+)")
@@ -297,13 +297,13 @@ def main() -> None:
     index_path = package_dir / "index.csv"
     with open(index_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["parent_id", "peak_frame", "claude_confidence", "classification_source",
+        writer.writerow(["parent_id", "peak_frame", "ai_confidence", "classification_source",
                           "acd_division_type", "abnormalities", "has_review_crop", "review_crop_path"])
         for (parent_id, peak_frame), r in sorted(pairs.items(), key=lambda kv: int(kv[0][1]) if kv[0][1] else 0):
             abn = ",".join(label_ for col, label_ in abn_labels.items() if r.get(col) == "1")
             crop_name = _crop_name(r) if peak_frame else ""
             has_crop = crop_name in crop_folders
-            writer.writerow([parent_id, peak_frame, r.get("claude_confidence", ""), r.get("classification_source", ""),
+            writer.writerow([parent_id, peak_frame, r.get("ai_confidence", ""), r.get("classification_source", ""),
                               r.get("acd_division_type", ""), abn,
                               "yes" if has_crop else "no",
                               f"review_crops/{crop_name}" if has_crop else ""])

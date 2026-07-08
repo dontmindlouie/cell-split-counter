@@ -7,7 +7,7 @@ from src.classify import EventType, LineageEvent
 from src.output import write_events_csv
 
 
-def make_event(track_id, frame=10, confidence=1.0, source="rule", bleach_risk=None, claude_notes=None):
+def make_event(track_id, frame=10, confidence=1.0, source="rule", bleach_risk=None, ai_notes=None):
     return LineageEvent(
         track_id=track_id,
         parent_id=1,
@@ -16,7 +16,7 @@ def make_event(track_id, frame=10, confidence=1.0, source="rule", bleach_risk=No
         classification_source=source,
         confidence=confidence,
         centroid=(50.0, 75.0),
-        claude_notes=claude_notes,
+        ai_notes=ai_notes,
         bleach_risk=bleach_risk,
     )
 
@@ -35,7 +35,8 @@ def test_csv_header_columns(tmp_path):
         "event_id", "source_video", "frame_range", "peak_frame",
         "centroid_x", "centroid_y", "near_edge", "cell_area_px", "cell_size_um2",
         "split_topology", "track_id", "parent_id", "classification_source",
-        "claude_confidence", "tracker_persistence_score", "claude_notes", "bleach_risk",
+        "ai_confidence", "raw_ai_confidence", "tracker_persistence_score",
+        "ai_notes", "review_error", "bleach_risk",
         "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
         "anaphase_bridge", "micronucleus", "binucleation", "anomaly_notes",
     ]
@@ -62,13 +63,13 @@ def test_csv_bleach_risk_empty_when_none(tmp_path):
     assert rows[0]["bleach_risk"] == ""
 
 
-def test_csv_claude_notes_written_and_empty_when_none(tmp_path):
-    e1 = make_event(2, claude_notes="asymmetric: clear split")
-    e2 = make_event(3, claude_notes=None)
+def test_csv_ai_notes_written_and_empty_when_none(tmp_path):
+    e1 = make_event(2, ai_notes="asymmetric: clear split")
+    e2 = make_event(3, ai_notes=None)
     write_events_csv([e1, e2], tmp_path / "events.csv", source_video="v.avi")
     rows = _read_csv(tmp_path)
-    assert rows[0]["claude_notes"] == "asymmetric: clear split"
-    assert rows[1]["claude_notes"] == ""
+    assert rows[0]["ai_notes"] == "asymmetric: clear split"
+    assert rows[1]["ai_notes"] == ""
 
 
 def test_csv_one_row_per_event(tmp_path):

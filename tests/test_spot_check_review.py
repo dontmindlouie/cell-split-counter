@@ -27,7 +27,7 @@ def _fake_png(tmp_path, width, height, name="fake.png"):
 
 def _row(confidence="0.0", near_edge="0", **flags):
     base = {
-        "claude_confidence": confidence,
+        "ai_confidence": confidence,
         "near_edge": near_edge,
         "misaligned_chromosomes": "0", "lagging_chromosome": "0",
         "anaphase_bridge": "0", "micronucleus": "0", "binucleation": "0",

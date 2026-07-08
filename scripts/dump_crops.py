@@ -46,7 +46,7 @@ def main() -> None:
     parser.add_argument("--end-frame", type=int, default=None)
     parser.add_argument("--source", choices=["rule", "claude", "any"], default="any")
     parser.add_argument("--confirmed-only", action="store_true",
-                         help="only dump events with claude_confidence > 0 (skip rejected false positives)")
+                         help="only dump events with ai_confidence > 0 (skip rejected false positives)")
     args = parser.parse_args()
 
     with open(args.events_csv, newline="", encoding="utf-8", errors="replace") as f:
@@ -65,7 +65,7 @@ def main() -> None:
             continue
         if args.source != "any" and r["classification_source"] != args.source:
             continue
-        if args.confirmed_only and not (r["claude_confidence"] and float(r["claude_confidence"]) > 0):
+        if args.confirmed_only and not (r["ai_confidence"] and float(r["ai_confidence"]) > 0):
             continue
         key = (r["parent_id"], r["peak_frame"])
         if key in seen:
@@ -89,7 +89,7 @@ def main() -> None:
         cy = float(r["centroid_y"]) if r.get("centroid_y") else None
         centroid = (cx, cy) if cx is not None and cy is not None else None
 
-        conf = r["claude_confidence"]
+        conf = r["ai_confidence"]
         tracker_conf = r.get("tracker_persistence_score", "")
         src = r["classification_source"]
         label = "REAL" if float(conf) > 0 else "FP"
@@ -110,7 +110,7 @@ def main() -> None:
             cv2.imwrite(str(out), crop)
             frame_count += 1
 
-        notes = r.get("claude_notes", "")
+        notes = r.get("ai_notes", "")
         (event_dir / "verdict.txt").write_text(
             f"verdict:    {'real' if label == 'REAL' else 'false_positive'}\n"
             f"confidence: {conf}\n"

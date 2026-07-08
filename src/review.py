@@ -345,7 +345,7 @@ def review_ambiguous(
             return key, {"verdict": "real", "confidence": event.confidence, "split_type": None,
                          "description": "", "acd_division_type": None, "misaligned_chromosomes": None,
                          "lagging_chromosome": None, "anaphase_bridge": None, "micronucleus": None,
-                         "binucleation": None, "anomaly_notes": None}
+                         "binucleation": None, "anomaly_notes": None, "review_error": True}
 
     split_result: dict[tuple[int | None, int], dict] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -380,7 +380,8 @@ def review_ambiguous(
             continue
         r = split_result[key]
         verdict = r.get("verdict", "real")
-        confidence = float(r.get("confidence", event.confidence))
+        raw_confidence = float(r.get("confidence", event.confidence))
+        confidence = raw_confidence
         if backend == "gpt" and verdict == "real" and confidence < min_gpt_confidence:
             verdict = "false_positive"
         is_real = verdict == "real"
@@ -391,8 +392,10 @@ def review_ambiguous(
             event,
             classification_source=resolved_model,
             confidence=confidence if is_real else 0.0,
+            raw_ai_confidence=raw_confidence,
+            review_error=bool(r.get("review_error", False)),
             tracker_confidence=event.tracker_confidence if event.tracker_confidence is not None else event.confidence,
-            claude_notes=notes,
+            ai_notes=notes,
             acd_division_type=r.get("acd_division_type") if is_real else None,
             misaligned_chromosomes=r.get("misaligned_chromosomes") if is_real else None,
             lagging_chromosome=r.get("lagging_chromosome") if is_real else None,

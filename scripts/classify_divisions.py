@@ -1,7 +1,7 @@
 """Backfill ACD division type + abnormality classification onto an existing events.csv.
 
 Older runs (or runs made before the combined verify+classify call existed) can end up
-with claude_notes populated but the acd_division_type/misaligned/lagging/anaphase/
+with ai_notes populated but the acd_division_type/misaligned/lagging/anaphase/
 micronucleus columns empty, since classification used to be a separate opt-in pass
 that defaulted off. This re-sends confirmed events (confidence >= min_conf) through
 the same combined Claude call and fills in just the classification fields.
@@ -45,9 +45,9 @@ def _row_to_event(row: dict) -> LineageEvent:
         frame=int(row["peak_frame"]),
         event_type=EventType(topology_val),
         classification_source=row["classification_source"],
-        confidence=float(row["claude_confidence"]),
+        confidence=float(row["ai_confidence"]),
         centroid=(cx, cy) if cx is not None and cy is not None else None,
-        claude_notes=row.get("claude_notes") or None,
+        ai_notes=row.get("ai_notes") or None,
         bleach_risk=float(bleach) if bleach else None,
     )
 

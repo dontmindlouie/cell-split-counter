@@ -3,7 +3,7 @@
 Why this exists: micronucleus / lagging_chromosome / anaphase_bridge / misaligned_
 chromosomes / binucleation are the scientifically interesting signal the researcher cares about
 -- this gives a quick per-run read of their rates without opening the CSV by hand.
-Only counts rows with claude_confidence >= 0.5 (near_edge excluded by default, since
+Only counts rows with ai_confidence >= 0.5 (near_edge excluded by default, since
 a partially-visible cell at the frame boundary makes abnormality judgment unreliable
 -- see events.csv's near_edge column doc in generate_package_readme.py).
 
@@ -40,7 +40,7 @@ def main() -> None:
 
     seen: dict[str, dict] = {}
     for r in rows:
-        if not r["claude_confidence"] or float(r["claude_confidence"]) < 0.5:
+        if not r["ai_confidence"] or float(r["ai_confidence"]) < 0.5:
             continue
         if not args.include_near_edge and r["near_edge"] == "1":
             continue

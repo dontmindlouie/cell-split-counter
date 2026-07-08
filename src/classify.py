@@ -29,12 +29,14 @@ class LineageEvent:
     frame: int
     event_type: EventType
     classification_source: str  # "rule", or the resolved vision model name (e.g. "claude-haiku-4-5", a GPT deployment name)
-    confidence: float           # current best estimate (tracker initially; Claude overwrites on review).
-                                 # written to CSV as "claude_confidence" -- see docs/output_schema.md
+    confidence: float           # current best estimate (tracker initially; AI review overwrites on review).
+                                 # written to CSV as "ai_confidence" -- see docs/output_schema.md
     tracker_confidence: float | None = None  # original trackastra persistence score, never overwritten.
                                               # written to CSV as "tracker_persistence_score"
     centroid: tuple[float, float] | None = None  # (cx, cy) of parent cell at split frame
-    claude_notes: str | None = None  # "split_type: reason" from Claude vision review
+    ai_notes: str | None = None              # "split_type: reason" from AI vision review
+    raw_ai_confidence: float | None = None  # model's self-reported confidence before any post-hoc floor is applied
+    review_error: bool = False              # True when the vision API call failed and the event was passed through unchanged
     bleach_risk: float | None = None  # frame / total_frames; proxy for photobleaching accumulation
     # ACD division classification (populated by review_ambiguous's combined verify+classify call)
     acd_division_type: str | None = None  # bipolar / tripolar / multipolar / unknown

@@ -89,13 +89,13 @@ def parse_detected_peaks(csv_path: Path, min_conf: float = 0.0) -> list[int]:
             # inflate/false-credit recall against a ground truth of division events.
             if row["split_topology"] not in ("normal_split", "multi_way_split"):
                 continue
-            conf = float(row["claude_confidence"])
+            conf = float(row["ai_confidence"])
             if conf < min_conf:
                 continue
-            # skip Claude-confirmed false positives -- review.py forces confidence=0.0
+            # skip AI-confirmed false positives -- review.py forces confidence=0.0
             # whenever verdict != "real", regardless of whether notes are populated
             # (notes are written unconditionally as of the 2026-07-02 fix, so checking
-            # for empty claude_notes here no longer distinguishes real vs false_positive)
+            # for empty ai_notes here no longer distinguishes real vs false_positive)
             if row["classification_source"] == "claude" and conf == 0.0:
                 continue
             key = (row["parent_id"], row["peak_frame"])

@@ -96,7 +96,7 @@ def _parse_verdict(path: Path) -> dict | None:
 
 
 def _bucket_for(row: dict, verdict: dict | None) -> str:
-    confidence = float(row["claude_confidence"]) if row["claude_confidence"] else 0.0
+    confidence = float(row["ai_confidence"]) if row["ai_confidence"] else 0.0
     has_anomaly = any(row.get(c) == "1" for c in _FLAG_COLS)
     if verdict is None:
         return "no_verdict"
@@ -154,7 +154,7 @@ def _build_manifest(run_dir: Path, n_per_bucket: int, seed: int) -> list[dict]:
         # one representative image's dimensions are enough to place the crosshair.
         cx, cy = float(row["centroid_x"]), float(row["centroid_y"])
         crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(folder / images[0], cx, cy)
-        csv_confidence = float(row["claude_confidence"]) if row["claude_confidence"] else 0.0
+        csv_confidence = float(row["ai_confidence"]) if row["ai_confidence"] else 0.0
         effective_verdict = _effective_verdict(verdict, csv_confidence)
         buckets[bucket].append({
             "parent_id": parent_id,
@@ -169,7 +169,7 @@ def _build_manifest(run_dir: Path, n_per_bucket: int, seed: int) -> list[dict]:
             "pipeline_confidence": csv_confidence,
             "raw_verdict": verdict.get("verdict") if verdict else None,
             "raw_verdict_confidence": float(verdict["confidence"]) if verdict and "confidence" in verdict else None,
-            "pipeline_notes": (verdict.get("notes") if verdict else row.get("claude_notes")) or "",
+            "pipeline_notes": (verdict.get("notes") if verdict else row.get("ai_notes")) or "",
         })
 
     rng = random.Random(seed)

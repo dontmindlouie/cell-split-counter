@@ -95,7 +95,7 @@ def test_claude_real_verdict_updates_source_confidence_and_classification(tmp_pa
     assert len(result) == 1
     assert result[0].classification_source == "claude-haiku-4-5"
     assert result[0].confidence == 0.85
-    assert result[0].claude_notes == "symmetric: clear division"
+    assert result[0].ai_notes == "symmetric: clear division"
     assert result[0].acd_division_type == "bipolar"
     assert result[0].misaligned_chromosomes is True
 
@@ -112,7 +112,7 @@ def test_claude_false_positive_zeroes_confidence_keeps_notes_no_classification(t
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
 
     assert result[0].confidence == 0.0
-    assert result[0].claude_notes == "z-plane focus drift"
+    assert result[0].ai_notes == "z-plane focus drift"
     assert result[0].acd_division_type is None
 
 
