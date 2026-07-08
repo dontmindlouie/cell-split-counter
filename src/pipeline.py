@@ -79,16 +79,13 @@ def run(
     ]
 
     # A DEATH stop right at the frame boundary is more likely the cell walking out of
-    # frame than actually dying -- reuse the near_edge flag just computed to relabel it.
-    events = [
-        dataclasses.replace(e, event_type=EventType.ROI_EXIT)
-        if e.event_type == EventType.DEATH and e.near_edge else e
-        for e in events
-    ]
+    # frame than actually dying -- no biological content either way, so drop it rather
+    # than reporting a frame-exit as if it were an interesting event.
+    events = [e for e in events if not (e.event_type == EventType.DEATH and e.near_edge)]
 
     # Only split candidates go to vision review -- the split-verification prompt in
-    # review.py doesn't apply to DEATH/ROI_EXIT stops, which carry no ambiguity to
-    # resolve (tracking topology + video-end position is the whole signal for those).
+    # review.py doesn't apply to DEATH stops, which carry no ambiguity to resolve
+    # (tracking topology + track-duration persistence is the whole signal for those).
     splits = [e for e in events if e.event_type in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
     track_ends = [e for e in events if e.event_type not in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
 

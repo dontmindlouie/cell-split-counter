@@ -68,7 +68,7 @@ def _build_confirmed_splits(header: list[str], data_rows: list[list[str]]) -> li
     topology_idx = header.index("split_topology")
 
     for row in data_rows:
-        # death/roi_exit rows are track ends, not splits -- this sheet is splits only.
+        # death rows are track ends, not splits -- this sheet is splits only.
         if row[topology_idx] not in ("normal_split", "multi_way_split"):
             continue
         try:

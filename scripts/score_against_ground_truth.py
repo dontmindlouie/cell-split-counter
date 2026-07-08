@@ -85,7 +85,7 @@ def parse_detected_peaks(csv_path: Path, min_conf: float = 0.0) -> list[int]:
     peaks = []
     with open(csv_path, newline="") as f:
         for row in csv.DictReader(f):
-            # death/roi_exit rows are track ends, not splits -- exclude so they can't
+            # death rows are track ends, not splits -- exclude so they can't
             # inflate/false-credit recall against a ground truth of division events.
             if row["split_topology"] not in ("normal_split", "multi_way_split"):
                 continue

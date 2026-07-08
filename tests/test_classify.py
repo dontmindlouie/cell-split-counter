@@ -149,7 +149,7 @@ def test_partial_persistence_gives_fractional_confidence():
 
 def test_track_stopping_before_video_end_emits_death():
     tracks = [node(1, None, 0), node(1, None, 1), node(1, None, 2)]
-    events = classify_track_ends(tracks, last_frame=10)
+    events = classify_track_ends(tracks, last_frame=10, min_track_frames=1)
 
     assert len(events) == 1
     e = events[0]
@@ -157,13 +157,12 @@ def test_track_stopping_before_video_end_emits_death():
     assert e.frame == 2
     assert e.event_type == EventType.DEATH
     assert e.classification_source == "rule"
-    assert e.confidence == 1.0
 
 
 def test_track_alive_at_last_frame_emits_no_event():
     # The track's last node IS the video's last frame -- the video ended, not the cell.
     tracks = [node(1, None, 0), node(1, None, 1), node(1, None, 2)]
-    events = classify_track_ends(tracks, last_frame=2)
+    events = classify_track_ends(tracks, last_frame=2, min_track_frames=1)
 
     assert events == []
 
@@ -172,7 +171,7 @@ def test_split_track_end_emits_no_death_event():
     # The node right before a split has children set -- classify_events already covers
     # it, classify_track_ends must not double-emit a DEATH for the same stop.
     tracks = split_nodes(1, [2, 3], parent_frame=10, persist=5)
-    events = classify_track_ends(tracks, last_frame=100)
+    events = classify_track_ends(tracks, last_frame=100, min_track_frames=1)
 
     assert all(e.track_id != 1 for e in events)
 
@@ -181,7 +180,7 @@ def test_death_parent_id_traced_from_birth_node():
     # parent_id is only set on a track's birth-frame node -- classify_track_ends must
     # look it up from there, not from the (parent_id=None) final node.
     tracks = [node(2, parent_id=1, frame=5), node(2, None, 6), node(2, None, 7)]
-    events = classify_track_ends(tracks, last_frame=100)
+    events = classify_track_ends(tracks, last_frame=100, min_track_frames=1)
 
     assert len(events) == 1
     assert events[0].parent_id == 1
@@ -193,7 +192,34 @@ def test_multiple_tracks_evaluated_independently():
         node(1, None, 0), node(1, None, 1), node(1, None, 2),  # dies at frame 2
         node(2, None, 0), node(2, None, 1), node(2, None, 5),  # still alive at video end
     ]
-    events = classify_track_ends(tracks, last_frame=5)
+    events = classify_track_ends(tracks, last_frame=5, min_track_frames=1)
 
     assert len(events) == 1
     assert events[0].track_id == 1
+
+
+def test_short_lived_track_end_is_dropped_entirely():
+    # 3 frames total (0,1,2) is below the default min_track_frames=5 -- a segmentation
+    # blip, not a plausible death candidate, so it should not appear at all.
+    tracks = [node(1, None, 0), node(1, None, 1), node(1, None, 2)]
+    events = classify_track_ends(tracks, last_frame=100)
+
+    assert events == []
+
+
+def test_track_end_confidence_scales_with_duration():
+    # Track spans frames 0-9 (duration 10) out of confidence_max_frames=20 -> 0.5.
+    tracks = [node(1, None, f) for f in range(10)]
+    events = classify_track_ends(tracks, last_frame=100, min_track_frames=1, confidence_max_frames=20)
+
+    assert len(events) == 1
+    assert abs(events[0].confidence - 0.5) < 1e-6
+
+
+def test_track_end_confidence_capped_at_one():
+    # Track spans frames 0-24 (duration 25), above confidence_max_frames=20 -> capped at 1.0.
+    tracks = [node(1, None, f) for f in range(25)]
+    events = classify_track_ends(tracks, last_frame=100, min_track_frames=1, confidence_max_frames=20)
+
+    assert len(events) == 1
+    assert events[0].confidence == 1.0

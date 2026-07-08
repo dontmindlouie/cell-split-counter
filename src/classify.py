@@ -10,7 +10,6 @@ class EventType(str, Enum):
     NORMAL_SPLIT = "normal_split"
     FAILED_SPLIT = "failed_split"
     MULTI_WAY_SPLIT = "multi_way_split"
-    ROI_EXIT = "roi_exit"
     DEATH = "death"
     AMBIGUOUS = "ambiguous"
 
@@ -69,32 +68,61 @@ def _daughter_persistence(
     return max_lookahead
 
 
-def classify_track_ends(tracks: list[TrackNode], last_frame: int) -> list[LineageEvent]:
-    """Emit a DEATH event for every track that stops before the video ends without splitting.
+def classify_track_ends(
+    tracks: list[TrackNode],
+    last_frame: int,
+    min_track_frames: int = 5,
+    confidence_max_frames: int = 20,
+) -> list[LineageEvent]:
+    """Emit a DEATH event for tracks that stop -- without splitting -- before the video ends.
 
     A track's last node has no children in two distinct cases: it split (already
     covered by classify_events) or it just stops -- the cell died, drifted out of
     the focal plane, or Cellpose/Trackastra simply lost it. Tracking topology alone
-    can't tell those apart, so every non-split stop is labeled DEATH here; pipeline.py
-    reclassifies stops near the frame boundary as ROI_EXIT afterward (same near_edge
-    check already used for split events), since a cell last seen at the edge most
-    likely walked out of frame rather than died in place.
+    can't tell those apart, and this dataset's dominant failure mode (documented
+    elsewhere in this project) is the tracker losing a healthy cell for a few frames,
+    not real death -- so a raw "did it stop" signal isn't trustworthy on its own,
+    same lesson classify_events already learned for splits via daughter persistence:
+
+    1. Tracks shorter than min_track_frames are dropped entirely, not emitted. A
+       track that only ever existed for 1-2 frames before vanishing is a segmentation
+       blip, not a plausible death candidate -- no evidence value at all.
+    2. Surviving tracks get a persistence-style confidence: min(1.0, track_duration /
+       confidence_max_frames). A track that barely clears the cutoff is a much
+       weaker death candidate than one alive for confidence_max_frames+ -- both are
+       kept (unlike case 1), but a downstream reader can still filter on confidence.
+
+    ROI_EXIT (a stop near the frame boundary) is deliberately not classified here at
+    all -- pipeline.py drops those before they reach this function's output, since a
+    cell walking out of the field of view carries no biological information worth
+    reporting, unlike an unexplained stop away from the edge.
 
     Tracks still alive at last_frame are excluded -- the video simply ended first,
     that's not a death.
+
+    Not validated against ground truth (unlike splits, this project has no death/
+    track-end ground truth to score against) -- treat min_track_frames/
+    confidence_max_frames as an untuned first pass, not a validated threshold.
     """
     last_node_by_track: dict[int, TrackNode] = {}
+    first_frame_by_track: dict[int, int] = {}
     parent_of_track: dict[int, int] = {}
     for node in tracks:
         prev = last_node_by_track.get(node.track_id)
         if prev is None or node.frame > prev.frame:
             last_node_by_track[node.track_id] = node
+        first = first_frame_by_track.get(node.track_id)
+        if first is None or node.frame < first:
+            first_frame_by_track[node.track_id] = node.frame
         if node.parent_id is not None:
             parent_of_track[node.track_id] = node.parent_id
 
     events = []
     for track_id, node in last_node_by_track.items():
         if node.children or node.frame >= last_frame:
+            continue
+        duration = node.frame - first_frame_by_track[track_id] + 1
+        if duration < min_track_frames:
             continue
         events.append(
             LineageEvent(
@@ -103,7 +131,7 @@ def classify_track_ends(tracks: list[TrackNode], last_frame: int) -> list[Lineag
                 frame=node.frame,
                 event_type=EventType.DEATH,
                 classification_source="rule",
-                confidence=1.0,
+                confidence=min(1.0, duration / confidence_max_frames),
                 centroid=node.mask.centroid,
                 cell_area_px=node.mask.area,
             )
@@ -120,10 +148,10 @@ def classify_events(
     """Walk the lineage graph and emit one LineageEvent per split point.
 
     v1 scope: only split events (NORMAL_SPLIT / MULTI_WAY_SPLIT) are classified here.
-    Track ends (DEATH / ROI_EXIT) are handled separately by classify_track_ends, since
-    they need to know where the video ends, not just the lineage graph. Failed splits
-    and ambiguous-abnormality-only tracks are still deferred -- so `roi` is accepted
-    but unused for now.
+    Track ends (DEATH) are handled separately by classify_track_ends, since they need
+    to know where the video ends, not just the lineage graph. Failed splits and
+    ambiguous-abnormality-only tracks are still deferred -- so `roi` is accepted but
+    unused for now.
 
     A node with exactly 1 child is not a split at all (a track-ID continuation
     artifact -- see the 1-child branch below) and emits no event.

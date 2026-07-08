@@ -57,7 +57,7 @@ def main() -> None:
     seen: set[tuple] = set()
     targets = []
     for r in rows:
-        # this tool packages divisions specifically -- death/roi_exit rows are track ends.
+        # this tool packages divisions specifically -- death rows are track ends.
         if r.get("split_topology") not in ("normal_split", "multi_way_split"):
             continue
         try:
