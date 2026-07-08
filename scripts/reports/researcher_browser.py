@@ -225,7 +225,8 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .error-chip{background:var(--critical-wash);color:var(--critical);}
 .filmstrip{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px;}
 .crop-wrap{position:relative;display:inline-block;line-height:0;border-radius:4px;overflow:hidden;border:1px solid var(--border);cursor:zoom-in;flex-shrink:0;}
-.crop-thumb{display:block;width:120px;height:120px;background-repeat:no-repeat;}
+.crop-thumb{display:block;width:120px;height:120px;background-repeat:no-repeat;background-color:var(--border);}
+.crop-thumb.loading{background-image:none!important;}
 .crosshair{position:absolute;width:28px;height:28px;transform:translate(-50%,-50%);pointer-events:none;overflow:visible;}
 .crosshair .halo{stroke:rgba(255,255,255,0.85);stroke-width:1.5;stroke-linecap:round;}
 .crosshair .mark{stroke:#ff2d55;stroke-width:0.7;stroke-linecap:round;}
@@ -454,9 +455,10 @@ def _render_html(
       filmstrip = ev.images.map(function(src, i) {{
         var label = src.split('/').pop().replace(/^\d+_/, '').replace(/_\d+\.png$/, '');
         return '<span class="crop-wrap" data-idx="' + i + '" title="' + label + '">' +
-          '<span class="crop-thumb" style="background-image:url(' + src + ');' +
+          '<span class="crop-thumb loading" data-bg="' +
+          'background-image:url(' + src + ');' +
           'background-position:' + ev.crosshair_x_pct + '% ' + ev.crosshair_y_pct + '%;' +
-          'background-size:' + thumbZoom + '%;"></span>' +
+          'background-size:' + thumbZoom + '%;" style=""></span>' +
           crosshairHtml(ev.crosshair_x_pct, ev.crosshair_y_pct, '') +
           '</span>';
       }}).join('');
@@ -509,6 +511,23 @@ def _render_html(
             ev.crosshair_x_pct, ev.crosshair_y_pct);
         }}
       }});
+    }});
+
+    // lazy-load filmstrip thumbnails: swap in background-image only when card scrolls
+    // near the viewport -- prevents the browser from fetching all ~16k images at once.
+    var thumbObserver = new IntersectionObserver(function(entries) {{
+      entries.forEach(function(entry) {{
+        if (!entry.isIntersecting) return;
+        var card = entry.target;
+        card.querySelectorAll('.crop-thumb.loading').forEach(function(thumb) {{
+          var bg = thumb.getAttribute('data-bg');
+          if (bg) {{ thumb.style.cssText = bg; thumb.classList.remove('loading'); }}
+        }});
+        thumbObserver.unobserve(card);
+      }});
+    }}, {{ rootMargin: '300px' }});
+    grid.querySelectorAll('.card').forEach(function(card) {{
+      thumbObserver.observe(card);
     }});
 
     // annotation textarea → auto-save on change
