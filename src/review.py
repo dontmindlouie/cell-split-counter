@@ -1,4 +1,13 @@
-"""Claude-vision review of ambiguous lineage events flagged by classify.py."""
+"""Vision review of ambiguous lineage events flagged by classify.py.
+
+Supports two backends (selectable via review_ambiguous(backend=...)):
+  - "claude"  Anthropic Claude Haiku (ANTHROPIC_API_KEY)  — higher precision
+  - "gpt"     Azure OpenAI GPT       (AZURE_OPENAI_*)     — lower cost
+
+Shared helpers (_build_frame_window, _save_debug_crops, _write_verdict_txt,
+_EMPTY_VERDICT, _estimate_cost_usd) are imported by review_gpt.py so both
+backends stay in sync without duplicating crop / verdict logic.
+"""
 
 import base64
 import dataclasses
@@ -19,18 +28,66 @@ _FRAMES_AFTER = 8   # see cytokinesis + any micronuclei forming; widened 2026-07
 _FRAME_STRIDE = 3   # sample every Nth frame instead of consecutive frames, see docs/investigation_notes.md 2026-07-03
 _CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + both daughters
 
-# USD per million tokens. Only models we've actually used are listed; an unrecognized
-# model reports token counts but skips the cost estimate rather than guessing pricing.
-_MODEL_PRICING_PER_MTOK = {
-    "claude-haiku-4-5": (1.00, 5.00),
+# USD per million tokens for every backend we've actually deployed.
+# An unrecognised model reports token counts but skips the cost estimate.
+_MODEL_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-haiku-4-5": (1.00, 5.00),   # Anthropic
+    "gpt-5-mini":       (0.25, 2.00),   # Azure OpenAI
+    "gpt-5.4-mini":     (0.75, 4.50),   # Azure OpenAI
 }
 
 
 def _estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Return estimated USD cost or None if the model isn't in the pricing table."""
     for prefix, (in_price, out_price) in _MODEL_PRICING_PER_MTOK.items():
         if model.startswith(prefix):
             return (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price
     return None
+
+
+# Verdict dict returned when no frame files are found for a candidate event.
+_EMPTY_VERDICT: dict = {
+    "verdict": "false_positive", "confidence": 0.0, "split_type": None,
+    "description": "no frames found", "acd_division_type": None,
+    "misaligned_chromosomes": None, "lagging_chromosome": None,
+    "anaphase_bridge": None, "micronucleus": None, "binucleation": None,
+    "anomaly_notes": None,
+}
+
+
+def _build_frame_window(
+    event: "LineageEvent", frame_dir: Path
+) -> list[tuple[int, Path]]:
+    """Return (frame_index, path) pairs for the review window around event.frame."""
+    before_indices = [event.frame - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]
+    after_indices  = [event.frame + i * _FRAME_STRIDE for i in range(1, _FRAMES_AFTER + 1)]
+    indices = [i for i in before_indices if i >= 0] + [event.frame] + after_indices
+    return [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
+
+
+def _save_debug_crops(
+    indexed_paths: list[tuple[int, Path]],
+    event: "LineageEvent",
+    debug_dir: Path,
+) -> Path:
+    """Save per-event PNG crops under debug_dir; return the event subfolder path."""
+    event_debug_dir = debug_dir / f"frame_{event.frame:05d}_parent_{event.parent_id}"
+    event_debug_dir.mkdir(parents=True, exist_ok=True)
+    for pos, (idx, path) in enumerate(indexed_paths):
+        label = "before" if idx < event.frame else ("split" if idx == event.frame else "after")
+        crop = _crop_image(path, event.centroid)
+        cv2.imwrite(str(event_debug_dir / f"{pos:02d}_{label}_{idx:05d}.png"), crop)
+    return event_debug_dir
+
+
+def _write_verdict_txt(event_debug_dir: Path, parsed: dict) -> None:
+    """Write a human-readable verdict summary alongside the debug crops."""
+    (event_debug_dir / "verdict.txt").write_text(
+        f"verdict:    {parsed.get('verdict', '')}\n"
+        f"confidence: {float(parsed.get('confidence', 0.0)):.2f}\n"
+        f"notes:      {parsed.get('description', '')}\n",
+        encoding="utf-8",
+    )
 
 # System prompt — uses .format() so JSON braces must be doubled.
 # Single call does both false-positive verification and division-type/abnormality
@@ -132,31 +189,16 @@ def _review_and_classify(
     acd_division_type, misaligned_chromosomes, lagging_chromosome, anaphase_bridge,
     micronucleus, binucleation, anomaly_notes).
     """
-    before_indices = [event.frame - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]
-    after_indices = [event.frame + i * _FRAME_STRIDE for i in range(1, _FRAMES_AFTER + 1)]
-    indices = [i for i in before_indices if i >= 0] + [event.frame] + after_indices
-    indexed_paths = [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
-
+    indexed_paths = _build_frame_window(event, frame_dir)
     if not indexed_paths:
-        return {
-            "verdict": "false_positive", "confidence": 0.0, "split_type": None,
-            "description": "no frames found", "acd_division_type": None,
-            "misaligned_chromosomes": None, "lagging_chromosome": None,
-            "anaphase_bridge": None, "micronucleus": None, "binucleation": None,
-            "anomaly_notes": None,
-        }
+        return _EMPTY_VERDICT.copy()
 
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
     after_count = len(indexed_paths) - before_count
 
     event_debug_dir: Path | None = None
     if debug_dir is not None:
-        event_debug_dir = debug_dir / f"frame_{event.frame:05d}_parent_{event.parent_id}"
-        event_debug_dir.mkdir(parents=True, exist_ok=True)
-        for pos, (idx, path) in enumerate(indexed_paths):
-            label = "before" if idx < event.frame else ("split" if idx == event.frame else "after")
-            crop = _crop_image(path, event.centroid)
-            cv2.imwrite(str(event_debug_dir / f"{pos:02d}_{label}_{idx:05d}.png"), crop)
+        event_debug_dir = _save_debug_crops(indexed_paths, event, debug_dir)
 
     content = [_load_image_block(p, event.centroid) for _, p in indexed_paths]
     content.append({
@@ -188,12 +230,7 @@ def _review_and_classify(
     parsed = json.loads(text)
 
     if event_debug_dir is not None:
-        (event_debug_dir / "verdict.txt").write_text(
-            f"verdict:    {parsed.get('verdict', '')}\n"
-            f"confidence: {float(parsed.get('confidence', 0.0)):.2f}\n"
-            f"notes:      {parsed.get('description', '')}\n",
-            encoding="utf-8",
-        )
+        _write_verdict_txt(event_debug_dir, parsed)
 
     return parsed
 
@@ -323,11 +360,7 @@ def review_ambiguous(
 
     total_input = sum(u["input_tokens"] for u in usage_log)
     total_output = sum(u["output_tokens"] for u in usage_log)
-    if backend == "claude":
-        cost = _estimate_cost_usd(resolved_model, total_input, total_output)
-    else:
-        from src.review_gpt import estimate_cost_usd as _estimate_cost_usd_gpt
-        cost = _estimate_cost_usd_gpt(resolved_model, total_input, total_output)
+    cost = _estimate_cost_usd(resolved_model, total_input, total_output)
     cost_str = f", est. ${cost:.4f}" if cost is not None else ""
     print(f"  {backend} usage: {len(usage_log)} calls, {total_input:,} input tokens, {total_output:,} output tokens{cost_str}")
     if usage_out is not None:
