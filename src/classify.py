@@ -28,7 +28,7 @@ class LineageEvent:
     parent_id: int | None
     frame: int
     event_type: EventType
-    classification_source: str  # "rule" or "claude"
+    classification_source: str  # "rule", or the resolved vision model name (e.g. "claude-haiku-4-5", a GPT deployment name)
     confidence: float           # current best estimate (tracker initially; Claude overwrites on review).
                                  # written to CSV as "claude_confidence" -- see docs/output_schema.md
     tracker_confidence: float | None = None  # original trackastra persistence score, never overwritten.

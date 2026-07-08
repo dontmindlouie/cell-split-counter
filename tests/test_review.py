@@ -44,7 +44,7 @@ def test_events_at_lower_threshold_are_not_suppressed(tmp_path):
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
     # event was routed to Claude (not suppressed), came back as FP with confidence 0.0
     assert len(result) == 1
-    assert result[0].classification_source == "claude"
+    assert result[0].classification_source == "claude-haiku-4-5"
 
 
 # ── auto-confirm tier ─────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def test_claude_real_verdict_updates_source_confidence_and_classification(tmp_pa
         result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
 
     assert len(result) == 1
-    assert result[0].classification_source == "claude"
+    assert result[0].classification_source == "claude-haiku-4-5"
     assert result[0].confidence == 0.85
     assert result[0].claude_notes == "symmetric: clear division"
     assert result[0].acd_division_type == "bipolar"

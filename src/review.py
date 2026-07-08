@@ -356,7 +356,7 @@ def review_ambiguous(
         notes = f"{split_type}: {description}".strip(": ") if split_type else description
         reviewed.append(dataclasses.replace(
             event,
-            classification_source="claude",
+            classification_source=resolved_model,
             confidence=confidence if is_real else 0.0,
             tracker_confidence=event.tracker_confidence if event.tracker_confidence is not None else event.confidence,
             claude_notes=notes,
