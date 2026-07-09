@@ -11,6 +11,7 @@ from src.output import write_events_csv, write_summary_json
 from src.review import review_ambiguous
 from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
+from scripts.reports.researcher_browser import generate as generate_researcher_browser
 
 
 def run(
@@ -106,3 +107,10 @@ def run(
         events, {"video_path": str(config.video_path), "pixel_size_um": pixel_size_um},
         output_dir / "summary.json", vision_usage=vision_usage
     )
+
+    # Auto-generate the researcher review HTML so it's ready immediately after a run
+    # finishes, no manual script invocation needed (backlog item #17, 2026-07-09).
+    try:
+        generate_researcher_browser(output_dir)
+    except Exception as exc:
+        print(f"  [researcher_browser] auto-generation failed (non-fatal): {type(exc).__name__}: {exc}")

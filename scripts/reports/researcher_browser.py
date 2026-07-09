@@ -71,6 +71,12 @@ def _centroid_in_crop_pct(img_path: Path, cx: float, cy: float) -> tuple[float, 
     return (offset_x / w) * 100, (offset_y / h) * 100
 
 
+def _is_split_type_mismatch(row: dict) -> bool:
+    """Tracker topology said normal_split (2 children) but the model visually saw 3+
+    daughters -- see docs/output_schema.md's multi_way undercounting gotcha (2026-07-09)."""
+    return row.get("split_type") == "multi_way" and row.get("split_topology") == "normal_split"
+
+
 def _interest_score(row: dict) -> tuple[int, float]:
     """Return (tier_score, confidence) for sorting. Higher = more interesting."""
     conf_col = _conf_col(row)
@@ -78,11 +84,17 @@ def _interest_score(row: dict) -> tuple[int, float]:
     acd = (row.get("acd_division_type") or "").lower()
     near = row.get("near_edge") == "1"
     has_anomaly = any(row.get(f) == "1" for f in _FLAG_COLS)
+    is_failed = row.get("split_topology") == "failed_split"
+    mismatch = _is_split_type_mismatch(row)
 
     if conf <= 0:
         score = 5          # false positive / unconfirmed
     elif has_anomaly and conf >= 0.5:
         score = 40         # Tier 1: anomaly-flagged + confirmed
+    elif is_failed or mismatch:
+        score = 35         # Tier 1b: failed division, or tracker undercounted a multi-way split
+                            # (both added 2026-07-09 -- biologically/correctness interesting on
+                            # their own, independent of confidence tier or ACD geometry)
     elif acd in ("tripolar", "multipolar"):
         score = 30         # Tier 2: abnormal geometry
     elif conf >= 0.5:
@@ -105,7 +117,11 @@ def _build_manifest(
     # Deduplicate to one row per unique split point
     by_split: dict[tuple, dict] = {}
     for r in rows:
-        if r.get("split_topology") not in ("normal_split", "multi_way_split"):
+        # failed_split included 2026-07-09 -- previously excluded entirely, meaning a real,
+        # confirmed failed division was invisible in this tool despite being a distinct,
+        # biologically interesting event type. Still excluded from the "confirmed splits"
+        # count in main() below, since it's not a completed division.
+        if r.get("split_topology") not in ("normal_split", "multi_way_split", "failed_split"):
             continue
         key = (r.get("parent_id", ""), r.get("peak_frame", ""))
         if key not in by_split:
@@ -164,6 +180,10 @@ def _build_manifest(
             "classification_source": row.get("classification_source") or "",
             "ai_notes": row.get(notes_col) or "",
             "review_error": row.get("review_error") == "1",
+            "split_topology": row.get("split_topology") or "",
+            "split_type": row.get("split_type") or "",
+            "is_failed_split": row.get("split_topology") == "failed_split",
+            "split_type_mismatch": _is_split_type_mismatch(row),
             "images": images,
             "has_crops": len(images) > 0,
             "crosshair_x_pct": round(crosshair_x_pct, 2),
@@ -422,6 +442,7 @@ def _render_html(
 
   function tierClass(ev) {{
     if (ev.flags.length > 0 && ev.confidence >= 0.5) return 'tier1';
+    if (ev.is_failed_split || ev.split_type_mismatch) return 'tier1';
     if (ev.acd_division_type === 'tripolar' || ev.acd_division_type === 'multipolar') return 'tier2';
     return '';
   }}
@@ -435,6 +456,8 @@ def _render_html(
     var flagChips = ev.flags.map(function(f) {{ return '<span class="flag-chip">' + f + '</span>'; }}).join('');
     var nearChip = ev.near_edge ? '<span class="flag-chip near-edge-chip">near edge</span>' : '';
     var errChip = ev.review_error ? '<span class="flag-chip error-chip">review error</span>' : '';
+    var failedChip = ev.is_failed_split ? '<span class="flag-chip near-edge-chip">failed division</span>' : '';
+    var mismatchChip = ev.split_type_mismatch ? '<span class="flag-chip error-chip">split_type mismatch: model saw multi_way</span>' : '';
 
     var filmstrip = '';
     if (ev.images.length > 0) {{
@@ -463,7 +486,7 @@ def _render_html(
       '<div class="card-header">' +
         '<span class="frame-label">Frame ' + ev.peak_frame + '</span>' +
         confBadge + acdBadge +
-        '<span>' + flagChips + nearChip + errChip + '</span>' +
+        '<span>' + flagChips + failedChip + mismatchChip + nearChip + errChip + '</span>' +
       '</div>' +
       '<div class="filmstrip">' + filmstrip + '</div>' +
       (ev.ai_notes ? '<div class="ai-notes">&ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
@@ -610,6 +633,55 @@ def _render_html(
 """
 
 
+def generate(
+    run_dir: Path,
+    min_conf: float = 0.0,
+    include_fps: bool = False,
+    thumb_zoom: int = 280,
+    out: Path | None = None,
+) -> Path | None:
+    """Build and write the researcher browser HTML for a run. Returns the output path,
+    or None if there was nothing to show (no events.csv, or no events matched).
+
+    Callable directly (e.g. from src/pipeline.py to auto-generate at the end of a run)
+    as well as via this script's CLI -- see main() below.
+    """
+    if not (run_dir / "events.csv").exists():
+        print(f"  [researcher_browser] no events.csv found in {run_dir}, skipping")
+        return None
+
+    all_rows = list(csv.DictReader(open(run_dir / "events.csv", encoding="utf-8", errors="replace")))
+    splits = [r for r in all_rows if r.get("split_topology") in ("normal_split", "multi_way_split")]
+    by_split: dict[tuple, dict] = {}
+    for r in splits:
+        key = (r.get("parent_id", ""), r.get("peak_frame", ""))
+        by_split.setdefault(key, r)
+
+    conf_col = _conf_col(splits[0]) if splits else "ai_confidence"
+    confirmed = sum(1 for r in by_split.values() if float(r.get(conf_col) or 0) > 0)
+
+    manifest = _build_manifest(run_dir, min_conf, include_fps, thumb_zoom)
+    if not manifest:
+        print(f"  [researcher_browser] no events matched the filter criteria in {run_dir}, skipping")
+        return None
+
+    out_path = out if out else run_dir / "reports" / "researcher_browser.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    html = _render_html(manifest, run_dir.name, confirmed, thumb_zoom)
+    out_path.write_text(html, encoding="utf-8")
+
+    anomaly_count = sum(1 for e in manifest if e["flags"])
+    abnormal_geom = sum(1 for e in manifest if e["acd_division_type"] in ("tripolar", "multipolar"))
+    failed_count = sum(1 for e in manifest if e["is_failed_split"])
+    mismatch_count = sum(1 for e in manifest if e["split_type_mismatch"])
+    print(f"  [researcher_browser] wrote {out_path}")
+    print(f"    {len(manifest)} events · {confirmed} confirmed splits total")
+    print(f"    {anomaly_count} anomaly-flagged · {abnormal_geom} tripolar/multipolar · "
+          f"{failed_count} failed_split · {mismatch_count} split_type mismatch")
+    return out_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", help="output run directory containing events.csv and review_crops/")
@@ -624,35 +696,10 @@ def main() -> None:
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
-    if not (run_dir / "events.csv").exists():
-        raise SystemExit(f"No events.csv found in {run_dir}")
-
-    all_rows = list(csv.DictReader(open(run_dir / "events.csv", encoding="utf-8", errors="replace")))
-    splits = [r for r in all_rows if r.get("split_topology") in ("normal_split", "multi_way_split")]
-    by_split: dict[tuple, dict] = {}
-    for r in splits:
-        key = (r.get("parent_id", ""), r.get("peak_frame", ""))
-        by_split.setdefault(key, r)
-
-    conf_col = _conf_col(splits[0]) if splits else "ai_confidence"
-    confirmed = sum(1 for r in by_split.values() if float(r.get(conf_col) or 0) > 0)
-
-    manifest = _build_manifest(run_dir, args.min_conf, args.include_fps, args.thumb_zoom)
-    if not manifest:
-        raise SystemExit("No events matched the filter criteria.")
-
-    out_path = Path(args.out) if args.out else run_dir / "reports" / "researcher_browser.html"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    html = _render_html(manifest, run_dir.name, confirmed, args.thumb_zoom)
-    out_path.write_text(html, encoding="utf-8")
-
-    anomaly_count = sum(1 for e in manifest if e["flags"])
-    abnormal_geom = sum(1 for e in manifest if e["acd_division_type"] in ("tripolar", "multipolar"))
-    print(f"wrote {out_path}")
-    print(f"  {len(manifest)} events · {confirmed} confirmed splits total")
-    print(f"  {anomaly_count} anomaly-flagged · {abnormal_geom} tripolar/multipolar")
-    print(f"  sorted: anomaly+confirmed first, then tripolar/multipolar, then bipolar")
+    out = Path(args.out) if args.out else None
+    result = generate(run_dir, args.min_conf, args.include_fps, args.thumb_zoom, out)
+    if result is None:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
