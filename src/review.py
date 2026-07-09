@@ -487,10 +487,19 @@ def review_ambiguous(
         verdict = r.get("verdict", "real")
         raw_confidence = float(r.get("confidence", event.confidence))
         confidence = raw_confidence
-        if backend == "gpt" and verdict == "real" and confidence < min_gpt_confidence:
+        split_type = r.get("split_type") or ""
+        # min_gpt_confidence was tuned for "is this really a COMPLETED division" -- applying
+        # it uniformly to "failed" splits suppresses the very category this fix exists to
+        # surface. Real-API validation (2026-07-09, smoke run + repeated-sampling on M4) found
+        # the model's own confidence for a genuine failed division clusters at 0.72-0.82,
+        # consistently BELOW the 0.85 floor, so every single one would have been silently
+        # downgraded back to false_positive before ever reaching the FAILED_SPLIT
+        # reclassification below. Skip the floor for split_type=="failed" -- it's already
+        # excluded from confirmed-split counts regardless of confidence, and raw_ai_confidence
+        # still preserves the number for anyone who wants their own cutoff.
+        if backend == "gpt" and verdict == "real" and confidence < min_gpt_confidence and split_type != "failed":
             verdict = "false_positive"
         is_real = verdict == "real"
-        split_type = r.get("split_type") or ""
         description = r.get("description", "")
         notes = f"{split_type}: {description}".strip(": ") if split_type else description
 

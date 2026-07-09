@@ -12,6 +12,7 @@ from src.review import review_ambiguous
 from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 from scripts.reports.researcher_browser import generate as generate_researcher_browser
+from scripts.reports.death_shape_browser import generate as generate_death_shape_browser
 
 
 def run(
@@ -108,9 +109,16 @@ def run(
         output_dir / "summary.json", vision_usage=vision_usage
     )
 
-    # Auto-generate the researcher review HTML so it's ready immediately after a run
-    # finishes, no manual script invocation needed (backlog item #17, 2026-07-09).
+    # Auto-generate the researcher review + death shape HTML reports so they're ready
+    # immediately after a run finishes, no manual script invocation needed (backlog
+    # item #17, 2026-07-09). Both wrapped independently and non-fatally -- a report
+    # generation bug shouldn't crash a multi-hour run after the real work is done, and
+    # one report failing shouldn't prevent the other from being generated.
     try:
         generate_researcher_browser(output_dir)
     except Exception as exc:
         print(f"  [researcher_browser] auto-generation failed (non-fatal): {type(exc).__name__}: {exc}")
+    try:
+        generate_death_shape_browser(output_dir)
+    except Exception as exc:
+        print(f"  [death_shape_browser] auto-generation failed (non-fatal): {type(exc).__name__}: {exc}")

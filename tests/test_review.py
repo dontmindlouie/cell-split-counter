@@ -156,6 +156,45 @@ def test_false_positive_failed_split_type_is_impossible_stays_unclassified(tmp_p
     assert result[0].split_type is None
 
 
+def test_gpt_floor_skipped_for_failed_split(tmp_path):
+    # Real-API validation (2026-07-09) found genuine failed-division confidence clusters
+    # at 0.72-0.82, below the 0.85 GPT floor -- the floor must not suppress this category,
+    # or the un-shelved FAILED_SPLIT reclassification never gets a chance to run.
+    event = make_event(1, confidence=0.5)
+    with patch("src.review_gpt.review_and_classify_gpt") as mock_review, \
+         patch("openai.AzureOpenAI"), \
+         patch.dict("os.environ", {"AZURE_OPENAI_ENDPOINT": "test", "AZURE_OPENAI_API_KEY": "test"}):
+        mock_review.return_value = {"verdict": "real", "confidence": 0.75, "split_type": "failed",
+                                     "description": "re-fuses", "acd_division_type": None,
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
+        result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0,
+                                   backend="gpt", min_gpt_confidence=0.85)
+
+    assert result[0].event_type == EventType.FAILED_SPLIT
+    assert result[0].split_type == "failed"
+    assert result[0].confidence == 0.75  # NOT zeroed by the floor
+
+
+def test_gpt_floor_still_applies_to_non_failed_splits(tmp_path):
+    # Same below-floor confidence, but a normal split_type -- floor behavior must be
+    # unchanged here; only split_type=="failed" is exempted.
+    event = make_event(1, confidence=0.5)
+    with patch("src.review_gpt.review_and_classify_gpt") as mock_review, \
+         patch("openai.AzureOpenAI"), \
+         patch.dict("os.environ", {"AZURE_OPENAI_ENDPOINT": "test", "AZURE_OPENAI_API_KEY": "test"}):
+        mock_review.return_value = {"verdict": "real", "confidence": 0.75, "split_type": "symmetric",
+                                     "description": "borderline division", "acd_division_type": "bipolar",
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
+        result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0,
+                                   backend="gpt", min_gpt_confidence=0.85)
+
+    assert result[0].event_type == EventType.NORMAL_SPLIT
+    assert result[0].confidence == 0.0
+    assert result[0].split_type is None
+
+
 def test_multi_way_mismatch_is_flagged_not_silently_reclassified(tmp_path):
     # Tracker topology only found 2 children (NORMAL_SPLIT), but the model visually saw 3+
     # daughters. We don't silently override tracker topology -- split_type carries the

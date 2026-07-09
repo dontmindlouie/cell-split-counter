@@ -89,7 +89,10 @@ def _build_manifest(run_dir: Path, events_csv: str, crops_subdir: str) -> list[d
     rows = list(csv.DictReader(open(run_dir / events_csv, encoding="utf-8", errors="replace")))
     deaths = [r for r in rows if r.get("split_topology") == "death"]
     if deaths and not deaths[0].get("eccentricity"):
-        raise SystemExit(
+        # ValueError, not SystemExit -- this needs to be catchable by a normal
+        # `except Exception` when generate() is called from src/pipeline.py, which
+        # SystemExit (a BaseException) would silently bypass.
+        raise ValueError(
             f"{events_csv} has no eccentricity/solidity data -- this run predates the "
             "2026-07-09 regionprops columns. Re-run classify/output, or point --events-csv "
             "at a backfilled CSV (e.g. events_with_shape.csv)."
@@ -352,6 +355,42 @@ def _render_html(manifest: list[dict], run_name: str, total_deaths: int) -> str:
 """
 
 
+def generate(
+    run_dir: Path,
+    events_csv: str = "events.csv",
+    crops_subdir: str = "death_crops",
+    out: Path | None = None,
+) -> Path | None:
+    """Build and write the death shape browser HTML for a run. Returns the output path,
+    or None if there was nothing to show (no events.csv, no death rows, or the CSV
+    predates the regionprops columns).
+
+    Callable directly (e.g. from src/pipeline.py to auto-generate at the end of a run)
+    as well as via this script's CLI -- see main() below.
+    """
+    if not (run_dir / events_csv).exists():
+        print(f"  [death_shape_browser] no {events_csv} found in {run_dir}, skipping")
+        return None
+
+    try:
+        manifest = _build_manifest(run_dir, events_csv, crops_subdir)
+    except ValueError as exc:
+        print(f"  [death_shape_browser] {exc}")
+        return None
+
+    if not manifest:
+        print(f"  [death_shape_browser] no death events found in {run_dir}, skipping")
+        return None
+
+    out_path = out if out else run_dir / "reports" / "death_shape_browser.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(_render_html(manifest, run_dir.name, len(manifest)), encoding="utf-8")
+
+    print(f"  [death_shape_browser] wrote {out_path}")
+    print(f"    {len(manifest)} death events, crops in {run_dir / 'reports' / crops_subdir}")
+    return out_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", help="output run directory containing events.csv and frames/")
@@ -365,19 +404,10 @@ def main() -> None:
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
-    if not (run_dir / args.events_csv).exists():
-        raise SystemExit(f"No {args.events_csv} found in {run_dir}")
-
-    manifest = _build_manifest(run_dir, args.events_csv, args.crops_subdir)
-    if not manifest:
-        raise SystemExit("No death events found in this run.")
-
-    out_path = Path(args.out) if args.out else run_dir / "reports" / "death_shape_browser.html"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(_render_html(manifest, run_dir.name, len(manifest)), encoding="utf-8")
-
-    print(f"wrote {out_path}")
-    print(f"  {len(manifest)} death events, crops in {run_dir / 'reports' / args.crops_subdir}")
+    out = Path(args.out) if args.out else None
+    result = generate(run_dir, args.events_csv, args.crops_subdir, out)
+    if result is None:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
