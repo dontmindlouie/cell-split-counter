@@ -25,20 +25,32 @@ from src.review import (
     _FRAME_STRIDE,
     _FRAMES_AFTER,
     _FRAMES_BEFORE,
+    _MARKER_PROMPT_LINE,
     _SYSTEM,
     _build_frame_window,
     _crop_image,
+    _crop_image_with_offset,
+    _draw_corner_ticks,
     _estimate_cost_usd,
     _save_debug_crops,
     _write_verdict_txt,
+    adaptive_radius,
 )
 
 # Re-export for callers that imported estimate_cost_usd directly from this module.
 estimate_cost_usd = _estimate_cost_usd
 
 
-def _load_image_block(path: Path, centroid: tuple[float, float] | None = None) -> dict:
-    crop = _crop_image(path, centroid)
+def _load_image_block(
+    path: Path,
+    centroid: tuple[float, float] | None = None,
+    marker_radius: float | None = None,
+) -> dict:
+    if marker_radius is not None and centroid is not None:
+        crop, x0, y0 = _crop_image_with_offset(path, centroid)
+        crop = _draw_corner_ticks(crop, centroid[0] - x0, centroid[1] - y0, radius=marker_radius)
+    else:
+        crop = _crop_image(path, centroid)
     ok, buf = cv2.imencode(".png", crop)
     raw = buf.tobytes() if ok else path.read_bytes()
     data = base64.standard_b64encode(raw).decode()
@@ -66,7 +78,8 @@ def review_and_classify_gpt(
     if debug_dir is not None:
         event_debug_dir = _save_debug_crops(indexed_paths, event, debug_dir)
 
-    content = [_load_image_block(p, event.centroid) for _, p in indexed_paths]
+    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
+    content = [_load_image_block(p, event.centroid, marker_radius=radius) for _, p in indexed_paths]
     content.append({
         "type": "text",
         "text": (
@@ -76,13 +89,14 @@ def review_and_classify_gpt(
         ),
     })
 
+    system = _SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE) + _MARKER_PROMPT_LINE
     response = client.chat.completions.create(
         model=deployment,
         max_completion_tokens=2000,
         reasoning_effort=reasoning_effort,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": _SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE)},
+            {"role": "system", "content": system},
             {"role": "user", "content": content},
         ],
     )

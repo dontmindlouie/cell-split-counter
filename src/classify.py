@@ -49,6 +49,32 @@ class LineageEvent:
     near_edge: bool | None = None  # centroid within NEAR_EDGE_MARGIN_PX of any frame boundary
     cell_area_px: float | None = None  # parent cell's Cellpose mask area at the split frame
     cell_size_um2: float | None = None  # cell_area_px converted via per-acquisition pixel size, if known
+    neighbor_distance_px: float | None = None  # distance to the nearest OTHER cell mask in the
+        # same frame this event's centroid/cell_area_px were measured from (not event.frame,
+        # which for splits is one frame later -- see classify_events). None if no other cell
+        # mask exists in that frame. Used by review.py to size the vision-review marker so it
+        # can't enclose a simultaneously-dividing neighbor (2026-07-08 marker spike).
+
+
+def _build_frame_index(tracks: list[TrackNode]) -> dict[int, list[TrackNode]]:
+    index: dict[int, list[TrackNode]] = {}
+    for node in tracks:
+        index.setdefault(node.frame, []).append(node)
+    return index
+
+
+def _nearest_neighbor_distance_px(frame_nodes: list[TrackNode], own: TrackNode) -> float | None:
+    """Euclidean distance from `own` to the closest OTHER cell mask in the same frame."""
+    ox, oy = own.mask.centroid
+    best: float | None = None
+    for node in frame_nodes:
+        if node is own:
+            continue
+        nx, ny = node.mask.centroid
+        d = ((nx - ox) ** 2 + (ny - oy) ** 2) ** 0.5
+        if best is None or d < best:
+            best = d
+    return best
 
 
 def _daughter_persistence(
@@ -119,6 +145,7 @@ def classify_track_ends(
         if node.parent_id is not None:
             parent_of_track[node.track_id] = node.parent_id
 
+    frame_index = _build_frame_index(tracks)
     events = []
     for track_id, node in last_node_by_track.items():
         if node.children or node.frame >= last_frame:
@@ -136,6 +163,7 @@ def classify_track_ends(
                 confidence=min(1.0, duration / confidence_max_frames),
                 centroid=node.mask.centroid,
                 cell_area_px=node.mask.area,
+                neighbor_distance_px=_nearest_neighbor_distance_px(frame_index.get(node.frame, []), node),
             )
         )
     return events
@@ -177,6 +205,7 @@ def classify_events(
     node_by_tid_frame: dict[tuple[int, int], TrackNode] = {
         (n.track_id, n.frame): n for n in tracks
     }
+    frame_index = _build_frame_index(tracks)
     origin_frame: dict[int, int] = {}
     events = []
 
@@ -209,6 +238,9 @@ def classify_events(
         )
         confidence = min(1.0, persistence / confidence_max_frames)
         event_type = EventType.NORMAL_SPLIT if len(node.children) == 2 else EventType.MULTI_WAY_SPLIT
+        # neighbor distance is measured at node.frame, the same frame centroid/cell_area_px
+        # come from -- NOT split_frame (node.frame + 1), which is one frame later.
+        neighbor_distance_px = _nearest_neighbor_distance_px(frame_index.get(node.frame, []), node)
         for child_track_id in node.children:
             origin_frame[child_track_id] = split_frame
             events.append(
@@ -221,6 +253,7 @@ def classify_events(
                     confidence=confidence,
                     centroid=node.mask.centroid,
                     cell_area_px=node.mask.area,
+                    neighbor_distance_px=neighbor_distance_px,
                 )
             )
     return events

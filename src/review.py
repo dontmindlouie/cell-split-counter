@@ -12,6 +12,7 @@ backends stay in sync without duplicating crop / verdict logic.
 import base64
 import dataclasses
 import json
+import math
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +28,80 @@ _FRAMES_BEFORE = 8  # see metaphase plate alignment; widened 2026-07-03 sweep, s
 _FRAMES_AFTER = 8   # see cytokinesis + any micronuclei forming; widened 2026-07-03 sweep, see docs/investigation_notes.md
 _FRAME_STRIDE = 3   # sample every Nth frame instead of consecutive frames, see docs/investigation_notes.md 2026-07-03
 _CROP_RADIUS = 192  # px around centroid; 384px box comfortably fits parent + both daughters
+
+# Corner-bracket marker drawn on every crop to disambiguate the candidate cell from a
+# simultaneously-dividing neighbor (2026-07-08 spike, spike/crop-marker-v2). Radius is
+# adaptive per event (see adaptive_radius) so the box can't enclose a nearby neighbor
+# or clip the candidate's own division -- see adaptive_radius's docstring for the two
+# regressions (neighbor misattribution, GPT fragmentation misread) this fixes.
+_TICK_RADIUS = 55       # px from centroid, used when no neighbor is nearby
+_TICK_RADIUS_MIN = 15   # px floor -- below this the brackets start overlapping the cell body
+_TICK_LEN = 14          # px, length of each corner-bracket arm
+_TICK_COLOR = (60, 170, 230)  # BGR, dim/muted orange-amber -- not saturated cyan
+_TICK_THICKNESS = 2
+_EDGE_MARGIN = 6        # px -- keep ticks from being clipped exactly at the canvas edge
+
+_MARKER_PROMPT_LINE = (
+    "\n\nThe candidate cell is indicated by four corner brackets (thin, dim orange) "
+    "in each image, positioned clear of the cell itself, not touching it. Evaluate "
+    "only the cell centered within the brackets -- ignore division or anomaly "
+    "activity on any other cell visible in the frame."
+)
+
+
+def adaptive_radius(
+    neighbor_distance_px: float | None,
+    margin: float = 5.0,
+    fraction: float = 0.5,
+    radius_min: int = _TICK_RADIUS_MIN,
+    cell_area_px: float | None = None,
+    size_k: float = 1.3,
+) -> int:
+    """Shrink the bracket radius so the marked box can't enclose a nearby neighbor,
+    while not shrinking it below what the candidate cell's own size needs.
+
+    Caps the radius at `fraction` of the distance to the nearest neighbor (minus a
+    small margin) so the box structurally cannot contain both cells. Composed with a
+    size floor (`size_k * candidate's own Cellpose-derived radius`, from
+    `cell_area_px` via area=pi*r^2) so a genuinely large candidate cell doesn't get a
+    box tight enough to clip its own division -- see the 2026-07-08 marker spike
+    (spike/crop-marker-v2) for the n=8 validation on both Claude Haiku and GPT-5-mini
+    that landed on fraction=0.5, margin=5.0, size_k=1.3 as one shared formula for
+    both backends. Returns the fixed default radius if no neighbor distance is known.
+    """
+    if neighbor_distance_px is None:
+        return _TICK_RADIUS
+    floor = radius_min
+    if cell_area_px is not None:
+        cell_own_radius = math.sqrt(cell_area_px / math.pi)
+        floor = max(floor, size_k * cell_own_radius)
+    computed = neighbor_distance_px * fraction - margin
+    return int(max(floor, min(_TICK_RADIUS, computed)))
+
+
+def _draw_corner_ticks(crop, local_cx: float, local_cy: float, radius: float | None = None):
+    """4 short L-shaped brackets at `radius` (default _TICK_RADIUS) from the point,
+    pointing inward. Not a continuous ring, not touching the cell itself.
+
+    Corner positions are clamped to the crop's actual bounds -- an edge-clamped crop
+    (candidate near the frame boundary) can be narrower than the nominal 384px box.
+    """
+    out = crop.copy()
+    if len(out.shape) == 2:
+        out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+    h, w = out.shape[:2]
+    r = radius if radius is not None else _TICK_RADIUS
+    l = _TICK_LEN
+    m = _EDGE_MARGIN
+    corners = [(-1, -1), (1, -1), (-1, 1), (1, 1)]  # dx, dy sign per corner
+    for dx, dy in corners:
+        cx = max(m, min(w - m, local_cx + dx * r))
+        cy = max(m, min(h - m, local_cy + dy * r))
+        hx = max(m, min(w - m, cx - dx * l))  # horizontal arm, far end clamped too
+        cv2.line(out, (int(cx), int(cy)), (int(hx), int(cy)), _TICK_COLOR, _TICK_THICKNESS, cv2.LINE_AA)
+        vy = max(m, min(h - m, cy - dy * l))  # vertical arm
+        cv2.line(out, (int(cx), int(cy)), (int(cx), int(vy)), _TICK_COLOR, _TICK_THICKNESS, cv2.LINE_AA)
+    return out
 
 # USD per million tokens for every backend we've actually deployed.
 # An unrecognised model reports token counts but skips the cost estimate.
@@ -70,12 +145,21 @@ def _save_debug_crops(
     event: "LineageEvent",
     debug_dir: Path,
 ) -> Path:
-    """Save per-event PNG crops under debug_dir; return the event subfolder path."""
+    """Save per-event PNG crops under debug_dir; return the event subfolder path.
+
+    Includes the same marker sent to the vision model, at the same radius, so debug
+    crops show exactly what the model saw rather than a cleaner unmarked version.
+    """
     event_debug_dir = debug_dir / f"frame_{event.frame:05d}_parent_{event.parent_id}"
     event_debug_dir.mkdir(parents=True, exist_ok=True)
+    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
     for pos, (idx, path) in enumerate(indexed_paths):
         label = "before" if idx < event.frame else ("split" if idx == event.frame else "after")
-        crop = _crop_image(path, event.centroid)
+        if event.centroid is not None:
+            crop, x0, y0 = _crop_image_with_offset(path, event.centroid)
+            crop = _draw_corner_ticks(crop, event.centroid[0] - x0, event.centroid[1] - y0, radius=radius)
+        else:
+            crop = _crop_image(path, None)
         cv2.imwrite(str(event_debug_dir / f"{pos:02d}_{label}_{idx:05d}.png"), crop)
     return event_debug_dir
 
@@ -156,19 +240,33 @@ def _find_frame(frame_dir: Path, index: int) -> Path | None:
     return matches[0] if matches else None
 
 
-def _crop_image(path: Path, centroid: tuple[float, float] | None = None):
+def _crop_image_with_offset(path: Path, centroid: tuple[float, float]):
+    """Like _crop_image, but also returns the crop's (x0, y0) offset in the source
+    image -- needed to place the marker at the correct local position."""
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if centroid is None:
-        return img
     cx, cy = int(centroid[0]), int(centroid[1])
     h, w = img.shape
     y0, y1 = max(0, cy - _CROP_RADIUS), min(h, cy + _CROP_RADIUS)
     x0, x1 = max(0, cx - _CROP_RADIUS), min(w, cx + _CROP_RADIUS)
-    return img[y0:y1, x0:x1]
+    return img[y0:y1, x0:x1], x0, y0
 
 
-def _load_image_block(path: Path, centroid: tuple[float, float] | None = None) -> dict:
-    crop = _crop_image(path, centroid)
+def _crop_image(path: Path, centroid: tuple[float, float] | None = None):
+    if centroid is None:
+        return cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    return _crop_image_with_offset(path, centroid)[0]
+
+
+def _load_image_block(
+    path: Path,
+    centroid: tuple[float, float] | None = None,
+    marker_radius: float | None = None,
+) -> dict:
+    if marker_radius is not None and centroid is not None:
+        crop, x0, y0 = _crop_image_with_offset(path, centroid)
+        crop = _draw_corner_ticks(crop, centroid[0] - x0, centroid[1] - y0, radius=marker_radius)
+    else:
+        crop = _crop_image(path, centroid)
     ok, buf = cv2.imencode(".png", crop)
     raw = buf.tobytes() if ok else path.read_bytes()
     data = base64.standard_b64encode(raw).decode()
@@ -200,7 +298,8 @@ def _review_and_classify(
     if debug_dir is not None:
         event_debug_dir = _save_debug_crops(indexed_paths, event, debug_dir)
 
-    content = [_load_image_block(p, event.centroid) for _, p in indexed_paths]
+    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
+    content = [_load_image_block(p, event.centroid, marker_radius=radius) for _, p in indexed_paths]
     content.append({
         "type": "text",
         "text": (
@@ -210,10 +309,11 @@ def _review_and_classify(
         ),
     })
 
+    system = _SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE) + _MARKER_PROMPT_LINE
     response = client.messages.create(
         model=model,
         max_tokens=512,
-        system=_SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE),
+        system=system,
         messages=[{"role": "user", "content": content}],
     )
 
