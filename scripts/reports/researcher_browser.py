@@ -83,7 +83,7 @@ def _interest_score(row: dict) -> tuple[int, float]:
     conf = float(row.get(conf_col) or 0)
     acd = (row.get("acd_division_type") or "").lower()
     near = row.get("near_edge") == "1"
-    has_anomaly = any(row.get(f) == "1" for f in _FLAG_COLS)
+    has_anomaly = any(row.get(f) == "1" for f in _FLAG_COLS) or bool((row.get("anomaly_notes") or "").strip())
     is_failed = row.get("split_topology") == "failed_split"
     mismatch = _is_split_type_mismatch(row)
 
@@ -179,6 +179,7 @@ def _build_manifest(
             "bleach_risk": row.get("bleach_risk") or None,
             "classification_source": row.get("classification_source") or "",
             "ai_notes": row.get(notes_col) or "",
+            "anomaly_notes": row.get("anomaly_notes") or "",
             "review_error": row.get("review_error") == "1",
             "split_topology": row.get("split_topology") or "",
             "split_type": row.get("split_type") or "",
@@ -251,6 +252,7 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .no-crops-note{font-size:12px;color:var(--text-muted);padding:8px 0;}
 .ai-notes{font-size:13px;color:var(--text-secondary);line-height:1.55;margin:6px 0 10px;font-style:italic;}
 .ai-notes:empty{display:none;}
+.anomaly-notes{font-size:13px;color:var(--tier1);line-height:1.55;margin:0 0 10px;padding:6px 10px;border-radius:6px;background:var(--tier1-wash);}
 .meta-row{font-size:11.5px;color:var(--text-muted);margin-bottom:10px;}
 .annotation-area textarea{width:100%;font:inherit;font-size:13px;border-radius:6px;border:1px solid var(--border);background:var(--page);color:var(--text-primary);padding:7px 9px;resize:vertical;min-height:60px;}
 .annotation-area label{font-size:12.5px;display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer;}
@@ -441,7 +443,7 @@ def _render_html(
   }}
 
   function tierClass(ev) {{
-    if (ev.flags.length > 0 && ev.confidence >= 0.5) return 'tier1';
+    if ((ev.flags.length > 0 || ev.anomaly_notes) && ev.confidence >= 0.5) return 'tier1';
     if (ev.is_failed_split || ev.split_type_mismatch) return 'tier1';
     if (ev.acd_division_type === 'tripolar' || ev.acd_division_type === 'multipolar') return 'tier2';
     return '';
@@ -458,6 +460,7 @@ def _render_html(
     var errChip = ev.review_error ? '<span class="flag-chip error-chip">review error</span>' : '';
     var failedChip = ev.is_failed_split ? '<span class="flag-chip near-edge-chip">failed division</span>' : '';
     var mismatchChip = ev.split_type_mismatch ? '<span class="flag-chip error-chip">split_type mismatch: model saw multi_way</span>' : '';
+    var anomalyChip = ev.anomaly_notes ? '<span class="flag-chip">anomaly noted</span>' : '';
 
     var filmstrip = '';
     if (ev.images.length > 0) {{
@@ -486,10 +489,11 @@ def _render_html(
       '<div class="card-header">' +
         '<span class="frame-label">Frame ' + ev.peak_frame + '</span>' +
         confBadge + acdBadge +
-        '<span>' + flagChips + failedChip + mismatchChip + nearChip + errChip + '</span>' +
+        '<span>' + flagChips + anomalyChip + failedChip + mismatchChip + nearChip + errChip + '</span>' +
       '</div>' +
       '<div class="filmstrip">' + filmstrip + '</div>' +
       (ev.ai_notes ? '<div class="ai-notes">&ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
+      (ev.anomaly_notes ? '<div class="anomaly-notes">&#9888; ' + ev.anomaly_notes + '</div>' : '') +
       '<div class="meta-row">' + meta + '</div>' +
       '<div class="annotation-area">' +
         '<textarea placeholder="Researcher notes…" data-parent="' + ev.parent_id + '">' +
@@ -671,7 +675,7 @@ def generate(
     html = _render_html(manifest, run_dir.name, confirmed, thumb_zoom)
     out_path.write_text(html, encoding="utf-8")
 
-    anomaly_count = sum(1 for e in manifest if e["flags"])
+    anomaly_count = sum(1 for e in manifest if e["flags"] or e["anomaly_notes"])
     abnormal_geom = sum(1 for e in manifest if e["acd_division_type"] in ("tripolar", "multipolar"))
     failed_count = sum(1 for e in manifest if e["is_failed_split"])
     mismatch_count = sum(1 for e in manifest if e["split_type_mismatch"])
