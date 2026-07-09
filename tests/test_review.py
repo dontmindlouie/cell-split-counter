@@ -98,6 +98,8 @@ def test_claude_real_verdict_updates_source_confidence_and_classification(tmp_pa
     assert result[0].ai_notes == "symmetric: clear division"
     assert result[0].acd_division_type == "bipolar"
     assert result[0].misaligned_chromosomes is True
+    assert result[0].split_type == "symmetric"
+    assert result[0].event_type == EventType.NORMAL_SPLIT
 
 
 def test_claude_false_positive_zeroes_confidence_keeps_notes_no_classification(tmp_path):
@@ -114,6 +116,62 @@ def test_claude_false_positive_zeroes_confidence_keeps_notes_no_classification(t
     assert result[0].confidence == 0.0
     assert result[0].ai_notes == "z-plane focus drift"
     assert result[0].acd_division_type is None
+    assert result[0].split_type is None
+
+
+# ── failed-split reclassification (un-shelved 2026-07-09) ────────────────────
+
+def test_confirmed_failed_split_reclassifies_event_type(tmp_path):
+    event = make_event(1, confidence=0.5)
+    assert event.event_type == EventType.NORMAL_SPLIT
+    with patch("src.review._review_and_classify") as mock_review, \
+         patch("src.review.anthropic.Anthropic"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
+        mock_review.return_value = {"verdict": "real", "confidence": 0.8, "split_type": "failed",
+                                     "description": "daughters re-fused", "acd_division_type": None,
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
+        result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
+
+    assert result[0].event_type == EventType.FAILED_SPLIT
+    assert result[0].split_type == "failed"
+    # still a real, confirmed event -- not zeroed out like a false positive
+    assert result[0].confidence == 0.8
+
+
+def test_false_positive_failed_split_type_is_impossible_stays_unclassified(tmp_path):
+    # split_type is only meaningful when verdict == real; a false_positive result should
+    # never carry split_type through, regardless of what the (malformed) response contains.
+    event = make_event(1, confidence=0.5)
+    with patch("src.review._review_and_classify") as mock_review, \
+         patch("src.review.anthropic.Anthropic"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
+        mock_review.return_value = {"verdict": "false_positive", "confidence": 0.1, "split_type": "failed",
+                                     "description": "noise", "acd_division_type": None,
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
+        result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
+
+    assert result[0].event_type == EventType.NORMAL_SPLIT
+    assert result[0].split_type is None
+
+
+def test_multi_way_mismatch_is_flagged_not_silently_reclassified(tmp_path):
+    # Tracker topology only found 2 children (NORMAL_SPLIT), but the model visually saw 3+
+    # daughters. We don't silently override tracker topology -- split_type carries the
+    # mismatch so a downstream reader can catch it (see docs/output_schema.md gotcha).
+    event = make_event(1, confidence=0.5)
+    with patch("src.review._review_and_classify") as mock_review, \
+         patch("src.review.anthropic.Anthropic"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
+        mock_review.return_value = {"verdict": "real", "confidence": 0.8, "split_type": "multi_way",
+                                     "description": "three daughters visible", "acd_division_type": None,
+                                     "misaligned_chromosomes": None, "lagging_chromosome": None,
+                                     "anaphase_bridge": None, "micronucleus": None, "anomaly_notes": None}
+        result = review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
+
+    assert result[0].event_type == EventType.NORMAL_SPLIT
+    assert result[0].split_type == "multi_way"
 
 
 def test_max_reviews_cap_passes_excess_events_unchanged(tmp_path):

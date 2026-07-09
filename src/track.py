@@ -244,9 +244,11 @@ def _make_float32_memmap(frames: np.ndarray) -> np.ndarray:
     memmap_dir = Path(getattr(frames, "filename", "data/frames/_memmap")).parent
     float_path = memmap_dir / "frames_float32.dat"
     float_frames = np.memmap(float_path, dtype=np.float32, mode="w+", shape=(T, H, W))
-    print("  writing float32 memmap to avoid Trackastra RAM spike...", flush=True)
+    print(f"  writing float32 memmap to avoid Trackastra RAM spike... (0/{T})", flush=True)
     for i in range(T):
         float_frames[i] = frames[i].astype(np.float32)
+        if (i + 1) % 100 == 0 or i == T - 1:
+            print(f"    {i + 1}/{T}", flush=True)
     float_frames.flush()
     print("  done", flush=True)
     return float_frames
@@ -311,12 +313,14 @@ def link_frames_trackastra(
     _orig_asm = _model_api.apply_solution_graph_to_masks
     _model_api.apply_solution_graph_to_masks = lambda g, m, **kw: np.zeros((1,), dtype=m.dtype)
 
+    print(f"  running Trackastra model.track() (mode={mode}, device={device}, {T} frames)...", flush=True)
     try:
         # model.track() returns (nx.DiGraph, tracked_masks) in trackastra 0.5.3+
         track_graph, tracked_video = model.track(frames, labels, mode=mode, delta_t=delta_t)
     finally:
         _model_api.normalize = _orig_normalize
         _model_api.apply_solution_graph_to_masks = _orig_asm
+    print("  model.track() done", flush=True)
 
     # graph_to_ctc allocates (T,H,W) uint16 tracked masks via np.stack in RAM (~4.5GB).
     # Patch np.stack in that module to redirect large uint16 outputs to a disk memmap.
@@ -402,6 +406,8 @@ def link_frames_trackastra(
                     local_mask=None,         # not needed; saves ~1 GB of bool copies
                     centroid=(float(prop.centroid[1]), float(prop.centroid[0])),  # (cx, cy)
                     area=float(prop.area),
+                    eccentricity=float(prop.eccentricity),
+                    solidity=float(prop.solidity),
                 ),
             )
             nodes.append(node)

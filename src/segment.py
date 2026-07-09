@@ -41,6 +41,9 @@ class CellMask:
     local_mask: np.ndarray  # boolean array cropped to bbox, NOT full frame size
     centroid: tuple[float, float]
     area: float
+    eccentricity: float | None = None  # 0 (circle) to ~1 (line); regionprops shape descriptor,
+        # populated only by the Trackastra path (link_frames_trackastra) -- spike, unvalidated
+    solidity: float | None = None  # area / convex_hull_area; 1.0 = fully convex, lower = concave/irregular
 
 
 def segment_frame(frame_path: Path, frame_index: int, model_type: str = "cyto3") -> list[CellMask]:

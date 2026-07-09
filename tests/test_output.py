@@ -34,7 +34,8 @@ def test_csv_header_columns(tmp_path):
     assert header == [
         "event_id", "source_video", "frame_range", "peak_frame",
         "centroid_x", "centroid_y", "near_edge", "cell_area_px", "cell_size_um2",
-        "split_topology", "track_id", "parent_id", "classification_source",
+        "neighbor_distance_px", "eccentricity", "solidity",
+        "split_topology", "split_type", "track_id", "parent_id", "classification_source",
         "ai_confidence", "raw_ai_confidence", "tracker_persistence_score",
         "ai_notes", "review_error", "bleach_risk",
         "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",

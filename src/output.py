@@ -26,8 +26,8 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
         writer.writerow([
             "event_id", "source_video", "frame_range", "peak_frame",
             "centroid_x", "centroid_y", "near_edge", "cell_area_px", "cell_size_um2",
-            "neighbor_distance_px",
-            "split_topology", "track_id", "parent_id", "classification_source",
+            "neighbor_distance_px", "eccentricity", "solidity",
+            "split_topology", "split_type", "track_id", "parent_id", "classification_source",
             "ai_confidence", "raw_ai_confidence", "tracker_persistence_score",
             "ai_notes", "review_error", "bleach_risk",
             "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
@@ -41,11 +41,14 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
             area_px = f"{e.cell_area_px:.1f}" if e.cell_area_px is not None else ""
             size_um2 = f"{e.cell_size_um2:.2f}" if e.cell_size_um2 is not None else ""
             neighbor_dist = f"{e.neighbor_distance_px:.1f}" if e.neighbor_distance_px is not None else ""
+            eccentricity = f"{e.eccentricity:.4f}" if e.eccentricity is not None else ""
+            solidity = f"{e.solidity:.4f}" if e.solidity is not None else ""
             def _flag(v): return "" if v is None else ("1" if v else "0")
             writer.writerow([
                 i, source_video, f"{range_start}-{e.frame}", e.frame,
                 cx, cy, _flag(e.near_edge), area_px, size_um2, neighbor_dist,
-                e.event_type.value, e.track_id, e.parent_id, e.classification_source,
+                eccentricity, solidity,
+                e.event_type.value, e.split_type or "", e.track_id, e.parent_id, e.classification_source,
                 e.confidence,
                 f"{e.raw_ai_confidence:.4f}" if e.raw_ai_confidence is not None else "",
                 tracker_conf,

@@ -54,6 +54,17 @@ class LineageEvent:
         # which for splits is one frame later -- see classify_events). None if no other cell
         # mask exists in that frame. Used by review.py to size the vision-review marker so it
         # can't enclose a simultaneously-dividing neighbor (2026-07-08 marker spike).
+    eccentricity: float | None = None  # regionprops shape descriptor at the same frame as
+        # centroid/cell_area_px, 0 (circle) to ~1 (elongated) -- spike, no vision review,
+        # not yet validated as a real/noise or anomaly signal (2026-07-09).
+    solidity: float | None = None  # area / convex_hull_area, same frame -- 1.0 fully convex,
+        # lower means concave/irregular outline (e.g. mid-division pinching, blebbing).
+    split_type: str | None = None  # the vision model's own characterization of a confirmed real
+        # split: "symmetric" | "asymmetric" | "multi_way" | "failed". Independent of
+        # `event_type`/`split_topology`, which come from Trackastra's lineage-graph topology --
+        # the two can disagree (e.g. tracker only found 2 children but the model visually saw
+        # 3 daughters and reports "multi_way"). A confirmed "failed" split_type gets promoted to
+        # `EventType.FAILED_SPLIT` in review.py (see 2026-07-09 un-shelving of that event type).
 
 
 def _build_frame_index(tracks: list[TrackNode]) -> dict[int, list[TrackNode]]:
@@ -164,6 +175,8 @@ def classify_track_ends(
                 centroid=node.mask.centroid,
                 cell_area_px=node.mask.area,
                 neighbor_distance_px=_nearest_neighbor_distance_px(frame_index.get(node.frame, []), node),
+                eccentricity=node.mask.eccentricity,
+                solidity=node.mask.solidity,
             )
         )
     return events
@@ -254,6 +267,8 @@ def classify_events(
                     centroid=node.mask.centroid,
                     cell_area_px=node.mask.area,
                     neighbor_distance_px=neighbor_distance_px,
+                    eccentricity=node.mask.eccentricity,
+                    solidity=node.mask.solidity,
                 )
             )
     return events

@@ -21,7 +21,7 @@ from pathlib import Path
 import anthropic
 import cv2
 
-from src.classify import LineageEvent
+from src.classify import EventType, LineageEvent
 from src.config import CLAUDE_MODEL
 
 _FRAMES_BEFORE = 8  # see metaphase plate alignment; widened 2026-07-03 sweep, see docs/investigation_notes.md
@@ -191,16 +191,21 @@ waisted/hourglass shape partway through the sequence and only clearly resolve in
 separated lobes by the last frame or two. Judge the whole trend across the sequence, not just \
 the frame nearest the split: progressive elongation and constriction that is still resolving by \
 the final frame is real division evidence, even without full separation in every frame shown.
-False positives arise from: (1) shape-change flickering where a cell briefly appears as two \
-touching masks then reverts, with no net progression toward separation, (2) z-plane focus drift \
-that momentarily blurs one cell into two blobs, (3) a tracking ID swap with a nearby unrelated cell.
+False positives arise from: (1) z-plane focus drift that momentarily blurs one cell into two \
+blobs with no real division machinery ever visible (no rounding, no elongation, no cleavage \
+furrow), (2) a tracking ID swap with a nearby unrelated cell. Do NOT call a real division attempt \
+a false positive just because it doesn't finish: if the cell visibly rounds up, elongates along a \
+cleavage plane, and a waist/furrow forms between two masses before they re-fuse back into one, \
+that is a REAL event -- report verdict "real" with split_type "failed" (see Step 2), not \
+false_positive.
 
 STEP 2 — IF REAL, CHARACTERIZE THE EVENT:
 Split type:
 - "symmetric": daughters approximately equal in size (typical mitosis)
 - "asymmetric": one daughter is clearly larger (stem cell-like or budding)
 - "multi_way": three or more daughters visible
-- "failed": cytokinesis began but daughters re-fused
+- "failed": cytokinesis began (rounding, elongation, cleavage furrow) but the daughters re-fused \
+into one cell before separating -- this is a real, biologically meaningful event, not a false positive
 
 ACD classification (spindle geometry from chromosome staining):
 - "bipolar": chromosomes separate into exactly 2 groups (normal)
@@ -488,14 +493,35 @@ def review_ambiguous(
         split_type = r.get("split_type") or ""
         description = r.get("description", "")
         notes = f"{split_type}: {description}".strip(": ") if split_type else description
+
+        # A confirmed "failed" split (cytokinesis began but daughters re-fused) is a real,
+        # biologically meaningful event but NOT a completed division -- reclassify it out of
+        # normal_split/multi_way_split so aggregate confirmed-split counts don't include it.
+        # See EventType.FAILED_SPLIT (un-shelved 2026-07-09 -- Trackastra now gives the
+        # daughter-fate tracking that originally blocked this).
+        new_event_type = event.event_type
+        if is_real and split_type == "failed" and event.event_type in (
+            EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT
+        ):
+            new_event_type = EventType.FAILED_SPLIT
+
+        # The model can visually see 3+ daughters even when Trackastra's lineage graph only
+        # found 2 children (e.g. two daughters touching closely enough that Cellpose/tracking
+        # merged them) -- flag this mismatch rather than silently undercounting multi_way splits.
+        if is_real and split_type == "multi_way" and event.event_type == EventType.NORMAL_SPLIT:
+            print(f"  [split_type mismatch] frame={event.frame} parent={event.parent_id}: "
+                  f"tracker topology says normal_split (2 children) but model reports multi_way")
+
         reviewed.append(dataclasses.replace(
             event,
+            event_type=new_event_type,
             classification_source=resolved_model,
             confidence=confidence if is_real else 0.0,
             raw_ai_confidence=raw_confidence,
             review_error=bool(r.get("review_error", False)),
             tracker_confidence=event.tracker_confidence if event.tracker_confidence is not None else event.confidence,
             ai_notes=notes,
+            split_type=split_type if (is_real and split_type) else None,
             acd_division_type=r.get("acd_division_type") if is_real else None,
             misaligned_chromosomes=r.get("misaligned_chromosomes") if is_real else None,
             lagging_chromosome=r.get("lagging_chromosome") if is_real else None,

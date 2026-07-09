@@ -39,7 +39,8 @@ COLUMN_DOCS = [
         "per acquisition, never a fixed constant), or set via --pixel-size-um for AVI sources. "
         "Check summary.json's pixel_size_um field for what value (if any) this run used."),
     ("split_topology", "General event-type column (name predates non-split events): "
-        "'normal_split' (1->2 daughters), 'multi_way_split' (1->3+), or 'death' (track "
+        "'normal_split' (1->2 daughters), 'multi_way_split' (1->3+), 'failed_split' "
+        "(cytokinesis began but daughters re-fused -- see split_type below), or 'death' (track "
         "stopped, without splitting, before the video ended and away from the frame "
         "boundary -- edge-adjacent stops are dropped entirely, not reported, since a cell "
         "walking out of frame carries no biological information). death rows are rule-only "
@@ -51,7 +52,17 @@ COLUMN_DOCS = [
         "2026-07-07: a single-child node (track-ID continuation, not a real division) used "
         "to be mislabeled multi_way_split. Packages generated before that fix may still have "
         "singleton multi_way_split rows -- check sibling count (see Known limitations) before "
-        "trusting multi_way_split counts in older packages."),
+        "trusting multi_way_split counts in older packages. Undercounting gotcha (2026-07-09): "
+        "this column reflects tracker topology, not necessarily what's visible on screen -- if "
+        "two daughters are close enough that tracking merges them into one child, this stays "
+        "'normal_split' even though the model's own split_type column may say 'multi_way' after "
+        "actually looking at the crop."),
+    ("split_type", "The vision model's own characterization of a confirmed real split: "
+        "symmetric, asymmetric, multi_way, or failed. Added 2026-07-09. Independent of "
+        "split_topology above -- usually consistent but can disagree (see the undercounting "
+        "gotcha). A 'failed' split_type is promoted to split_topology=failed_split "
+        "automatically rather than counted as a completed division. Blank for false "
+        "positives and for death/rule-only rows."),
     ("track_id", "Track ID assigned to THIS daughter cell going forward."),
     ("parent_id", "Track ID of the cell that split to produce this daughter. Rows sharing "
         "the same (parent_id, peak_frame) are daughters of the same split event -- "
