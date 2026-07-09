@@ -295,6 +295,10 @@ def _render_html(
   <div class="run-name" id="run-name-label">{run_name}</div>
 
   <div class="filter-group">
+    <label title="Anomaly-flagged, failed division, split_type mismatch, or abnormal (tripolar/multipolar) geometry — same tiering that colors the card border."><input type="checkbox" id="filter-interesting-only" checked> Interesting only</label>
+  </div>
+
+  <div class="filter-group">
     <label>ACD type</label>
     <select id="filter-acd">
       <option value="">All types</option>
@@ -404,8 +408,10 @@ def _render_html(
   var filterFlaggedOnly = false;
   var filterHideNearEdge = false;
   var filterHideFps = true;
+  var filterInterestingOnly = true;
 
   function passesFilter(ev) {{
+    if (filterInterestingOnly && tierClass(ev) === '') return false;
     if (filterHideFps && ev.confidence <= 0) return false;
     if (filterHideNearEdge && ev.near_edge) return false;
     if (filterMinConf > 0 && ev.confidence < filterMinConf) return false;
@@ -605,6 +611,9 @@ def _render_html(
   }});
   document.getElementById('filter-hide-fps').addEventListener('change', function() {{
     filterHideFps = this.checked; renderGrid();
+  }});
+  document.getElementById('filter-interesting-only').addEventListener('change', function() {{
+    filterInterestingOnly = this.checked; renderGrid();
   }});
 
   // --- Export ---
