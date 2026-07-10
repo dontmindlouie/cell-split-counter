@@ -147,19 +147,16 @@ def _save_debug_crops(
 ) -> Path:
     """Save per-event PNG crops under debug_dir; return the event subfolder path.
 
-    Includes the same marker sent to the vision model, at the same radius, so debug
-    crops show exactly what the model saw rather than a cleaner unmarked version.
+    Unmarked -- same crop framing/radius as what the vision model saw, but without the
+    corner-tick marker, since these files are also read directly by researcher-facing
+    report tools (researcher_browser.py, spot_check_review.py) where the marker was
+    reported as distracting/unhelpful (backlog 2026-07-09, the researcher feedback).
     """
     event_debug_dir = debug_dir / f"frame_{event.frame:05d}_parent_{event.parent_id}"
     event_debug_dir.mkdir(parents=True, exist_ok=True)
-    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
     for pos, (idx, path) in enumerate(indexed_paths):
         label = "before" if idx < event.frame else ("split" if idx == event.frame else "after")
-        if event.centroid is not None:
-            crop, x0, y0 = _crop_image_with_offset(path, event.centroid)
-            crop = _draw_corner_ticks(crop, event.centroid[0] - x0, event.centroid[1] - y0, radius=radius)
-        else:
-            crop = _crop_image(path, None)
+        crop = _crop_image(path, event.centroid)
         cv2.imwrite(str(event_debug_dir / f"{pos:02d}_{label}_{idx:05d}.png"), crop)
     return event_debug_dir
 
