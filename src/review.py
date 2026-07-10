@@ -182,7 +182,10 @@ _SYSTEM = """\
 You are reviewing fluorescence microscopy timelapse images of cells to verify and characterize \
 a candidate cell split event. You will receive {before} frames before and {after} frames after \
 the suspected split point, sampled every {stride} frames (not consecutive) to cover a longer \
-time span.
+time span. The images are provided in strict chronological order, earliest to latest. Each \
+image is immediately preceded by a text label stating its position in that sequence and its \
+frame offset relative to the candidate split -- use these labels, not visual guesswork, to \
+determine temporal order and direction.
 
 STEP 1 — IS THIS A REAL SPLIT?
 Real splits: one cell rounds up, elongates along a cleavage plane, and becomes two distinct \
@@ -304,13 +307,31 @@ def _review_and_classify(
         event_debug_dir = _save_debug_crops(indexed_paths, event, debug_dir)
 
     radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
-    content = [_load_image_block(p, event.centroid, marker_radius=radius) for _, p in indexed_paths]
+    total = len(indexed_paths)
+    content: list[dict] = []
+    split_position: int | None = None
+    for pos, (idx, path) in enumerate(indexed_paths):
+        delta = idx - event.frame
+        if delta < 0:
+            relation = f"{-delta} frames before the candidate split"
+        elif delta > 0:
+            relation = f"{delta} frames after the candidate split"
+        else:
+            relation = "the candidate split frame"
+            split_position = pos + 1
+        content.append({
+            "type": "text",
+            "text": f"Image {pos + 1} of {total} (chronological order), frame index {idx}: {relation}.",
+        })
+        content.append(_load_image_block(path, event.centroid, marker_radius=radius))
+
+    split_ref = f" (image {split_position} of {total} above)" if split_position is not None else ""
     content.append({
         "type": "text",
         "text": (
-            f"Candidate split at frame {event.frame}: track {event.parent_id} → daughter tracks. "
+            f"Candidate split at frame {event.frame}{split_ref}: track {event.parent_id} → daughter tracks. "
             f"{before_count} frames before and {after_count} frames after the split are shown, "
-            f"each {_FRAME_STRIDE} frames apart."
+            f"each {_FRAME_STRIDE} frames apart, in strict chronological order from earliest to latest."
         ),
     })
 
