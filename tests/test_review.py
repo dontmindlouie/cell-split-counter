@@ -240,3 +240,71 @@ def test_missing_api_key_raises(tmp_path):
     with patch.dict("os.environ", {}, clear=True):
         with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
             review_ambiguous([event], tmp_path, lower_threshold=0.05, upper_threshold=1.0)
+
+
+# ── backend content-drift guard ───────────────────────────────────────────────
+# 2026-07-10: review_and_classify_gpt used to hand-duplicate _review_and_classify's
+# content-building loop. The frame-order/offset labeling fix (backlog #25) silently
+# never reached the GPT backend -- the one M5 actually uses -- for a full day because
+# nothing exercised review_and_classify_gpt's own prompt-building logic. Both backends
+# now call the same _build_review_content() helper; this test asserts their outputs
+# stay structurally identical (same text labels, same image count/order) even though
+# the image *blocks* differ (Claude's {"type":"image", ...} vs GPT's
+# {"type":"image_url", ...}), so a future change to one can't silently diverge again.
+
+def _make_frame(frame_dir: Path, idx: int) -> None:
+    import cv2
+    import numpy as np
+    img = np.full((20, 20), idx % 256, dtype=np.uint8)
+    cv2.imwrite(str(frame_dir / f"frame_{idx:05d}_x.png"), img)
+
+
+def test_claude_and_gpt_backends_send_structurally_identical_content(tmp_path):
+    """Calls the real _review_and_classify and review_and_classify_gpt (client mocked,
+    no network) and captures the actual `content` list each one sent, rather than
+    calling _build_review_content directly -- a test that bypasses the backend
+    functions themselves would NOT have caught the actual 2026-07-10 bug, since that
+    bug was review_and_classify_gpt having its own duplicated loop instead of calling
+    the shared helper at all."""
+    from src.review import _FRAMES_AFTER, _FRAMES_BEFORE, _FRAME_STRIDE, _review_and_classify
+    from src.review_gpt import review_and_classify_gpt
+
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    event = make_event(1, frame=100)
+    span = _FRAMES_BEFORE * _FRAME_STRIDE
+    for idx in range(event.frame - span, event.frame + span + 1):
+        _make_frame(frame_dir, idx)
+
+    fake_json = ('{"verdict":"real","confidence":0.9,"split_type":"symmetric","description":"d",'
+                 '"acd_division_type":"bipolar","misaligned_chromosomes":false,"lagging_chromosome":false,'
+                 '"anaphase_bridge":false,"micronucleus":false,"binucleation":false,"anomaly_notes":null}')
+
+    claude_client = MagicMock()
+    claude_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text=fake_json)],
+        usage=MagicMock(input_tokens=1, output_tokens=1),
+    )
+    _review_and_classify(claude_client, event, frame_dir, "claude-model")
+    claude_content = claude_client.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    gpt_client = MagicMock()
+    gpt_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=fake_json))],
+        usage=MagicMock(prompt_tokens=1, completion_tokens=1),
+    )
+    review_and_classify_gpt(gpt_client, event, frame_dir, "gpt-model")
+    gpt_content = gpt_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+
+    assert len(claude_content) == len(gpt_content) == (_FRAMES_BEFORE + 1 + _FRAMES_AFTER) * 2 + 1
+    for claude_block, gpt_block in zip(claude_content, gpt_content):
+        if claude_block["type"] == "text":
+            assert gpt_block["type"] == "text"
+            assert claude_block["text"] == gpt_block["text"]
+        else:
+            assert claude_block["type"] == "image"
+            assert gpt_block["type"] == "image_url"
+
+    claude_texts = [b["text"] for b in claude_content if b["type"] == "text"]
+    assert "chronological order" in claude_texts[0]
+    assert "chronological order" in claude_texts[-1]
