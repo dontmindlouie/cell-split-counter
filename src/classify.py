@@ -46,6 +46,10 @@ class LineageEvent:
     micronucleus: bool | None = None
     binucleation: bool | None = None  # one cell body, two nuclei that don't progressively separate
     anomaly_notes: str | None = None  # interesting anomaly flagged for case study
+    likely_division_dropout: bool | None = None  # vision review of a DEATH event suspects the
+        # track end is a tracking/segmentation failure during mitotic entry (prophase chromatin
+        # condensation obscuring the mask), not genuine cell death. None if never reviewed
+        # (see review_deaths in review.py). Backlog item 23/27, 2026-07-10.
     near_edge: bool | None = None  # centroid within NEAR_EDGE_MARGIN_PX of any frame boundary
     cell_area_px: float | None = None  # parent cell's Cellpose mask area at the split frame
     cell_size_um2: float | None = None  # cell_area_px converted via per-acquisition pixel size, if known

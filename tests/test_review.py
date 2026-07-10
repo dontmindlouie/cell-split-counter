@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.classify import EventType, LineageEvent
-from src.review import review_ambiguous
+from src.review import review_ambiguous, review_deaths
 
 
 def make_event(track_id, frame=10, confidence=0.5, source="rule", parent_id=1):
@@ -308,3 +308,110 @@ def test_claude_and_gpt_backends_send_structurally_identical_content(tmp_path):
     claude_texts = [b["text"] for b in claude_content if b["type"] == "text"]
     assert "chronological order" in claude_texts[0]
     assert "chronological order" in claude_texts[-1]
+
+
+# ── review_deaths (backlog #23/#27, 2026-07-10) ───────────────────────────────────
+
+def make_death_event(track_id, frame=100, confidence=0.8, parent_id=None):
+    return LineageEvent(
+        track_id=track_id,
+        parent_id=parent_id,
+        frame=frame,
+        event_type=EventType.DEATH,
+        classification_source="rule",
+        confidence=confidence,
+        centroid=(100.0, 100.0),
+    )
+
+
+def test_review_deaths_empty_list_returns_empty(tmp_path):
+    assert review_deaths([], tmp_path, backend="claude") == []
+
+
+def test_review_deaths_invalid_backend_raises(tmp_path):
+    with pytest.raises(ValueError, match="backend must be"):
+        review_deaths([make_death_event(1)], tmp_path, backend="bogus")
+
+
+def test_review_deaths_missing_api_key_raises(tmp_path):
+    with patch.dict("os.environ", {}, clear=True):
+        with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
+            review_deaths([make_death_event(1)], tmp_path, backend="claude")
+
+
+def test_review_deaths_updates_fields_from_verdict(tmp_path):
+    event = make_death_event(1, confidence=0.6)
+    with patch("src.review._review_death_event") as mock_review, \
+         patch("src.review.anthropic.Anthropic"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
+        mock_review.return_value = {
+            "likely_division_dropout": True, "confidence": 0.75,
+            "description": "chromatin condensing, likely prophase", "anomaly_notes": None,
+        }
+        result = review_deaths([event], tmp_path, backend="claude")
+
+    assert len(result) == 1
+    reviewed = result[0]
+    assert reviewed.likely_division_dropout is True
+    assert reviewed.confidence == 0.75
+    assert reviewed.ai_notes == "chromatin condensing, likely prophase"
+    # event_type/split_topology must NOT change -- review_deaths flags for a human,
+    # it can't reclassify a death into a split without the (lost) daughter track data.
+    assert reviewed.event_type == EventType.DEATH
+
+
+def test_review_deaths_review_error_is_marked_and_type_unchanged(tmp_path):
+    event = make_death_event(1)
+    with patch("src.review._review_death_event", side_effect=RuntimeError("boom")), \
+         patch("src.review.anthropic.Anthropic"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
+        result = review_deaths([event], tmp_path, backend="claude")
+
+    assert result[0].review_error is True
+    assert result[0].event_type == EventType.DEATH
+    assert result[0].likely_division_dropout is None
+
+
+def test_claude_and_gpt_death_review_backends_send_structurally_identical_content(tmp_path):
+    """Same drift guard as the split-review test above, applied proactively to the
+    new death-review path so this can't repeat the 2026-07-10 backend-drift bug."""
+    from src.review import _FRAMES_AFTER, _FRAMES_BEFORE, _FRAME_STRIDE, _review_death_event
+    from src.review_gpt import review_death_gpt
+
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    event = make_death_event(1, frame=100)
+    span = _FRAMES_BEFORE * _FRAME_STRIDE
+    for idx in range(event.frame - span, event.frame + span + 1):
+        _make_frame(frame_dir, idx)
+
+    fake_json = '{"likely_division_dropout":false,"confidence":0.9,"description":"d","anomaly_notes":null}'
+
+    claude_client = MagicMock()
+    claude_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text=fake_json)],
+        usage=MagicMock(input_tokens=1, output_tokens=1),
+    )
+    _review_death_event(claude_client, event, frame_dir, "claude-model")
+    claude_content = claude_client.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    gpt_client = MagicMock()
+    gpt_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content=fake_json))],
+        usage=MagicMock(prompt_tokens=1, completion_tokens=1),
+    )
+    review_death_gpt(gpt_client, event, frame_dir, "gpt-model")
+    gpt_content = gpt_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+
+    assert len(claude_content) == len(gpt_content) == (_FRAMES_BEFORE + 1 + _FRAMES_AFTER) * 2 + 1
+    for claude_block, gpt_block in zip(claude_content, gpt_content):
+        if claude_block["type"] == "text":
+            assert gpt_block["type"] == "text"
+            assert claude_block["text"] == gpt_block["text"]
+        else:
+            assert claude_block["type"] == "image"
+            assert gpt_block["type"] == "image_url"
+
+    claude_texts = [b["text"] for b in claude_content if b["type"] == "text"]
+    assert "track-end" in claude_texts[0]
+    assert "track-end" in claude_texts[-1]

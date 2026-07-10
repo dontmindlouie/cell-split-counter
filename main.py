@@ -39,6 +39,7 @@ if __name__ == "__main__":
     parser.add_argument("--vision-backend", choices=["claude", "gpt"], default="gpt", help="vision review model: gpt (default, Azure OpenAI, draws down Azure credit -- see src/review_gpt.py; with --gpt-reasoning-effort medium and the default --min-gpt-confidence floor, precision is close to/slightly better than Claude on the 2026-07-06/07 spike) or claude (Anthropic Claude Haiku, higher precision but more expensive)")
     parser.add_argument("--gpt-reasoning-effort", choices=["low", "medium", "high"], default="medium", help="GPT backend only. 'high' is currently unusable -- burns its token budget on hidden reasoning and fails ~68%% of calls (2026-07-07 finding)")
     parser.add_argument("--min-gpt-confidence", type=float, default=0.85, help="GPT backend only: verdicts below this self-reported confidence are downgraded to false_positive. 0.0 disables filtering.")
+    parser.add_argument("--no-review-deaths", dest="review_death_events", action="store_false", default=True, help="skip vision review of DEATH events (reviewed by default since 2026-07-10 -- see review_deaths in src/review.py; DEATH previously got no vision coverage at all, unlike splits)")
     args = parser.parse_args()
 
     output_dir = args.output_dir or Path("data/output") / args.video_path.stem
@@ -62,4 +63,5 @@ if __name__ == "__main__":
         vision_backend=args.vision_backend,
         gpt_reasoning_effort=args.gpt_reasoning_effort,
         min_gpt_confidence=args.min_gpt_confidence,
+        review_death_events=args.review_death_events,
     )

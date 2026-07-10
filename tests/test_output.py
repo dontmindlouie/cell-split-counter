@@ -40,6 +40,7 @@ def test_csv_header_columns(tmp_path):
         "ai_notes", "review_error", "bleach_risk",
         "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
         "anaphase_bridge", "micronucleus", "binucleation", "anomaly_notes",
+        "likely_division_dropout",
     ]
 
 

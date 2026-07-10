@@ -8,7 +8,7 @@ import cv2
 from src.classify import NEAR_EDGE_MARGIN_PX, EventType, classify_events, classify_track_ends
 from src.ingest import IngestConfig, extract_frames, get_pixel_size_um
 from src.output import write_events_csv, write_summary_json
-from src.review import review_ambiguous
+from src.review import review_ambiguous, review_deaths
 from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 from scripts.reports.researcher_browser import generate as generate_researcher_browser
@@ -32,6 +32,7 @@ def run(
     vision_backend: str = "claude",
     gpt_reasoning_effort: str = "medium",
     min_gpt_confidence: float = 0.85,
+    review_death_events: bool = True,
 ) -> None:
     if pixel_size_um is None:
         pixel_size_um = get_pixel_size_um(config.video_path)
@@ -85,23 +86,41 @@ def run(
     # than reporting a frame-exit as if it were an interesting event.
     events = [e for e in events if not (e.event_type == EventType.DEATH and e.near_edge)]
 
-    # Only split candidates go to vision review -- the split-verification prompt in
-    # review.py doesn't apply to DEATH stops, which carry no ambiguity to resolve
-    # (tracking topology + track-duration persistence is the whole signal for those).
+    # Splits go through review_ambiguous; DEATH events go through review_deaths --
+    # separate functions since a death has no split_type/reclassification concept,
+    # but both now get 100% vision coverage (backlog #27, 2026-07-10: DEATH events
+    # previously got none at all, despite item 23 finding that a healthy fraction of
+    # them are likely tracking dropouts during real divisions, not genuine death).
     splits = [e for e in events if e.event_type in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
-    track_ends = [e for e in events if e.event_type not in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
+    deaths = [e for e in events if e.event_type == EventType.DEATH]
 
     # upper_threshold=inf: every non-suppressed split event gets a Claude verdict, notes,
     # AND division-type/abnormality classification in one combined call, instead of
     # persistence-confirmed (confidence>=1.0) events skipping review.
     # max_reviews raised so busy videos don't silently fall back to rule-only
     # classification once the default 50-split-point cap is hit.
-    vision_usage: dict = {}
-    events = review_ambiguous(
+    split_vision_usage: dict = {}
+    reviewed_splits = review_ambiguous(
         splits, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
-        backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=vision_usage,
+        backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=split_vision_usage,
         gpt_reasoning_effort=gpt_reasoning_effort, min_gpt_confidence=min_gpt_confidence,
-    ) + track_ends
+    )
+
+    death_vision_usage: dict = {}
+    reviewed_deaths = review_deaths(
+        deaths, frame_dir, backend=vision_backend, save_debug_crops=save_debug_crops,
+        usage_out=death_vision_usage, gpt_reasoning_effort=gpt_reasoning_effort,
+    ) if review_death_events else deaths
+
+    events = reviewed_splits + reviewed_deaths
+
+    split_cost = split_vision_usage.get("estimated_cost_usd") or 0.0
+    death_cost = death_vision_usage.get("estimated_cost_usd") or 0.0
+    vision_usage = {
+        "splits": split_vision_usage,
+        "deaths": death_vision_usage,
+        "estimated_cost_usd": split_cost + death_cost,
+    }
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(

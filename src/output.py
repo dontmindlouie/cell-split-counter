@@ -32,6 +32,7 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
             "ai_notes", "review_error", "bleach_risk",
             "acd_division_type", "misaligned_chromosomes", "lagging_chromosome",
             "anaphase_bridge", "micronucleus", "binucleation", "anomaly_notes",
+            "likely_division_dropout",
         ])
         for i, e in enumerate(events):
             range_start = max(e.frame - frame_range_lookback, 0)
@@ -56,6 +57,7 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
                 e.acd_division_type or "", _flag(e.misaligned_chromosomes),
                 _flag(e.lagging_chromosome), _flag(e.anaphase_bridge), _flag(e.micronucleus),
                 _flag(e.binucleation), e.anomaly_notes or "",
+                _flag(e.likely_division_dropout),
             ])
 
 

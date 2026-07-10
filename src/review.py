@@ -179,9 +179,20 @@ def _save_debug_crops(
 
 
 def _write_verdict_txt(event_debug_dir: Path, parsed: dict) -> None:
-    """Write a human-readable verdict summary alongside the debug crops."""
+    """Write a human-readable verdict summary alongside the debug crops.
+
+    Handles both the split schema ("verdict": "real"/"false_positive") and the death
+    schema ("likely_division_dropout": bool, no "verdict" key at all) -- the latter
+    added for review_deaths() (backlog #27, 2026-07-10)."""
+    if "verdict" in parsed:
+        verdict = parsed.get("verdict", "")
+    elif "likely_division_dropout" in parsed:
+        dropout = parsed.get("likely_division_dropout")
+        verdict = "likely_dropout" if dropout else ("death" if dropout is False else "")
+    else:
+        verdict = ""
     (event_debug_dir / "verdict.txt").write_text(
-        f"verdict:    {parsed.get('verdict', '')}\n"
+        f"verdict:    {verdict}\n"
         f"confidence: {float(parsed.get('confidence', 0.0)):.2f}\n"
         f"notes:      {parsed.get('description', '')}\n",
         encoding="utf-8",
@@ -298,17 +309,34 @@ def _load_image_block(
     return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
 
 
+def _default_trailing_caption(event, split_position, total, before_count, after_count) -> str:
+    split_ref = f" (image {split_position} of {total} above)" if split_position is not None else ""
+    return (
+        f"Candidate split at frame {event.frame}{split_ref}: track {event.parent_id} → daughter tracks. "
+        f"{before_count} frames before and {after_count} frames after the split are shown, "
+        f"each {_FRAME_STRIDE} frames apart, in strict chronological order from earliest to latest."
+    )
+
+
 def _build_review_content(
     indexed_paths: list[tuple[int, Path]],
     event: "LineageEvent",
     load_image_block_fn,
+    *,
+    relation_target: str = "the candidate split",
+    at_target_label: str = "the candidate split frame",
+    trailing_caption_fn=_default_trailing_caption,
 ) -> list[dict]:
     """Build the labeled, interleaved image+text content list shared by both the
     Claude and GPT review backends -- each image is preceded by a text block stating
-    its position and chronological offset from the candidate split (backlog #25,
+    its position and chronological offset from the review target (backlog #25,
     2026-07-09/10: previously only a single trailing caption existed, and the
     Claude/GPT backends had drifted -- this one shared builder is used by both so a
-    future prompt change can't silently apply to only one backend again)."""
+    future prompt change can't silently apply to only one backend again).
+
+    relation_target/at_target_label/trailing_caption_fn let review_deaths() reuse this
+    for track-end review (backlog #27, 2026-07-10) without duplicating the per-image
+    labeling loop -- only the split-specific wording differs, not the structure."""
     radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
     total = len(indexed_paths)
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
@@ -319,11 +347,11 @@ def _build_review_content(
     for pos, (idx, path) in enumerate(indexed_paths):
         delta = idx - event.frame
         if delta < 0:
-            relation = f"{-delta} frames before the candidate split"
+            relation = f"{-delta} frames before {relation_target}"
         elif delta > 0:
-            relation = f"{delta} frames after the candidate split"
+            relation = f"{delta} frames after {relation_target}"
         else:
-            relation = "the candidate split frame"
+            relation = at_target_label
             split_position = pos + 1
         content.append({
             "type": "text",
@@ -331,14 +359,9 @@ def _build_review_content(
         })
         content.append(load_image_block_fn(path, event.centroid, marker_radius=radius))
 
-    split_ref = f" (image {split_position} of {total} above)" if split_position is not None else ""
     content.append({
         "type": "text",
-        "text": (
-            f"Candidate split at frame {event.frame}{split_ref}: track {event.parent_id} → daughter tracks. "
-            f"{before_count} frames before and {after_count} frames after the split are shown, "
-            f"each {_FRAME_STRIDE} frames apart, in strict chronological order from earliest to latest."
-        ),
+        "text": trailing_caption_fn(event, split_position, total, before_count, after_count),
     })
     return content
 
@@ -392,6 +415,238 @@ def _review_and_classify(
         _write_verdict_txt(event_debug_dir, parsed)
 
     return parsed
+
+
+# ── DEATH event review (backlog #23/#27, 2026-07-10) ──────────────────────────────
+# classify_track_ends() emits DEATH purely from track-persistence rules -- it has no
+# way to distinguish genuine cell death from Cellpose/Trackastra losing a healthy
+# cell's mask during prophase (chromatin condensation + nuclear envelope breakdown
+# temporarily removes the cell's usual outline). Manual review of the lowest-
+# solidity/highest-eccentricity DEATH rows (2026-07-09) found this happening
+# repeatedly -- ~20 sampled, "all prophase". Splits already get 100% vision coverage
+# in production (see review_ambiguous's upper_threshold=inf); DEATH events get none
+# at all today. This section extends vision review to DEATH events too, at an
+# estimated marginal cost of roughly the same per-call rate as split review (M5:
+# $0.4634/208 calls -> ~$0.43 more for M5's 194 death events), well inside the
+# $8/run GPT budget the maintainer set 2026-07-10 (Azure benefits budget, not out of
+# pocket -- $4/run ceiling on Claude specifically, since that one is personal spend).
+
+_EMPTY_DEATH_VERDICT = {
+    "likely_division_dropout": None, "confidence": 0.0,
+    "description": "no frames found", "anomaly_notes": None,
+}
+
+_DEATH_SYSTEM = """\
+You are reviewing fluorescence microscopy timelapse images of cells. A cell-tracking \
+algorithm lost track of a cell at the point shown (the track ends here) and, by default, \
+classified this as cell death purely from how long the track persisted -- it has no way \
+to distinguish genuine death from a tracking/segmentation failure. You will look at the \
+actual images to make that call.
+
+You will receive {before} frames before and {after} frames after the track-end point, \
+sampled every {stride} frames (not consecutive), in strict chronological order earliest \
+to latest. Each image is preceded by a text label stating its position in the sequence and \
+its frame offset relative to the track-end point -- use these labels, not visual guesswork, \
+to determine temporal order and direction.
+
+There are two possibilities:
+
+1. GENUINE DEATH: the cell shows degenerative changes consistent with real death -- \
+fragmenting into several small irregular pieces (blebs/apoptotic bodies), progressively \
+shrinking or dimming without any rounding or division machinery ever appearing, or simply \
+disintegrating -- and no new distinct cell mass appears in its place afterward.
+
+2. TRACKING DROPOUT (the segmentation algorithm lost a real division in progress, not a \
+death): the cell shows signs of entering mitosis just before the track ends -- rounding up, \
+chromatin condensing into a single bright compact mass, the cell's usual outline/boundary \
+becoming indistinct or temporarily disappearing (a hallmark of prophase chromatin \
+condensation and nuclear envelope breakdown, not fragmentation). This is the most common \
+cause of false "death" calls in this pipeline: the segmentation model fails to produce a \
+usable mask during this transient morphology change, and tracking simply loses the cell, \
+even though it is very likely still alive and dividing.
+
+Look carefully at the frames immediately before the track ends for these cues. A cell that \
+briefly loses its distinct boundary due to chromatin condensing into one compact mass, \
+without ever fragmenting into multiple pieces, is much more likely a tracking dropout than \
+a real death.
+
+Respond with a JSON object — no other text:
+{{"likely_division_dropout": true | false, \
+"confidence": <float 0.0-1.0, your confidence in this call>, \
+"description": "<one or two sentences>", \
+"anomaly_notes": "<any other interesting observation, or null>"}}"""
+
+
+def _death_relation_labels() -> tuple[str, str]:
+    return "the track-end point", "the track-end frame"
+
+
+def _death_trailing_caption(event, split_position, total, before_count, after_count) -> str:
+    frame_ref = f" (image {split_position} of {total} above)" if split_position is not None else ""
+    return (
+        f"Track end at frame {event.frame}{frame_ref}: track {event.parent_id} is lost here, "
+        f"no further detection. {before_count} frames before and {after_count} frames after "
+        f"the track-end point are shown, each {_FRAME_STRIDE} frames apart, in strict "
+        f"chronological order from earliest to latest."
+    )
+
+
+def _review_death_event(
+    client: anthropic.Anthropic,
+    event: LineageEvent,
+    frame_dir: Path,
+    model: str,
+    debug_dir: Path | None = None,
+    usage_log: list[dict] | None = None,
+) -> dict:
+    """Single API call: is this DEATH event genuine, or a tracking dropout during a
+    real division? Returns {likely_division_dropout, confidence, description, anomaly_notes}."""
+    indexed_paths = _build_frame_window(event, frame_dir)
+    if not indexed_paths:
+        return _EMPTY_DEATH_VERDICT.copy()
+
+    event_debug_dir: Path | None = None
+    if debug_dir is not None:
+        dense_paths = _build_dense_debug_window(event, frame_dir)
+        event_debug_dir = _save_debug_crops(dense_paths, event, debug_dir)
+
+    relation_target, at_target_label = _death_relation_labels()
+    content = _build_review_content(
+        indexed_paths, event, _load_image_block,
+        relation_target=relation_target, at_target_label=at_target_label,
+        trailing_caption_fn=_death_trailing_caption,
+    )
+
+    system = _DEATH_SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE)
+    response = client.messages.create(
+        model=model,
+        max_tokens=384,
+        system=system,
+        messages=[{"role": "user", "content": content}],
+    )
+
+    if usage_log is not None:
+        usage_log.append({
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        })
+
+    text = (
+        response.content[0].text.strip()
+        .removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    )
+    parsed = json.loads(text)
+
+    if event_debug_dir is not None:
+        _write_verdict_txt(event_debug_dir, parsed)
+
+    return parsed
+
+
+def review_deaths(
+    events: list[LineageEvent],
+    frame_dir: Path,
+    *,
+    backend: str = "claude",
+    model: str | None = None,
+    max_reviews: int = 10_000,
+    save_debug_crops: bool = False,
+    max_workers: int = 10,
+    usage_out: dict | None = None,
+    gpt_reasoning_effort: str = "medium",
+) -> list[LineageEvent]:
+    """Vision-review DEATH events for genuine death vs. a tracking dropout during a
+    real division (see the module docstring section above). No confidence-tier
+    routing like review_ambiguous -- every DEATH event event gets reviewed, since the
+    rule-based confidence here is a persistence score (track duration), not an
+    authenticity signal, so there's no principled tier to auto-skip on. Deliberately
+    does NOT reclassify event_type or split_topology: a suspected tracking dropout is
+    a quality flag for a researcher to investigate, not something this pipeline can
+    turn into a real split without the (lost) daughter track data.
+
+    Mirrors review_ambiguous's backend selection and usage/cost accounting. See that
+    function's docstring for details this one doesn't repeat.
+    """
+    if backend not in ("claude", "gpt"):
+        raise ValueError(f"backend must be 'claude' or 'gpt', got {backend!r}")
+    if not events:
+        return []
+
+    debug_dir: Path | None = None
+    if save_debug_crops:
+        debug_dir = frame_dir.parent / "review_crops"
+        # Shared with review_ambiguous's split crops -- do NOT rmtree here, splits
+        # may have already been reviewed into the same directory this run.
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+    if backend == "claude":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise EnvironmentError("ANTHROPIC_API_KEY not set — cannot run Claude vision review")
+        client = anthropic.Anthropic(api_key=api_key)
+        resolved_model = model or CLAUDE_MODEL
+        review_fn = _review_death_event
+    else:
+        from openai import AzureOpenAI
+
+        from src.config import GPT_DEPLOYMENT
+        from src.review_gpt import review_death_gpt
+
+        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+        if not endpoint or not api_key:
+            raise EnvironmentError("AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY not set — cannot run GPT vision review")
+        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview")
+        resolved_model = model or GPT_DEPLOYMENT
+        review_fn = review_death_gpt
+
+    to_call = events[:max_reviews]
+    usage_log: list[dict] = []
+
+    def _call(event: LineageEvent):
+        try:
+            if backend == "gpt":
+                return event, review_fn(client, event, frame_dir, resolved_model, debug_dir=debug_dir, usage_log=usage_log, reasoning_effort=gpt_reasoning_effort)
+            return event, review_fn(client, event, frame_dir, resolved_model, debug_dir=debug_dir, usage_log=usage_log)
+        except Exception as exc:
+            print(f"  [death review error] frame={event.frame} parent={event.parent_id}: {type(exc).__name__}: {exc}")
+            return event, {"likely_division_dropout": None, "confidence": event.confidence,
+                           "description": "", "anomaly_notes": None, "review_error": True}
+
+    reviewed_by_id: dict[int, LineageEvent] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_call, event) for event in to_call]
+        for future in as_completed(futures):
+            event, r = future.result()
+            dropout = r.get("likely_division_dropout")
+            description = r.get("description", "")
+            reviewed_by_id[id(event)] = dataclasses.replace(
+                event,
+                classification_source=resolved_model,
+                confidence=float(r.get("confidence", event.confidence)),
+                raw_ai_confidence=float(r.get("confidence")) if r.get("confidence") is not None else None,
+                review_error=bool(r.get("review_error", False)),
+                tracker_confidence=event.tracker_confidence if event.tracker_confidence is not None else event.confidence,
+                ai_notes=description,
+                likely_division_dropout=dropout,
+                anomaly_notes=r.get("anomaly_notes"),
+            )
+            print(f"  frame={event.frame:3d} parent={event.parent_id} [dropout={dropout}] {description}")
+
+    total_input = sum(u["input_tokens"] for u in usage_log)
+    total_output = sum(u["output_tokens"] for u in usage_log)
+    cost = _estimate_cost_usd(resolved_model, total_input, total_output)
+    cost_str = f", est. ${cost:.4f}" if cost is not None else ""
+    print(f"  death review ({backend}) usage: {len(usage_log)} calls, {total_input:,} input tokens, {total_output:,} output tokens{cost_str}")
+    if usage_out is not None:
+        usage_out.update({
+            "api_calls": len(usage_log),
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "estimated_cost_usd": cost,
+        })
+
+    return [reviewed_by_id.get(id(e), e) for e in to_call] + events[max_reviews:]
 
 
 def review_ambiguous(
