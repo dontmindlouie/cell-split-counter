@@ -42,6 +42,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # the real position either way instead of assuming dead-center.
 _CROP_RADIUS = 192
 
+# Must match src/review.py's _FRAME_STRIDE. review_crops/ holds every consecutive frame
+# (src/review.py's _build_dense_debug_window, added 2026-07-10) but the AI only ever saw
+# every _FRAME_STRIDE-th one -- this tells us which saved frames were actually reviewed
+# vs. extra context saved purely for this tool's "show every frame" toggle.
+_FRAME_STRIDE = 3
+_CROP_NAME_RE = re.compile(r"^\d+_(?:before|split|after)_(\d+)\.png$")
+
 _FLAG_COLS = ["misaligned_chromosomes", "lagging_chromosome", "anaphase_bridge", "micronucleus", "binucleation"]
 
 # Priority order: an event that matches an earlier bucket never falls into a later
@@ -147,13 +154,23 @@ def _build_manifest(run_dir: Path, n_per_bucket: int, seed: int) -> list[dict]:
             continue  # no crops at all for this event -- nothing to show, skip
         verdict = _parse_verdict(folder / "verdict.txt")
         bucket = _bucket_for(row, verdict)
-        images = sorted(p.name for p in folder.glob("*.png"))
-        if not images:
+        all_names = sorted(p.name for p in folder.glob("*.png"))
+        if not all_names:
             continue
+        peak_frame = int(row["peak_frame"])
+
+        def _idx_of(name: str) -> int | None:
+            m = _CROP_NAME_RE.match(name)
+            return int(m.group(1)) if m else None
+
+        sampled_names = [n for n in all_names if (i := _idx_of(n)) is not None and (i - peak_frame) % _FRAME_STRIDE == 0]
+        if not sampled_names:
+            sampled_names = all_names  # older runs / unrecognized names: nothing to filter down to
+
         # Same centroid, same crop window for every frame in this event's sequence --
         # one representative image's dimensions are enough to place the crosshair.
         cx, cy = float(row["centroid_x"]), float(row["centroid_y"])
-        crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(folder / images[0], cx, cy)
+        crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(folder / all_names[0], cx, cy)
         csv_confidence = float(row["ai_confidence"]) if row["ai_confidence"] else 0.0
         effective_verdict = _effective_verdict(verdict, csv_confidence)
         buckets[bucket].append({
@@ -162,7 +179,12 @@ def _build_manifest(run_dir: Path, n_per_bucket: int, seed: int) -> list[dict]:
             "frame": row["peak_frame"],
             "centroid_x": cx,
             "centroid_y": cy,
-            "images": [f"../review_crops/{folder.name}/{name}" for name in images],
+            "images": [f"../review_crops/{folder.name}/{name}" for name in sampled_names],
+            "dense_images": [
+                {"src": f"../review_crops/{folder.name}/{name}", "sampled": name in set(sampled_names)}
+                for name in all_names
+            ],
+            "has_dense": len(all_names) > len(sampled_names),
             "crosshair_x_pct": round(crosshair_x_pct, 2),
             "crosshair_y_pct": round(crosshair_y_pct, 2),
             "pipeline_verdict": effective_verdict,
@@ -208,6 +230,15 @@ h1 { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
 .crop-wrap { position: relative; display: inline-block; line-height: 0; }
 .filmstrip .crop-wrap { border-radius: 4px; overflow: hidden; border: 1px solid var(--border); cursor: zoom-in; }
 .crop-thumb { display: block; width: 150px; height: 150px; background-repeat: no-repeat; }
+/* dense ("every frame") mode: green border = AI actually reviewed this frame, dimmed
+   gray = extra consecutive context saved only for this tool, never sent to the model */
+.filmstrip .crop-wrap.dense-sampled { border-color: var(--good); border-width: 2px; }
+.filmstrip .crop-wrap.dense-skipped { opacity: 0.55; }
+.dense-toggle { margin: 0 0 12px; }
+.dense-legend { font-size: 11.5px; color: var(--text-muted); margin: 0 0 10px; }
+.dense-legend .sw { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 10px; vertical-align: middle; border-radius: 2px; }
+.dense-legend .sw.reviewed { border: 2px solid var(--good); }
+.dense-legend .sw.context { background: var(--border); opacity: 0.55; }
 .lightbox .crop-wrap img { max-width: 92vw; max-height: 92vh; display: block; }
 /* Thin reticle with a gap at the center -- marks the tracked centroid without a line
    drawn straight through it, since a solid crosshair was obscuring the small cell it's
@@ -300,24 +331,32 @@ def _render_html(manifest: list[dict], title: str, subtitle: str, storage_key: s
   var results = (saved && saved.results) || {{}};
   var idx = (saved && saved.idx) || 0;
   var judged = false;
+  var denseMode = false;  // "show every frame" toggle -- resets to off on navigation
+
+  function currentFrames(event) {{
+    if (denseMode && event.has_dense) return event.dense_images;
+    return event.images.map(function (src) {{ return {{ src: src, sampled: true }}; }});
+  }}
 
   function save() {{
     localStorage.setItem(storageKey, JSON.stringify({{ results: results, idx: idx }}));
   }}
 
-  function openLightbox(images, startIdx) {{
-    lightboxImages = images;
+  function openLightbox(frames, startIdx) {{
+    lightboxImages = frames;  // array of {{src, sampled}}
     lightboxIdx = startIdx;
     showLightboxImage();
     lightbox.classList.add('open');
   }}
   function showLightboxImage() {{
     var event = manifest[idx];
-    lightboxImg.src = lightboxImages[lightboxIdx];
+    var frame = lightboxImages[lightboxIdx];
+    lightboxImg.src = frame.src;
     lightboxCrosshairSlot.outerHTML = crosshairHtml(event.crosshair_x_pct, event.crosshair_y_pct).replace('<svg ', '<svg id="lightbox-crosshair-slot" ');
     lightboxCrosshairSlot = document.getElementById('lightbox-crosshair-slot');
-    var name = lightboxImages[lightboxIdx].split('/').pop();
-    lightboxCaption.textContent = (lightboxIdx + 1) + ' / ' + lightboxImages.length + ' \\u2014 ' + name;
+    var name = frame.src.split('/').pop();
+    var tag = frame.sampled ? '' : ' \\u2014 extra context, not seen by the model';
+    lightboxCaption.textContent = (lightboxIdx + 1) + ' / ' + lightboxImages.length + ' \\u2014 ' + name + tag;
     lightboxPrevBtn.disabled = lightboxIdx === 0;
     lightboxNextBtn.disabled = lightboxIdx === lightboxImages.length - 1;
   }}
@@ -395,17 +434,28 @@ def _render_html(manifest: list[dict], title: str, subtitle: str, storage_key: s
     judged = !!results[event.parent_id];
 
     var reticle = crosshairHtml(event.crosshair_x_pct, event.crosshair_y_pct);
-    var imgs = event.images.map(function (src, i) {{
+    var frames = currentFrames(event);
+    var showingDense = denseMode && event.has_dense;
+    var imgs = frames.map(function (frame, i) {{
       // Thumbnails are zoomed in around the tracked centroid (background-position/size,
       // not the img itself) -- the crop the pipeline saved is far larger than the cell,
       // so a 1:1 thumbnail mostly shows empty field. Click through to the lightbox for
       // the untouched, un-zoomed full crop.
-      return '<span class="crop-wrap" data-idx="' + i + '">' +
-        '<span class="crop-thumb" style="background-image:url(' + src + ');background-position:' +
+      var cls = 'crop-wrap' + (showingDense ? (frame.sampled ? ' dense-sampled' : ' dense-skipped') : '');
+      return '<span class="' + cls + '" data-idx="' + i + '">' +
+        '<span class="crop-thumb" style="background-image:url(' + frame.src + ');background-position:' +
         event.crosshair_x_pct + '% ' + event.crosshair_y_pct + '%;background-size:' + thumbZoom + '%;"></span>' +
         reticle +
         '</span>';
     }}).join('');
+
+    var denseToggleHtml = event.has_dense ?
+      '<div class="dense-toggle"><button id="dense-toggle-btn">' +
+        (showingDense ? 'Show only AI-reviewed frames' : 'Show every frame (' + event.dense_images.length + ')') +
+      '</button></div>' +
+      (showingDense ? '<p class="dense-legend"><span class="sw reviewed"></span>AI reviewed this frame' +
+        '<span class="sw context"></span>extra context, not seen by the model</p>' : '')
+      : '';
 
     var revealHtml = '';
     if (judged) {{
@@ -430,6 +480,7 @@ def _render_html(manifest: list[dict], title: str, subtitle: str, storage_key: s
     app.innerHTML =
       navHtml +
       '<div class="card">' +
+      denseToggleHtml +
       '<div class="filmstrip">' + imgs + '</div>' +
       '<p class="crosshair-note"><span class="swatch"></span>marks the tracked centroid &mdash; click any frame to step through the sequence with &larr;/&rarr;</p>' +
       (judged ? '' : '<div class="controls">' +
@@ -445,9 +496,17 @@ def _render_html(manifest: list[dict], title: str, subtitle: str, storage_key: s
 
     app.querySelectorAll('.filmstrip .crop-wrap').forEach(function (wrap) {{
       wrap.addEventListener('click', function () {{
-        openLightbox(event.images, parseInt(wrap.getAttribute('data-idx'), 10));
+        openLightbox(frames, parseInt(wrap.getAttribute('data-idx'), 10));
       }});
     }});
+
+    var denseToggleBtn = document.getElementById('dense-toggle-btn');
+    if (denseToggleBtn) {{
+      denseToggleBtn.addEventListener('click', function () {{
+        denseMode = !denseMode;
+        renderEvent();
+      }});
+    }}
 
     var prevLink = document.getElementById('prev-link');
     if (prevLink) {{
@@ -487,6 +546,7 @@ def _render_html(manifest: list[dict], title: str, subtitle: str, storage_key: s
   function next() {{
     idx++;
     judged = false;
+    denseMode = false;
     save();
     renderEvent();
   }}
@@ -495,6 +555,7 @@ def _render_html(manifest: list[dict], title: str, subtitle: str, storage_key: s
     if (idx === 0) return;
     idx--;
     judged = !!results[manifest[idx].parent_id];
+    denseMode = false;
     save();
     renderEvent();
   }}

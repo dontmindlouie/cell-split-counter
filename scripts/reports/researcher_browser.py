@@ -23,6 +23,7 @@ events.csv column names.
 import argparse
 import csv
 import json
+import re
 import struct
 import sys
 from pathlib import Path
@@ -30,6 +31,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 _CROP_RADIUS = 192  # must match src/review.py's _CROP_RADIUS
+_FRAME_STRIDE = 3   # must match src/review.py's _FRAME_STRIDE
+
+_CROP_NAME_RE = re.compile(r"^\d+_(?:before|split|after)_(\d+)\.png$")
+
+
+def _sampled_only(imgs: list[Path], peak_frame: int) -> list[Path]:
+    """review_crops/ now holds every consecutive frame (see src/review.py's
+    _build_dense_debug_window, added 2026-07-10 for spot_check_review.py's
+    frame-by-frame QC view) -- filter back down to the stride-sampled subset the AI
+    actually reviewed, so this filmstrip still matches what the model saw rather than
+    ballooning to ~49 frames of mostly-redundant context."""
+    out = []
+    for p in imgs:
+        m = _CROP_NAME_RE.match(p.name)
+        if m and (int(m.group(1)) - peak_frame) % _FRAME_STRIDE == 0:
+            out.append(p)
+    return out or imgs  # fall back to showing everything if names don't match (older runs)
 
 _FLAG_COLS = [
     "misaligned_chromosomes",
@@ -128,7 +146,6 @@ def _build_manifest(
             by_split[key] = r
 
     crops_dir = run_dir / "review_crops"
-    import re
     folder_re = re.compile(r"^frame_(\d+)_parent_(\d+)$")
     folder_by_parent: dict[str, Path] = {}
     if crops_dir.exists():
@@ -152,7 +169,7 @@ def _build_manifest(
         crosshair_y_pct = 50.0
 
         if folder is not None:
-            imgs = sorted(folder.glob("*.png"))
+            imgs = _sampled_only(sorted(folder.glob("*.png")), int(peak_frame))
             if imgs:
                 try:
                     crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(
