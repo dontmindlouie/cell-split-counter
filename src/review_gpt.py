@@ -27,7 +27,9 @@ from src.review import (
     _FRAMES_BEFORE,
     _MARKER_PROMPT_LINE,
     _SYSTEM,
+    _build_dense_debug_window,
     _build_frame_window,
+    _build_review_content,
     _crop_image,
     _crop_image_with_offset,
     _draw_corner_ticks,
@@ -71,23 +73,12 @@ def review_and_classify_gpt(
     if not indexed_paths:
         return _EMPTY_VERDICT.copy()
 
-    before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
-    after_count = len(indexed_paths) - before_count
-
     event_debug_dir: Path | None = None
     if debug_dir is not None:
-        event_debug_dir = _save_debug_crops(indexed_paths, event, debug_dir)
+        dense_paths = _build_dense_debug_window(event, frame_dir)
+        event_debug_dir = _save_debug_crops(dense_paths, event, debug_dir)
 
-    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
-    content = [_load_image_block(p, event.centroid, marker_radius=radius) for _, p in indexed_paths]
-    content.append({
-        "type": "text",
-        "text": (
-            f"Candidate split at frame {event.frame}: track {event.parent_id} -> daughter tracks. "
-            f"{before_count} frames before and {after_count} frames after the split are shown, "
-            f"each {_FRAME_STRIDE} frames apart."
-        ),
-    })
+    content = _build_review_content(indexed_paths, event, _load_image_block)
 
     system = _SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE) + _MARKER_PROMPT_LINE
     response = client.chat.completions.create(

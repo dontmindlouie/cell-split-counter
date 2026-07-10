@@ -140,6 +140,23 @@ def _build_frame_window(
     return [(i, p) for i in indices if (p := _find_frame(frame_dir, i)) is not None]
 
 
+def _build_dense_debug_window(
+    event: "LineageEvent", frame_dir: Path
+) -> list[tuple[int, Path]]:
+    """Return every consecutive frame (stride 1) spanning the same overall range as
+    _build_frame_window, for debug crops only -- not sent to the vision model.
+
+    The AI only sees the stride-sampled subset (_build_frame_window), but a human
+    spot-checking a subtle call (e.g. a 1-2 frame anaphase bridge that stride-3
+    sampling can skip entirely) needs the frames in between too. Saving all of them
+    to debug_dir lets a report tool offer a "every frame" view without any extra API
+    calls or a pipeline rerun -- see backlog 2026-07-10, spot_check_review.py.
+    """
+    lo = max(0, event.frame - _FRAMES_BEFORE * _FRAME_STRIDE)
+    hi = event.frame + _FRAMES_AFTER * _FRAME_STRIDE
+    return [(i, p) for i in range(lo, hi + 1) if (p := _find_frame(frame_dir, i)) is not None]
+
+
 def _save_debug_crops(
     indexed_paths: list[tuple[int, Path]],
     event: "LineageEvent",
@@ -281,6 +298,51 @@ def _load_image_block(
     return {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
 
 
+def _build_review_content(
+    indexed_paths: list[tuple[int, Path]],
+    event: "LineageEvent",
+    load_image_block_fn,
+) -> list[dict]:
+    """Build the labeled, interleaved image+text content list shared by both the
+    Claude and GPT review backends -- each image is preceded by a text block stating
+    its position and chronological offset from the candidate split (backlog #25,
+    2026-07-09/10: previously only a single trailing caption existed, and the
+    Claude/GPT backends had drifted -- this one shared builder is used by both so a
+    future prompt change can't silently apply to only one backend again)."""
+    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
+    total = len(indexed_paths)
+    before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
+    after_count = len(indexed_paths) - before_count
+
+    content: list[dict] = []
+    split_position: int | None = None
+    for pos, (idx, path) in enumerate(indexed_paths):
+        delta = idx - event.frame
+        if delta < 0:
+            relation = f"{-delta} frames before the candidate split"
+        elif delta > 0:
+            relation = f"{delta} frames after the candidate split"
+        else:
+            relation = "the candidate split frame"
+            split_position = pos + 1
+        content.append({
+            "type": "text",
+            "text": f"Image {pos + 1} of {total} (chronological order), frame index {idx}: {relation}.",
+        })
+        content.append(load_image_block_fn(path, event.centroid, marker_radius=radius))
+
+    split_ref = f" (image {split_position} of {total} above)" if split_position is not None else ""
+    content.append({
+        "type": "text",
+        "text": (
+            f"Candidate split at frame {event.frame}{split_ref}: track {event.parent_id} → daughter tracks. "
+            f"{before_count} frames before and {after_count} frames after the split are shown, "
+            f"each {_FRAME_STRIDE} frames apart, in strict chronological order from earliest to latest."
+        ),
+    })
+    return content
+
+
 def _review_and_classify(
     client: anthropic.Anthropic,
     event: LineageEvent,
@@ -299,41 +361,12 @@ def _review_and_classify(
     if not indexed_paths:
         return _EMPTY_VERDICT.copy()
 
-    before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
-    after_count = len(indexed_paths) - before_count
-
     event_debug_dir: Path | None = None
     if debug_dir is not None:
-        event_debug_dir = _save_debug_crops(indexed_paths, event, debug_dir)
+        dense_paths = _build_dense_debug_window(event, frame_dir)
+        event_debug_dir = _save_debug_crops(dense_paths, event, debug_dir)
 
-    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
-    total = len(indexed_paths)
-    content: list[dict] = []
-    split_position: int | None = None
-    for pos, (idx, path) in enumerate(indexed_paths):
-        delta = idx - event.frame
-        if delta < 0:
-            relation = f"{-delta} frames before the candidate split"
-        elif delta > 0:
-            relation = f"{delta} frames after the candidate split"
-        else:
-            relation = "the candidate split frame"
-            split_position = pos + 1
-        content.append({
-            "type": "text",
-            "text": f"Image {pos + 1} of {total} (chronological order), frame index {idx}: {relation}.",
-        })
-        content.append(_load_image_block(path, event.centroid, marker_radius=radius))
-
-    split_ref = f" (image {split_position} of {total} above)" if split_position is not None else ""
-    content.append({
-        "type": "text",
-        "text": (
-            f"Candidate split at frame {event.frame}{split_ref}: track {event.parent_id} → daughter tracks. "
-            f"{before_count} frames before and {after_count} frames after the split are shown, "
-            f"each {_FRAME_STRIDE} frames apart, in strict chronological order from earliest to latest."
-        ),
-    })
+    content = _build_review_content(indexed_paths, event, _load_image_block)
 
     system = _SYSTEM.format(before=_FRAMES_BEFORE, after=_FRAMES_AFTER, stride=_FRAME_STRIDE) + _MARKER_PROMPT_LINE
     response = client.messages.create(
