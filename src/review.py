@@ -193,11 +193,14 @@ the frame nearest the split: progressive elongation and constriction that is sti
 the final frame is real division evidence, even without full separation in every frame shown.
 False positives arise from: (1) z-plane focus drift that momentarily blurs one cell into two \
 blobs with no real division machinery ever visible (no rounding, no elongation, no cleavage \
-furrow), (2) a tracking ID swap with a nearby unrelated cell. Do NOT call a real division attempt \
-a false positive just because it doesn't finish: if the cell visibly rounds up, elongates along a \
-cleavage plane, and a waist/furrow forms between two masses before they re-fuse back into one, \
-that is a REAL event -- report verdict "real" with split_type "failed" (see Step 2), not \
-false_positive.
+furrow), (2) a tracking ID swap with a nearby unrelated cell, (3) cell death/fragmentation: the \
+cell breaks apart into several small irregular pieces (blebs/apoptotic bodies) rather than \
+resolving into exactly the daughter masses expected for the split type -- numerous small \
+fragments is a death signature, not a division, even if two of the fragments happen to be \
+larger than the rest. Do NOT call a real division attempt a false positive just because it \
+doesn't finish: if the cell visibly rounds up, elongates along a cleavage plane, and a \
+waist/furrow forms between two masses before they re-fuse back into one, that is a REAL event -- \
+report verdict "real" with split_type "failed" (see Step 2), not false_positive.
 
 STEP 2 — IF REAL, CHARACTERIZE THE EVENT:
 Split type:
