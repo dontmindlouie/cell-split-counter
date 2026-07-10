@@ -8,11 +8,11 @@ had its scoring silently inverted for that bucket before this was caught.
 
 import struct
 
+from scripts.reports._crop_shared import png_size as _png_size
 from scripts.reports.spot_check_review import (
     _bucket_for,
     _centroid_in_crop_pct,
     _effective_verdict,
-    _png_size,
 )
 
 

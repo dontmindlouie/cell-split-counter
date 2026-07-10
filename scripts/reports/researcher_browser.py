@@ -24,30 +24,14 @@ import argparse
 import csv
 import json
 import re
-import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-_CROP_RADIUS = 192  # must match src/review.py's _CROP_RADIUS
-_FRAME_STRIDE = 3   # must match src/review.py's _FRAME_STRIDE
-
-_CROP_NAME_RE = re.compile(r"^\d+_(?:before|split|after)_(\d+)\.png$")
-
-
-def _sampled_only(imgs: list[Path], peak_frame: int) -> list[Path]:
-    """review_crops/ now holds every consecutive frame (see src/review.py's
-    _build_dense_debug_window, added 2026-07-10 for spot_check_review.py's
-    frame-by-frame QC view) -- filter back down to the stride-sampled subset the AI
-    actually reviewed, so this filmstrip still matches what the model saw rather than
-    ballooning to ~49 frames of mostly-redundant context."""
-    out = []
-    for p in imgs:
-        m = _CROP_NAME_RE.match(p.name)
-        if m and (int(m.group(1)) - peak_frame) % _FRAME_STRIDE == 0:
-            out.append(p)
-    return out or imgs  # fall back to showing everything if names don't match (older runs)
+from scripts.reports._crop_shared import CROP_RADIUS as _CROP_RADIUS
+from scripts.reports._crop_shared import centroid_in_crop_pct as _centroid_in_crop_pct
+from scripts.reports._crop_shared import sampled_only as _sampled_only
 
 _FLAG_COLS = [
     "misaligned_chromosomes",
@@ -73,20 +57,6 @@ def _conf_col(row: dict) -> str:
 
 def _notes_col(row: dict) -> str:
     return "ai_notes" if "ai_notes" in row else "claude_notes"
-
-
-def _png_size(path: Path) -> tuple[int, int]:
-    with open(path, "rb") as f:
-        header = f.read(24)
-    width, height = struct.unpack(">II", header[16:24])
-    return width, height
-
-
-def _centroid_in_crop_pct(img_path: Path, cx: float, cy: float) -> tuple[float, float]:
-    w, h = _png_size(img_path)
-    offset_x = min(cx, _CROP_RADIUS)
-    offset_y = min(cy, _CROP_RADIUS)
-    return (offset_x / w) * 100, (offset_y / h) * 100
 
 
 def _is_split_type_mismatch(row: dict) -> bool:

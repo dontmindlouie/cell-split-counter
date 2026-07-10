@@ -29,25 +29,14 @@ import csv
 import json
 import random
 import re
-import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-# Must match src/review.py's _CROP_RADIUS -- the crop is [cy-192:cy+192, cx-192:cx+192]
-# clamped to the frame, so the centroid sits at pixel (192, 192) in the saved PNG
-# UNLESS the crop was clipped by a frame edge (near_edge events), in which case the
-# centroid shifts toward whichever edge got clamped. _centroid_in_crop below computes
-# the real position either way instead of assuming dead-center.
-_CROP_RADIUS = 192
-
-# Must match src/review.py's _FRAME_STRIDE. review_crops/ holds every consecutive frame
-# (src/review.py's _build_dense_debug_window, added 2026-07-10) but the AI only ever saw
-# every _FRAME_STRIDE-th one -- this tells us which saved frames were actually reviewed
-# vs. extra context saved purely for this tool's "show every frame" toggle.
-_FRAME_STRIDE = 3
-_CROP_NAME_RE = re.compile(r"^\d+_(?:before|split|after)_(\d+)\.png$")
+from scripts.reports._crop_shared import FRAME_STRIDE as _FRAME_STRIDE
+from scripts.reports._crop_shared import centroid_in_crop_pct as _centroid_in_crop_pct
+from scripts.reports._crop_shared import frame_idx_from_name as _frame_idx_from_name
 
 _FLAG_COLS = ["misaligned_chromosomes", "lagging_chromosome", "anaphase_bridge", "micronucleus", "binucleation"]
 
@@ -61,33 +50,6 @@ _BUCKETS = [
     ("confirmed_high", "confidence >= 0.85, auto-confirmed"),
     ("false_positive", "confidence 0.0, model called it false_positive"),
 ]
-
-
-def _png_size(path: Path) -> tuple[int, int]:
-    """Width/height from a PNG's IHDR chunk -- no imaging library needed."""
-    with open(path, "rb") as f:
-        header = f.read(24)
-    width, height = struct.unpack(">II", header[16:24])
-    return width, height
-
-
-def _centroid_in_crop_pct(img_path: Path, cx: float, cy: float) -> tuple[float, float]:
-    """Where the tracked centroid sits within this crop, as a 0-100% (left, top) pair.
-
-    src/review.py crops [cy-R:cy+R, cx-R:cx+R], clamped to the frame at 0 on the low
-    side (`max(0, cx - R)`). So the centroid's distance from the crop's own left edge
-    is exactly `cx - max(0, cx - R)` = `min(cx, R)` -- R (dead center) when the left
-    side wasn't clamped, or less than R (shifted toward that edge) when it was. This
-    holds regardless of right-side clamping, which only affects the crop's width, not
-    where its left edge starts. Same logic for y. Dividing by the crop's *actual*
-    saved width/height (read from the PNG itself, since we don't have the source
-    frame's dimensions) turns that pixel offset into a percentage CSS can position
-    against, correct for interior, edge-clamped, and corner-clamped crops alike.
-    """
-    w, h = _png_size(img_path)
-    offset_x = min(cx, _CROP_RADIUS)
-    offset_y = min(cy, _CROP_RADIUS)
-    return (offset_x / w) * 100, (offset_y / h) * 100
 
 
 def _parse_verdict(path: Path) -> dict | None:
@@ -159,11 +121,7 @@ def _build_manifest(run_dir: Path, n_per_bucket: int, seed: int) -> list[dict]:
             continue
         peak_frame = int(row["peak_frame"])
 
-        def _idx_of(name: str) -> int | None:
-            m = _CROP_NAME_RE.match(name)
-            return int(m.group(1)) if m else None
-
-        sampled_names = [n for n in all_names if (i := _idx_of(n)) is not None and (i - peak_frame) % _FRAME_STRIDE == 0]
+        sampled_names = [n for n in all_names if (i := _frame_idx_from_name(n)) is not None and (i - peak_frame) % _FRAME_STRIDE == 0]
         if not sampled_names:
             sampled_names = all_names  # older runs / unrecognized names: nothing to filter down to
 
