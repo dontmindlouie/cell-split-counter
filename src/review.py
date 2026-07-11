@@ -230,6 +230,21 @@ doesn't finish: if the cell visibly rounds up, elongates along a cleavage plane,
 waist/furrow forms between two masses before they re-fuse back into one, that is a REAL event -- \
 report verdict "real" with split_type "failed" (see Step 2), not false_positive.
 
+GROUNDING YOUR VERDICT AND CONFIDENCE:
+Your description must cite specific, concrete visual details from THIS sequence -- the \
+frame label/offset where a change first becomes visible, and what you actually see there \
+(approximate relative size, shape, brightness, position) -- not a generic summary that could \
+describe any division in the abstract. Avoid boilerplate phrasing like "progressively \
+constricts and resolves into two distinct, persistent daughter nuclei, consistent with \
+division" unless you can back it up with the specific frame and what changed there -- if your \
+first-draft description would read almost the same on a different event, that is a sign you \
+are pattern-matching to what a division usually looks like rather than describing this one.
+Confidence must track how clearly you can actually see the candidate, not how clean the \
+narrative sounds. If the cell inside the brackets is small, dim, low-contrast, or hard to \
+distinguish from background/noise in some or all frames, say so explicitly in the description \
+and do not report confidence above 0.7 -- a confident-sounding description is not a substitute \
+for a candidate you can clearly resolve across the sequence.
+
 STEP 2 — IF REAL, CHARACTERIZE THE EVENT:
 Split type:
 - "symmetric": daughters approximately equal in size (typical mitosis)
