@@ -38,7 +38,7 @@ _TICK_RADIUS = 55       # px from centroid, used when no neighbor is nearby
 _TICK_RADIUS_MIN = 15   # px floor -- below this the brackets start overlapping the cell body
 _TICK_LEN = 14          # px, length of each corner-bracket arm
 _TICK_COLOR = (60, 170, 230)  # BGR, dim/muted orange-amber -- not saturated cyan
-_TICK_THICKNESS = 2
+_TICK_THICKNESS = 1
 _EDGE_MARGIN = 6        # px -- keep ticks from being clipped exactly at the canvas edge
 
 _MARKER_PROMPT_LINE = (
