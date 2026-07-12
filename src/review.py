@@ -55,19 +55,32 @@ def adaptive_radius(
     fraction: float = 0.5,
     radius_min: int = _TICK_RADIUS_MIN,
     cell_area_px: float | None = None,
+    neighbor_area_px: float | None = None,
     size_k: float = 1.3,
 ) -> int:
     """Shrink the bracket radius so the marked box can't enclose a nearby neighbor,
-    while not shrinking it below what the candidate cell's own size needs.
+    while not shrinking it below what the candidate cell's own size needs -- except
+    when those two goals genuinely conflict, in which case neighbor safety wins.
 
-    Caps the radius at `fraction` of the distance to the nearest neighbor (minus a
-    small margin) so the box structurally cannot contain both cells. Composed with a
-    size floor (`size_k * candidate's own Cellpose-derived radius`, from
-    `cell_area_px` via area=pi*r^2) so a genuinely large candidate cell doesn't get a
-    box tight enough to clip its own division -- see the 2026-07-08 marker spike
-    (spike/crop-marker-v2) for the n=8 validation on both Claude Haiku and GPT-5-mini
-    that landed on fraction=0.5, margin=5.0, size_k=1.3 as one shared formula for
-    both backends. Returns the fixed default radius if no neighbor distance is known.
+    The neighbor-safe ceiling is `min(_TICK_RADIUS, computed)`, where `computed` is the
+    gap between the candidate's centroid and the neighbor's own edge: when
+    `neighbor_area_px` is known this is measured directly (`neighbor_distance_px -
+    sqrt(neighbor_area_px / pi) - margin`); otherwise it falls back to the older
+    `fraction`-of-raw-distance proxy (events classified before 2026-07-11, which assumed
+    same-sized cells). The own-size floor (`size_k * candidate's own Cellpose-derived
+    radius`, from `cell_area_px`) is only allowed to raise the radius up to that ceiling,
+    never past it, when the ceiling comes from a real measured `neighbor_area_px` --
+    root-caused 2026-07-11: the old formula (`max(floor, min(_TICK_RADIUS, computed))`)
+    let the own-size floor unconditionally override the neighbor cap, so a real
+    misattribution case with a "safe"-looking 24.5px raw neighbor distance still got a
+    box big enough to reach a large neighbor's actual body, because the candidate's own
+    size floor (18px) exceeded the true edge gap (~-0.5px) and silently won. When only
+    the cruder fraction-based proxy is available (no `neighbor_area_px`), the floor still
+    takes priority as before -- that proxy isn't trustworthy enough to hard-cap on.
+
+    See the 2026-07-08 marker spike (spike/crop-marker-v2) for the n=8 validation on
+    both Claude Haiku and GPT-5-mini that landed on fraction=0.5, margin=5.0, size_k=1.3.
+    Returns the fixed default radius if no neighbor distance is known.
     """
     if neighbor_distance_px is None:
         return _TICK_RADIUS
@@ -75,8 +88,15 @@ def adaptive_radius(
     if cell_area_px is not None:
         cell_own_radius = math.sqrt(cell_area_px / math.pi)
         floor = max(floor, size_k * cell_own_radius)
-    computed = neighbor_distance_px * fraction - margin
-    return int(max(floor, min(_TICK_RADIUS, computed)))
+    if neighbor_area_px is not None:
+        neighbor_own_radius = math.sqrt(neighbor_area_px / math.pi)
+        computed = (neighbor_distance_px - neighbor_own_radius) - margin
+    else:
+        computed = neighbor_distance_px * fraction - margin
+    ceiling = min(_TICK_RADIUS, computed)
+    if neighbor_area_px is not None and floor > ceiling:
+        return int(max(radius_min, ceiling))
+    return int(max(floor, ceiling))
 
 
 def _draw_corner_ticks(crop, local_cx: float, local_cy: float, radius: float | None = None):
@@ -352,7 +372,10 @@ def _build_review_content(
     relation_target/at_target_label/trailing_caption_fn let review_deaths() reuse this
     for track-end review (backlog #27, 2026-07-10) without duplicating the per-image
     labeling loop -- only the split-specific wording differs, not the structure."""
-    radius = adaptive_radius(event.neighbor_distance_px, cell_area_px=event.cell_area_px)
+    radius = adaptive_radius(
+        event.neighbor_distance_px, cell_area_px=event.cell_area_px,
+        neighbor_area_px=event.neighbor_area_px,
+    )
     total = len(indexed_paths)
     before_count = sum(1 for i, _ in indexed_paths if i < event.frame)
     after_count = len(indexed_paths) - before_count

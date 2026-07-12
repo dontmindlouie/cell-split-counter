@@ -1,18 +1,20 @@
-from src.classify import EventType, classify_events, classify_track_ends
+import math
+
+from src.classify import EventType, _nearest_neighbor_info, classify_events, classify_track_ends
 from src.segment import CellMask
 from src.track import TrackNode
 
 
-def fake_mask(cx: float = 0.0, cy: float = 0.0) -> CellMask:
-    return CellMask(frame=0, mask_id=0, bbox=(0, 1, 0, 1), local_mask=None, centroid=(cx, cy), area=1.0)
+def fake_mask(cx: float = 0.0, cy: float = 0.0, area: float = 1.0) -> CellMask:
+    return CellMask(frame=0, mask_id=0, bbox=(0, 1, 0, 1), local_mask=None, centroid=(cx, cy), area=area)
 
 
-def node(track_id, parent_id, frame, children=None, cx=0.0, cy=0.0):
+def node(track_id, parent_id, frame, children=None, cx=0.0, cy=0.0, area=1.0):
     return TrackNode(
         track_id=track_id,
         parent_id=parent_id,
         frame=frame,
-        mask=fake_mask(cx, cy),
+        mask=fake_mask(cx, cy, area=area),
         children=children or [],
     )
 
@@ -223,3 +225,49 @@ def test_track_end_confidence_capped_at_one():
 
     assert len(events) == 1
     assert events[0].confidence == 1.0
+
+
+def test_nearest_neighbor_info_returns_none_with_no_other_cells():
+    own = node(1, None, 0, cx=0.0, cy=0.0)
+    assert _nearest_neighbor_info([own], own) == (None, None)
+
+
+def test_nearest_neighbor_info_picks_closest_centroid_when_sizes_equal():
+    own = node(1, None, 0, cx=0.0, cy=0.0, area=100.0)
+    near = node(2, None, 0, cx=10.0, cy=0.0, area=100.0)
+    far = node(3, None, 0, cx=50.0, cy=0.0, area=100.0)
+    dist, area = _nearest_neighbor_info([own, near, far], own)
+    assert dist == 10.0
+    assert area == 100.0
+
+
+def test_nearest_neighbor_info_prefers_smaller_edge_gap_over_smaller_centroid_distance():
+    # A farther but much larger neighbor can have less actual clearance (edge-to-edge)
+    # than a closer but small one -- _nearest_neighbor_info must pick the neighbor with
+    # the smaller true gap, not the smaller raw centroid distance. Mirrors the real
+    # 2026-07-11 misattribution root cause where a "safe"-looking raw distance still
+    # belonged to a neighbor large enough to nearly reach the candidate's centroid.
+    own = node(1, None, 0, cx=0.0, cy=0.0)
+    close_small = node(2, None, 0, cx=15.0, cy=0.0, area=1.0)  # gap ~= 15 - ~0.56 = ~14.4
+    far_large = node(3, None, 0, cx=30.0, cy=0.0, area=math.pi * 25 ** 2)  # gap = 30 - 25 = 5
+    dist, area = _nearest_neighbor_info([own, close_small, far_large], own)
+    assert dist == 30.0
+    assert area == far_large.mask.area
+
+
+def test_classify_events_populates_neighbor_area_px():
+    tracks = split_nodes(1, [2, 3], parent_frame=10, persist=5)
+    tracks.append(node(99, None, frame=10, cx=20.0, cy=0.0, area=42.0))  # neighbor in the split frame
+    events = classify_events(tracks, None)
+    assert all(e.neighbor_area_px == 42.0 for e in events)
+
+
+def test_classify_track_ends_populates_neighbor_area_px():
+    tracks = [node(1, None, f) for f in range(10)]
+    # Neighbor track 99 is present at frame 9 (the death frame being measured) but
+    # stays alive past last_frame so it doesn't itself emit a death event.
+    tracks.append(node(99, None, frame=9, cx=5.0, cy=0.0, area=77.0))
+    tracks.append(node(99, None, frame=100, cx=5.0, cy=0.0, area=77.0))
+    events = classify_track_ends(tracks, last_frame=100, min_track_frames=1)
+    assert len(events) == 1
+    assert events[0].neighbor_area_px == 77.0

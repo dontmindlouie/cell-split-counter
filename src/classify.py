@@ -1,5 +1,6 @@
 """Lineage graph rules: classify each split/end event as normal, anomalous, or ambiguous."""
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -53,11 +54,20 @@ class LineageEvent:
     near_edge: bool | None = None  # centroid within NEAR_EDGE_MARGIN_PX of any frame boundary
     cell_area_px: float | None = None  # parent cell's Cellpose mask area at the split frame
     cell_size_um2: float | None = None  # cell_area_px converted via per-acquisition pixel size, if known
-    neighbor_distance_px: float | None = None  # distance to the nearest OTHER cell mask in the
-        # same frame this event's centroid/cell_area_px were measured from (not event.frame,
-        # which for splits is one frame later -- see classify_events). None if no other cell
-        # mask exists in that frame. Used by review.py to size the vision-review marker so it
-        # can't enclose a simultaneously-dividing neighbor (2026-07-08 marker spike).
+    neighbor_distance_px: float | None = None  # centroid distance to the neighbor cell mask
+        # picked by _nearest_neighbor_info (see docstring there -- smallest edge-to-edge gap,
+        # not necessarily the closest centroid) in the same frame this event's
+        # centroid/cell_area_px were measured from (not event.frame, which for splits is one
+        # frame later -- see classify_events). None if no other cell mask exists in that frame.
+        # Used by review.py to size the vision-review marker so it can't enclose a
+        # simultaneously-dividing neighbor (2026-07-08 marker spike; edge-gap selection added
+        # 2026-07-11 after that spike's radius formula still misattributed a large nearby
+        # neighbor at a nominally "safe" raw distance -- see neighbor_area_px below).
+    neighbor_area_px: float | None = None  # that same neighbor's own Cellpose mask area (pixel
+        # count). A big neighbor can encroach on the marker box even at a raw centroid distance
+        # that looks safe for a same-sized neighbor -- adaptive_radius (src/review.py) uses this
+        # to size the box off the actual gap between the candidate's centroid and the neighbor's
+        # OWN edge, not just centroid-to-centroid distance. None if no other cell mask exists.
     eccentricity: float | None = None  # regionprops shape descriptor at the same frame as
         # centroid/cell_area_px, 0 (circle) to ~1 (elongated) -- spike, no vision review,
         # not yet validated as a real/noise or anomaly signal (2026-07-09).
@@ -78,18 +88,31 @@ def _build_frame_index(tracks: list[TrackNode]) -> dict[int, list[TrackNode]]:
     return index
 
 
-def _nearest_neighbor_distance_px(frame_nodes: list[TrackNode], own: TrackNode) -> float | None:
-    """Euclidean distance from `own` to the closest OTHER cell mask in the same frame."""
+def _nearest_neighbor_info(frame_nodes: list[TrackNode], own: TrackNode) -> tuple[float | None, float | None]:
+    """(centroid distance, area) of the neighbor with the smallest edge-to-edge gap to `own`.
+
+    Not simply the nearest centroid -- a farther-but-larger neighbor can encroach on the
+    candidate's marker box more than a small, nearby one. Approximates each neighbor as a
+    circle of its own Cellpose area (radius = sqrt(area / pi)) and picks whichever neighbor
+    minimizes (centroid_distance - neighbor_radius), i.e. the neighbor whose own body comes
+    closest to `own`'s centroid. Root-caused 2026-07-11: a real misattribution case had a raw
+    centroid distance of 24.5px that looked "safe" under the old pure-distance formula, but the
+    neighbor's own mask was large enough that its edge nearly reached `own`'s centroid.
+    """
     ox, oy = own.mask.centroid
-    best: float | None = None
+    best_gap: float | None = None
+    best: tuple[float, float] | None = None
     for node in frame_nodes:
         if node is own:
             continue
         nx, ny = node.mask.centroid
         d = ((nx - ox) ** 2 + (ny - oy) ** 2) ** 0.5
-        if best is None or d < best:
-            best = d
-    return best
+        n_radius = math.sqrt(node.mask.area / math.pi) if node.mask.area else 0.0
+        gap = d - n_radius
+        if best_gap is None or gap < best_gap:
+            best_gap = gap
+            best = (d, node.mask.area)
+    return best if best is not None else (None, None)
 
 
 def _daughter_persistence(
@@ -168,6 +191,7 @@ def classify_track_ends(
         duration = node.frame - first_frame_by_track[track_id] + 1
         if duration < min_track_frames:
             continue
+        neighbor_distance_px, neighbor_area_px = _nearest_neighbor_info(frame_index.get(node.frame, []), node)
         events.append(
             LineageEvent(
                 track_id=track_id,
@@ -178,7 +202,8 @@ def classify_track_ends(
                 confidence=min(1.0, duration / confidence_max_frames),
                 centroid=node.mask.centroid,
                 cell_area_px=node.mask.area,
-                neighbor_distance_px=_nearest_neighbor_distance_px(frame_index.get(node.frame, []), node),
+                neighbor_distance_px=neighbor_distance_px,
+                neighbor_area_px=neighbor_area_px,
                 eccentricity=node.mask.eccentricity,
                 solidity=node.mask.solidity,
             )
@@ -257,7 +282,7 @@ def classify_events(
         event_type = EventType.NORMAL_SPLIT if len(node.children) == 2 else EventType.MULTI_WAY_SPLIT
         # neighbor distance is measured at node.frame, the same frame centroid/cell_area_px
         # come from -- NOT split_frame (node.frame + 1), which is one frame later.
-        neighbor_distance_px = _nearest_neighbor_distance_px(frame_index.get(node.frame, []), node)
+        neighbor_distance_px, neighbor_area_px = _nearest_neighbor_info(frame_index.get(node.frame, []), node)
         for child_track_id in node.children:
             origin_frame[child_track_id] = split_frame
             events.append(
@@ -271,6 +296,7 @@ def classify_events(
                     centroid=node.mask.centroid,
                     cell_area_px=node.mask.area,
                     neighbor_distance_px=neighbor_distance_px,
+                    neighbor_area_px=neighbor_area_px,
                     eccentricity=node.mask.eccentricity,
                     solidity=node.mask.solidity,
                 )
