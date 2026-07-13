@@ -28,6 +28,14 @@ review_deaths()'s prompt has no such option yet -- so that distinction cannot be
 here; treat plain "mildly interesting" deaths as an unfiltered mix of both until that's
 built.
 
+Position marker (2026-07-13, real-usage feedback): the saved review_crops/ PNGs are
+deliberately unmarked (a researcher may want a clean copy for her own reports/slides), but
+crowded frames turned out to be ambiguous for a human reviewer too, not just the AI --
+"which cell is the candidate" wasn't always obvious. A faint corner-bracket overlay
+(toggleable, on by default) is drawn only in this browser view via CSS, never baked into
+the underlying image files, using the same neighbor-aware adaptive_radius() the AI's own
+marker uses so it points at the same place the AI was told to look.
+
 Annotations (free-text researcher notes + flag-for-followup) are stored in browser
 localStorage and survive page reloads. Use the Export button to download
 researcher_notes.csv -- a clean machine-readable patch file an AI assistant can use
@@ -55,6 +63,7 @@ from scripts.reports._crop_shared import CROP_RADIUS as _CROP_RADIUS
 from scripts.reports._crop_shared import centroid_in_crop_pct as _centroid_in_crop_pct
 from scripts.reports._crop_shared import frame_idx_from_name as _frame_idx_from_name
 from scripts.reports._crop_shared import sampled_only as _sampled_only
+from src.review import adaptive_radius as _adaptive_radius
 
 _FLAG_COLS = [
     "misaligned_chromosomes",
@@ -142,6 +151,25 @@ def _interest_score(row: dict) -> tuple[int, float]:
     if near:
         score -= 3         # deprioritize near-edge within tier
     return score, conf
+
+
+def _marker_radius_pct(row: dict) -> float:
+    """Position marker radius, as a % of the crop's width, for the faint browser-side
+    overlay (2026-07-13, real-usage feedback -- crowded frames are ambiguous to a human
+    reviewer too, not just the AI, but a marker baked into the saved PNG would ruin a
+    clean copy for a researcher's own report/presentation). Reuses adaptive_radius() --
+    the exact same neighbor-aware formula src/review.py used to position the AI's own
+    marker -- so the overlay points at the same place the AI was told to look, and stays
+    proportionally far from a close neighbor rather than a fixed offset that could land
+    on top of it."""
+    def _f(key: str) -> float | None:
+        v = row.get(key)
+        return float(v) if v not in (None, "") else None
+
+    radius_px = _adaptive_radius(
+        _f("neighbor_distance_px"), cell_area_px=_f("cell_area_px"), neighbor_area_px=_f("neighbor_area_px"),
+    )
+    return (radius_px / (2 * _CROP_RADIUS)) * 100
 
 
 def _birth_micronucleus_by_track(rows: list[dict]) -> dict[str, bool]:
@@ -281,6 +309,7 @@ def _build_manifest(
             "has_crops": len(crops["images"]) > 0,
             "crosshair_x_pct": round(crops["crosshair_x_pct"], 2),
             "crosshair_y_pct": round(crops["crosshair_y_pct"], 2),
+            "marker_radius_pct": round(_marker_radius_pct(row), 2),
             "interest_score": score,
         })
 
@@ -329,6 +358,7 @@ def _build_manifest(
             "has_crops": len(crops["images"]) > 0,
             "crosshair_x_pct": round(crops["crosshair_x_pct"], 2),
             "crosshair_y_pct": round(crops["crosshair_y_pct"], 2),
+            "marker_radius_pct": round(_marker_radius_pct(row), 2),
             "interest_score": score,
         })
 
@@ -392,6 +422,11 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .crop-wrap.dense-skipped{opacity:0.5;}
 .crop-wrap.dense-sampled{border-color:var(--good);border-width:2px;}
 .dense-legend{font-size:11.5px;color:var(--text-muted);margin:0 0 8px;}
+.marker-tick{position:absolute;width:10px;height:10px;border-color:rgba(230,170,60,0.75);border-style:solid;border-width:0;pointer-events:none;}
+.marker-tick.tl{border-top-width:1.5px;border-left-width:1.5px;}
+.marker-tick.tr{border-top-width:1.5px;border-right-width:1.5px;transform:translateX(-100%);}
+.marker-tick.bl{border-bottom-width:1.5px;border-left-width:1.5px;transform:translateY(-100%);}
+.marker-tick.br{border-bottom-width:1.5px;border-right-width:1.5px;transform:translate(-100%,-100%);}
 
 .no-crops-note{font-size:12px;color:var(--text-muted);padding:8px 0;}
 .ai-notes{font-size:13px;color:var(--text-secondary);line-height:1.55;margin:6px 0 10px;font-style:italic;}
@@ -486,6 +521,7 @@ def _render_html(
     <label><input type="checkbox" id="filter-hide-near-edge"> Hide near-edge</label>
     <label><input type="checkbox" id="filter-hide-fps" checked> Hide false positives</label>
     <label title="Every consecutive frame in the review window is saved on disk even though the AI only sees every 3rd -- this shows all of them, dimming the ones the AI didn't see."><input type="checkbox" id="filter-dense-mode"> Show every frame (more context)</label>
+    <label title="Faint corner ticks positioned away from the candidate cell -- an overlay drawn only in this view, never saved into the underlying PNG files, so the raw crop on disk stays clean for reports/presentations."><input type="checkbox" id="filter-show-marker" checked> Show position marker</label>
   </div>
 
   <button class="export-btn" id="export-btn">Export researcher_notes.csv</button>
@@ -570,6 +606,7 @@ def _render_html(
   var filterShowDeaths = true;
   var filterHideUnreviewedDeaths = true;
   var denseMode = false;
+  var showMarker = true;
 
   function passesFilter(ev) {{
     if (ev.event_kind === 'death') {{
@@ -649,6 +686,16 @@ def _render_html(
       ? ev.dense_images
       : ev.images.map(function(src) {{ return {{src: src, sampled: true}}; }});
 
+    var markerHtml = '';
+    if (showMarker) {{
+      var cx = ev.crosshair_x_pct, cy = ev.crosshair_y_pct, r = ev.marker_radius_pct;
+      markerHtml =
+        '<span class="marker-tick tl" style="left:' + (cx - r) + '%;top:' + (cy - r) + '%;"></span>' +
+        '<span class="marker-tick tr" style="left:' + (cx + r) + '%;top:' + (cy - r) + '%;"></span>' +
+        '<span class="marker-tick bl" style="left:' + (cx - r) + '%;top:' + (cy + r) + '%;"></span>' +
+        '<span class="marker-tick br" style="left:' + (cx + r) + '%;top:' + (cy + r) + '%;"></span>';
+    }}
+
     var filmstrip = '';
     if (frames.length > 0) {{
       filmstrip = frames.map(function(f, i) {{
@@ -660,6 +707,7 @@ def _render_html(
           'background-image:url(' + src + ');' +
           'background-position:' + ev.crosshair_x_pct + '% ' + ev.crosshair_y_pct + '%;' +
           'background-size:' + thumbZoom + '%;" style=""></span>' +
+          markerHtml +
           '</span>';
       }}).join('');
     }} else {{
@@ -814,6 +862,9 @@ def _render_html(
   }});
   document.getElementById('filter-dense-mode').addEventListener('change', function() {{
     denseMode = this.checked; renderGrid();
+  }});
+  document.getElementById('filter-show-marker').addEventListener('change', function() {{
+    showMarker = this.checked; renderGrid();
   }});
 
   // --- Export ---
