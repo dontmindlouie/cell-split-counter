@@ -153,15 +153,22 @@ def _interest_score(row: dict) -> tuple[int, float]:
     return score, conf
 
 
+_DISPLAY_MARKER_SCALE = 1.7  # browser overlay sits further from the cell than the AI's own
+                              # marker (2026-07-13 feedback) -- the AI's radius has to stay
+                              # tight enough to disambiguate crowded neighbors within a small
+                              # token-budget image; a human just needs orientation, so this
+                              # pushes the same neighbor-aware radius outward without
+                              # changing what's actually sent to the AI.
+
+
 def _marker_radius_pct(row: dict) -> float:
     """Position marker radius, as a % of the crop's width, for the faint browser-side
     overlay (2026-07-13, real-usage feedback -- crowded frames are ambiguous to a human
     reviewer too, not just the AI, but a marker baked into the saved PNG would ruin a
-    clean copy for a researcher's own report/presentation). Reuses adaptive_radius() --
-    the exact same neighbor-aware formula src/review.py used to position the AI's own
-    marker -- so the overlay points at the same place the AI was told to look, and stays
-    proportionally far from a close neighbor rather than a fixed offset that could land
-    on top of it."""
+    clean copy for a researcher's own report/presentation). Starts from adaptive_radius()
+    -- the exact same neighbor-aware formula src/review.py used to position the AI's own
+    marker, so it stays proportionally far from a close neighbor rather than a fixed
+    offset that could land on top of one -- then scaled further out for display only."""
     def _f(key: str) -> float | None:
         v = row.get(key)
         return float(v) if v not in (None, "") else None
@@ -169,7 +176,7 @@ def _marker_radius_pct(row: dict) -> float:
     radius_px = _adaptive_radius(
         _f("neighbor_distance_px"), cell_area_px=_f("cell_area_px"), neighbor_area_px=_f("neighbor_area_px"),
     )
-    return (radius_px / (2 * _CROP_RADIUS)) * 100
+    return (radius_px * _DISPLAY_MARKER_SCALE / (2 * _CROP_RADIUS)) * 100
 
 
 def _birth_micronucleus_by_track(rows: list[dict]) -> dict[str, bool]:
@@ -443,6 +450,9 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .lightbox-img-wrap img{max-width:92vw;max-height:88vh;display:block;}
 .lightbox-caption{position:absolute;bottom:-28px;left:50%;transform:translateX(-50%);color:white;font-size:12px;white-space:nowrap;}
 .lightbox-close{position:absolute;top:14px;right:20px;color:white;font-size:26px;line-height:1;cursor:pointer;background:none;border:none;padding:6px 10px;z-index:21;}
+.lightbox-dense-toggle{position:absolute;top:16px;left:20px;color:white;font-size:12.5px;font-weight:600;cursor:pointer;background:rgba(255,255,255,0.12);border:none;border-radius:6px;padding:7px 12px;z-index:21;}
+.lightbox-dense-toggle:hover{background:rgba(255,255,255,0.22);}
+.lightbox-dense-toggle.hidden{display:none;}
 .lightbox-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.12);color:white;border:none;font-size:28px;line-height:1;width:52px;height:64px;cursor:pointer;border-radius:8px;z-index:21;}
 .lightbox-nav:hover{background:rgba(255,255,255,0.24);}
 .lightbox-nav:disabled{opacity:0.25;cursor:default;}
@@ -539,6 +549,7 @@ def _render_html(
 
 <div class="lightbox" id="lightbox">
   <button class="lightbox-close" id="lightbox-close">&times;</button>
+  <button class="lightbox-dense-toggle" id="lightbox-dense-toggle"></button>
   <button class="lightbox-nav prev" id="lightbox-prev">&lsaquo;</button>
   <div class="lightbox-img-wrap">
     <img id="lightbox-img" alt="">
@@ -569,12 +580,31 @@ def _render_html(
   var lbPrev = document.getElementById('lightbox-prev');
   var lbNext = document.getElementById('lightbox-next');
   var lbClose = document.getElementById('lightbox-close');
-  var lbImages = [], lbIdx = 0;
+  var lbDenseToggle = document.getElementById('lightbox-dense-toggle');
+  var lbImages = [], lbIdx = 0, lbEvent = null, lbDenseMode = false;
 
-  function openLightbox(images, startIdx) {{
-    lbImages = images; lbIdx = startIdx;
+  function frameIdxFromSrc(src) {{
+    var m = src.split('/').pop().match(/^\d+_(?:before|split|after)_(\d+)\.png$/);
+    return m ? parseInt(m[1], 10) : null;
+  }}
+  function lbFrameList() {{
+    if (lbDenseMode && lbEvent && lbEvent.has_dense) {{
+      return lbEvent.dense_images.map(function(f) {{ return f.src; }});
+    }}
+    return lbEvent ? lbEvent.images : [];
+  }}
+  function openLightbox(ev, initialDense, startIdx) {{
+    lbEvent = ev;
+    lbDenseMode = !!(initialDense && ev.has_dense);
+    lbImages = lbFrameList();
+    lbIdx = Math.min(startIdx, lbImages.length - 1);
+    lbDenseToggle.classList.toggle('hidden', !ev.has_dense);
+    updateDenseToggleLabel();
     showLbFrame();
     lightbox.classList.add('open');
+  }}
+  function updateDenseToggleLabel() {{
+    lbDenseToggle.textContent = lbDenseMode ? 'Show only AI-reviewed frames' : 'Show every frame';
   }}
   function showLbFrame() {{
     lbImg.src = lbImages[lbIdx];
@@ -582,6 +612,21 @@ def _render_html(
     lbPrev.disabled = lbIdx === 0;
     lbNext.disabled = lbIdx === lbImages.length - 1;
   }}
+  lbDenseToggle.addEventListener('click', function(e) {{
+    e.stopPropagation();
+    if (!lbEvent || !lbEvent.has_dense) return;
+    var currentFrameIdx = frameIdxFromSrc(lbImages[lbIdx]);
+    lbDenseMode = !lbDenseMode;
+    lbImages = lbFrameList();
+    if (currentFrameIdx !== null) {{
+      var match = lbImages.findIndex(function(src) {{ return frameIdxFromSrc(src) === currentFrameIdx; }});
+      lbIdx = match !== -1 ? match : 0;
+    }} else {{
+      lbIdx = 0;
+    }}
+    updateDenseToggleLabel();
+    showLbFrame();
+  }});
   lbPrev.addEventListener('click', function(e) {{ e.stopPropagation(); if(lbIdx>0){{lbIdx--;showLbFrame();}} }});
   lbNext.addEventListener('click', function(e) {{ e.stopPropagation(); if(lbIdx<lbImages.length-1){{lbIdx++;showLbFrame();}} }});
   lbClose.addEventListener('click', function(e) {{ e.stopPropagation(); lightbox.classList.remove('open'); }});
@@ -759,10 +804,8 @@ def _render_html(
         var key = card.getAttribute('data-key');
         var ev = manifest.find(function(e) {{ return e.entry_key === key; }});
         if (!ev) return;
-        var showDense = denseMode && ev.has_dense;
-        var srcs = showDense ? ev.dense_images.map(function(f) {{ return f.src; }}) : ev.images;
-        if (srcs.length) {{
-          openLightbox(srcs, parseInt(wrap.getAttribute('data-idx'), 10));
+        if ((denseMode && ev.has_dense ? ev.dense_images.length : ev.images.length) > 0) {{
+          openLightbox(ev, denseMode, parseInt(wrap.getAttribute('data-idx'), 10));
         }}
       }});
     }});
