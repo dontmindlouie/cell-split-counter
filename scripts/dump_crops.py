@@ -6,7 +6,7 @@ this does not re-segment or re-track). Use this to inspect exactly what Claude s
 or to backfill review_crops/ for a run that skipped them via --no-debug-crops.
 
 Output folder naming matches src/review.py's own debug-crops convention exactly
-(frame_<peak_frame, 5 digits>_parent_<parent_id>, with a verdict.txt) so crops
+(frame_<peak_frame, 5 digits>_track_<track_id>, with a verdict.txt) so crops
 generated after the fact are indistinguishable from ones saved during a live review
 call, and so scripts/generate_package_readme.py's review_crops detection picks them up.
 
@@ -93,7 +93,7 @@ def main() -> None:
         tracker_conf = r.get("tracker_persistence_score", "")
         src = r["classification_source"]
         label = "REAL" if float(conf) > 0 else "FP"
-        event_dir = args.out_dir / f"frame_{pf:05d}_parent_{r['parent_id']}"
+        event_dir = args.out_dir / f"frame_{pf:05d}_track_{r['track_id']}"
         event_dir.mkdir()
 
         before_indices = [pf - i * _FRAME_STRIDE for i in range(_FRAMES_BEFORE, 0, -1)]

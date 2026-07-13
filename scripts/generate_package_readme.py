@@ -139,8 +139,10 @@ FOLDER_DOCS = {
         "copy, not a second source of truth.",
     "review_crops": "Per-candidate before/split/after frame crops (centered on the dividing "
         "cell, ~384px) plus a verdict.txt with the AI's raw verdict/confidence/notes for "
-        "that specific review call. Folder name format: `frame_<peak_frame, 5 digits>_parent_"
-        "<parent_id>`. IMPORTANT: this is not guaranteed to cover every row in events.csv "
+        "that specific review call. Folder name format: `frame_<peak_frame, 5 digits>_track_"
+        "<track_id>` (track_id of whichever daughter row was picked as the split's one "
+        "representative event, for split candidates -- changed from parent_id 2026-07-12, "
+        "see src/review.py's _save_debug_crops docstring). IMPORTANT: this is not guaranteed to cover every row in events.csv "
         "-- crop coverage can be partial or come from a different run than the current CSV. "
         "Absence of a crop folder for a given event does NOT mean the event is less real or "
         "less important; use index.csv (generated alongside this README) to see exactly "
@@ -166,6 +168,18 @@ def _find_pairs(rows: list[dict]) -> dict[tuple, dict]:
     return pairs
 
 
+def _find_siblings(rows: list[dict]) -> dict[tuple, list[dict]]:
+    """All rows sharing a (parent_id, peak_frame) split point -- review_crops folders are
+    keyed on track_id (2026-07-12), and the representative row in `pairs` isn't guaranteed
+    to be the same daughter review_ambiguous picked as its one representative event, so
+    crop-coverage lookups need to try every sibling's track_id, not just the first row's."""
+    siblings: dict[tuple, list[dict]] = {}
+    for r in rows:
+        key = (r.get("parent_id", ""), r.get("peak_frame", ""))
+        siblings.setdefault(key, []).append(r)
+    return siblings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("package_dir", type=Path, help="output package directory to document")
@@ -182,6 +196,7 @@ def main() -> None:
         rows = list(csv.DictReader(f))
 
     pairs = _find_pairs(rows)
+    siblings = _find_siblings(rows)
     source_video = rows[0].get("source_video", "") if rows else ""
     label = args.video_label or source_video or package_dir.name
 
@@ -215,7 +230,16 @@ def main() -> None:
         crop_folders = {p.name for p in review_crops_dir.iterdir() if p.is_dir()}
 
     def _crop_name(r: dict) -> str:
-        return f"frame_{int(r['peak_frame']):05d}_parent_{r['parent_id']}"
+        """The crop folder name actually on disk for this split point, if any -- tries every
+        sibling daughter's track_id (see _find_siblings) since any of them could have been
+        the one representative event review_ambiguous chose. Falls back to this row's own
+        track_id (never matching a real folder) so callers always get a string back."""
+        key = (r.get("parent_id", ""), r.get("peak_frame", ""))
+        for sib in siblings.get(key, [r]):
+            name = f"frame_{int(sib['peak_frame']):05d}_track_{sib['track_id']}"
+            if name in crop_folders:
+                return name
+        return f"frame_{int(r['peak_frame']):05d}_track_{r['track_id']}"
 
     present_dirs = [name for name in ["events.csv", "events_formatted.xlsx", "review_crops", "frames", "summary.json"]
                     if (package_dir / name).exists()]

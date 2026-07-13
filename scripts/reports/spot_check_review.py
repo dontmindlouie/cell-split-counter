@@ -97,21 +97,38 @@ def _effective_verdict(verdict: dict | None, csv_confidence: float) -> str:
 
 def _build_manifest(run_dir: Path, n_per_bucket: int, seed: int) -> list[dict]:
     rows = list(csv.DictReader(open(run_dir / "events.csv")))
-    by_parent: dict[str, dict] = {}
-    for r in rows:
-        by_parent.setdefault(r["parent_id"], r)  # first row per event; daughter rows are identical for our purposes
+    # split-only: this tool's buckets (confirmed_high, gpt_floor_downgrade, etc.) are all
+    # split-review concepts and don't apply to death rows, which never went through
+    # review_ambiguous. Restricting here also avoids collision with splits sharing a
+    # (parent_id, peak_frame) key with an unrelated death (parent_id means something
+    # different for each event type -- see src/review.py's _save_debug_crops docstring).
+    splits = [r for r in rows if r.get("split_topology") in ("normal_split", "multi_way_split", "failed_split")]
+    by_split: dict[tuple, dict] = {}
+    siblings_by_split: dict[tuple, list[dict]] = {}
+    for r in splits:
+        key = (r.get("parent_id", ""), r.get("peak_frame", ""))
+        by_split.setdefault(key, r)  # first row per event; daughter rows are identical for our purposes
+        siblings_by_split.setdefault(key, []).append(r)
 
+    # Folders keyed on track_id, not parent_id (changed 2026-07-12 -- see src/review.py's
+    # _save_debug_crops docstring: parent_id collided constantly once deaths started
+    # sharing this directory with splits).
     crops_dir = run_dir / "review_crops"
-    folder_re = re.compile(r"^frame_(\d+)_parent_(\d+)$")
-    folder_by_parent: dict[str, Path] = {}
+    folder_re = re.compile(r"^frame_(\d+)_track_(\d+)$")
+    folder_by_track: dict[str, Path] = {}
     for d in crops_dir.iterdir() if crops_dir.exists() else []:
         m = folder_re.match(d.name)
         if m:
-            folder_by_parent[m.group(2)] = d
+            folder_by_track[m.group(2)] = d
 
     buckets: dict[str, list[dict]] = {name: [] for name, _ in _BUCKETS}
-    for parent_id, row in by_parent.items():
-        folder = folder_by_parent.get(parent_id)
+    for key, row in by_split.items():
+        parent_id = key[0]
+        folder = None
+        for sib in siblings_by_split.get(key, [row]):
+            folder = folder_by_track.get(sib.get("track_id", ""))
+            if folder is not None:
+                break
         if folder is None:
             continue  # no crops at all for this event -- nothing to show, skip
         verdict = _parse_verdict(folder / "verdict.txt")

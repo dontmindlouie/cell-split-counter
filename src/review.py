@@ -188,8 +188,19 @@ def _save_debug_crops(
     corner-tick marker, since these files are also read directly by researcher-facing
     report tools (researcher_browser.py, spot_check_review.py) where the marker was
     reported as distracting/unhelpful (backlog 2026-07-09, the researcher feedback).
+
+    Folder keyed on event.track_id, NOT event.parent_id (changed 2026-07-12). parent_id
+    means different things for different event types -- the dividing track for a split,
+    but the track's own distant birth-ancestor (frequently None) for a death -- so keying
+    on it collided constantly once DEATH events started sharing this same directory with
+    splits (211 split/death folder collisions found on a single real run, silently
+    overwriting each other's crops + verdict.txt). track_id is always this event's own
+    unique subject for every event type, so it can't collide this way. Split siblings
+    (both daughters of one division) still intentionally share one folder, keyed on
+    whichever daughter review_ambiguous picked as its one representative event -- that
+    part of the behavior is unchanged.
     """
-    event_debug_dir = debug_dir / f"frame_{event.frame:05d}_parent_{event.parent_id}"
+    event_debug_dir = debug_dir / f"frame_{event.frame:05d}_track_{event.track_id}"
     event_debug_dir.mkdir(parents=True, exist_ok=True)
     for pos, (idx, path) in enumerate(indexed_paths):
         label = "before" if idx < event.frame else ("split" if idx == event.frame else "after")
