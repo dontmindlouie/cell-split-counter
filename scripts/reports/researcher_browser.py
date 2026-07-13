@@ -137,7 +137,13 @@ def _interest_score(row: dict) -> tuple[int, float]:
         # classification_source == "rule" means classify_track_ends's persistence score
         # only, no vision review at all yet (see review_deaths()'s docstring). Score
         # per the maintainer's 2026-07-12 death/micronucleus/dropout guidance, not confidence.
-        reviewed = row.get("classification_source", "rule") != "rule"
+        # review_error == "1" means review_deaths() attempted the call but it failed (e.g.
+        # Azure rate-limiting -- found 2026-07-13 on TSC_batch2: 40-45% of death-review calls
+        # permanently failed after exhausting retries) -- classification_source still gets
+        # set to the model name in that case (see review.py's exception handler), so
+        # checking classification_source alone silently treated a failed review as a
+        # successful one, with an empty likely_division_dropout/ai_notes underneath.
+        reviewed = row.get("classification_source", "rule") != "rule" and row.get("review_error") != "1"
         dropout = row.get("likely_division_dropout")
         if row.get("_micronucleus_history"):
             score = 40      # death preceded by micronucleus -- genuinely interesting
@@ -344,7 +350,13 @@ def _build_manifest(
     for row in deaths:
         track_id = row.get("track_id", "")
         peak_frame = row.get("peak_frame", "")
-        reviewed = row.get("classification_source", "rule") != "rule"
+        # review_error == "1" means review_deaths() attempted the call but it failed (e.g.
+        # Azure rate-limiting -- found 2026-07-13 on TSC_batch2: 40-45% of death-review calls
+        # permanently failed after exhausting retries) -- classification_source still gets
+        # set to the model name in that case (see review.py's exception handler), so
+        # checking classification_source alone silently treated a failed review as a
+        # successful one, with an empty likely_division_dropout/ai_notes underneath.
+        reviewed = row.get("classification_source", "rule") != "rule" and row.get("review_error") != "1"
         dropout = row.get("likely_division_dropout") == "1"
         has_micro_history = bool(micronucleus_history.get(track_id))
 
