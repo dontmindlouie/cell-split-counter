@@ -238,6 +238,7 @@ def _build_manifest(
 
         events.append({
             "event_kind": "split",
+            "entry_key": f"split_{row.get('track_id', '')}_{peak_frame}",
             "parent_id": parent_id,
             "track_id": row.get("track_id", ""),
             "peak_frame": peak_frame,
@@ -285,6 +286,7 @@ def _build_manifest(
 
         events.append({
             "event_kind": "death",
+            "entry_key": f"death_{track_id}_{peak_frame}",
             "parent_id": row.get("parent_id") or "",
             "track_id": track_id,
             "peak_frame": peak_frame,
@@ -403,9 +405,12 @@ def _render_html(
     thumb_zoom: int,
 ) -> str:
     storage_key = f"researcher_{run_name}"
+    # "confirmed" here means the AI's own verdict, not a human-verified split -- see
+    # [[project_cell_split_counter_confirmed_high_reliability]], the pipeline's high-
+    # confidence tier was found to agree with a human reviewer 0-25% of the time.
     subtitle = (
-        f"{run_name} · {total_confirmed_splits} confirmed splits · "
-        f"{total_deaths} death events · {len(manifest)} shown"
+        f"{run_name} · {total_confirmed_splits} AI-confirmed splits · "
+        f"{total_deaths} death events · {len(manifest)} total events"
     )
 
     return f"""<!DOCTYPE html>
@@ -470,7 +475,7 @@ def _render_html(
 <div class="main">
   <div class="main-header">
     <h1>Researcher browser</h1>
-    <p class="subtitle">{subtitle}</p>
+    <p class="subtitle">{subtitle} · <span id="header-shown-count">{len(manifest)}</span> shown with current filters</p>
   </div>
   <div class="grid" id="grid"></div>
 </div>
@@ -569,11 +574,11 @@ def _render_html(
       }}
     }}
     if (filterAnnotatedOnly) {{
-      var a = annotations[ev.track_id];
+      var a = annotations[ev.entry_key];
       if (!a || !a.notes) return false;
     }}
     if (filterFlaggedOnly) {{
-      var a2 = annotations[ev.track_id];
+      var a2 = annotations[ev.entry_key];
       if (!a2 || !a2.followup) return false;
     }}
     return true;
@@ -600,7 +605,7 @@ def _render_html(
   }}
 
   function renderCard(ev) {{
-    var ann = annotations[ev.track_id] || {{}};
+    var ann = annotations[ev.entry_key] || {{}};
     var tier = tierClass(ev);
     var isDeath = ev.event_kind === 'death';
     var confBadge = isDeath ? '' : '<span class="conf-badge ' + confClass(ev.confidence) + '">' +
@@ -640,24 +645,24 @@ def _render_html(
     var savedNote = ann.notes ? '<span style="color:var(--text-secondary);font-style:italic;">Saved: ' +
       ann.notes.substring(0, 80) + (ann.notes.length > 80 ? '…' : '') + '</span>' : '';
 
-    return '<div class="card ' + tier + '" data-track="' + ev.track_id + '">' +
+    return '<div class="card ' + tier + '" data-key="' + ev.entry_key + '">' +
       '<div class="card-header">' +
         '<span class="frame-label">Frame ' + ev.peak_frame + '</span>' +
         confBadge + acdBadge + deathBadge +
         '<span>' + flagChips + anomalyChip + microHistChip + missedDivChip + unreviewedChip + failedChip + mismatchChip + nearChip + errChip + '</span>' +
       '</div>' +
       '<div class="filmstrip">' + filmstrip + '</div>' +
-      (ev.ai_notes ? '<div class="ai-notes">&ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
-      (ev.anomaly_notes ? '<div class="anomaly-notes">&#9888; ' + ev.anomaly_notes + '</div>' : '') +
+      (ev.ai_notes ? '<div class="ai-notes"><b>AI verdict:</b> &ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
+      (ev.anomaly_notes ? '<div class="anomaly-notes"><b>&#9888; AI anomaly note:</b> ' + ev.anomaly_notes + '</div>' : '') +
       '<div class="meta-row">' + meta + '</div>' +
       '<div class="annotation-area">' +
-        '<textarea placeholder="Researcher notes…" data-track="' + ev.track_id + '">' +
+        '<textarea placeholder="Researcher notes…" data-key="' + ev.entry_key + '">' +
           (ann.notes ? ann.notes.replace(/</g,'&lt;') : '') + '</textarea>' +
         '<label>' +
-          '<input type="checkbox" class="followup-check" data-track="' + ev.track_id + '"' +
+          '<input type="checkbox" class="followup-check" data-key="' + ev.entry_key + '"' +
           (ann.followup ? ' checked' : '') + '> Flag for follow-up' +
         '</label>' +
-        '<div class="saved-note" id="saved-' + ev.track_id + '">' + savedNote + '</div>' +
+        '<div class="saved-note" id="saved-' + ev.entry_key + '">' + savedNote + '</div>' +
       '</div>' +
     '</div>';
   }}
@@ -671,8 +676,8 @@ def _render_html(
     grid.querySelectorAll('.crop-wrap[data-idx]').forEach(function(wrap) {{
       wrap.addEventListener('click', function() {{
         var card = wrap.closest('.card');
-        var trackId = card.getAttribute('data-track');
-        var ev = manifest.find(function(e) {{ return e.track_id === trackId; }});
+        var key = card.getAttribute('data-key');
+        var ev = manifest.find(function(e) {{ return e.entry_key === key; }});
         if (ev && ev.images.length) {{
           openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10));
         }}
@@ -697,16 +702,16 @@ def _render_html(
     }});
 
     // annotation textarea → auto-save on change
-    grid.querySelectorAll('textarea[data-track]').forEach(function(ta) {{
-      var tid = ta.getAttribute('data-track');
+    grid.querySelectorAll('textarea[data-key]').forEach(function(ta) {{
+      var key = ta.getAttribute('data-key');
       var timer = null;
       ta.addEventListener('input', function() {{
         clearTimeout(timer);
         timer = setTimeout(function() {{
-          if (!annotations[tid]) annotations[tid] = {{}};
-          annotations[tid].notes = ta.value;
+          if (!annotations[key]) annotations[key] = {{}};
+          annotations[key].notes = ta.value;
           saveAnnotations(annotations);
-          var el = document.getElementById('saved-' + tid);
+          var el = document.getElementById('saved-' + key);
           if (el) el.textContent = ta.value ? 'Saved.' : '';
         }}, 600);
       }});
@@ -715,9 +720,9 @@ def _render_html(
     // follow-up checkboxes
     grid.querySelectorAll('.followup-check').forEach(function(cb) {{
       cb.addEventListener('change', function() {{
-        var tid = cb.getAttribute('data-track');
-        if (!annotations[tid]) annotations[tid] = {{}};
-        annotations[tid].followup = cb.checked;
+        var key = cb.getAttribute('data-key');
+        if (!annotations[key]) annotations[key] = {{}};
+        annotations[key].followup = cb.checked;
         saveAnnotations(annotations);
       }});
     }});
@@ -731,6 +736,8 @@ def _render_html(
     document.getElementById('stats').innerHTML =
       visibleCount + ' events shown<br>' +
       annotated + ' annotated · ' + flagged + ' flagged';
+    var headerCount = document.getElementById('header-shown-count');
+    if (headerCount) headerCount.textContent = visibleCount;
   }}
 
   // --- Filter wiring ---
@@ -775,7 +782,7 @@ def _render_html(
   document.getElementById('export-btn').addEventListener('click', function() {{
     var lines = ['track_id,parent_id,peak_frame,event_kind,researcher_notes,flagged_for_followup,ai_confidence,acd_division_type,anomaly_flags'];
     manifest.forEach(function(ev) {{
-      var ann = annotations[ev.track_id] || {{}};
+      var ann = annotations[ev.entry_key] || {{}};
       if (!ann.notes && !ann.followup) return;
       var notes = (ann.notes || '').replace(/"/g, '""');
       var flags = ev.flags.join('; ');
