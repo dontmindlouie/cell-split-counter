@@ -1,10 +1,32 @@
 """Open-book filmstrip browser for stem-cell researchers.
 
-Shows all confirmed split events from a pipeline run, sorted by biological interest
-(anomaly-flagged events first, then abnormal geometry, then normal confirmed), with
-AI verdict and notes visible from the start -- unlike spot_check_review.py, which is
-a blind QC tool. Primary audience is a researcher (or an AI assistant helping a
-researcher) exploring what happened in a video.
+Shows **potentially interesting events** from a pipeline run -- splits (normal, failed,
+multi-way), abnormal-geometry/anomaly-flagged divisions, and (2026-07-12) cell deaths --
+sorted by biological interest, with AI verdict and notes visible from the start -- unlike
+spot_check_review.py, which is a blind QC tool. Primary audience is a researcher (or an
+AI assistant helping a researcher) exploring what happened in a video.
+
+Reframed 2026-07-12 away from "confirmed splits" as the organizing concept: a spot-check
+investigation ([[project_cell_split_counter_confirmed_high_reliability]]) found the
+pipeline's own high-confidence tier agrees with a human reviewer 0-25% of the time, so
+`ai_confidence` is a sort key, never a trust signal or an auto-skip filter. Recall over
+precision -- the 2-second human glance is the real correctness backstop, this tool's job
+is just to shrink the haystack without dropping needles she'd have caught given unlimited
+attention (matches the researcher's actual triage workflow: high volume, throw away if not
+interesting, risk of missing something before discarding and having to retry -- see
+[[project_cell_split_counter_interesting_events]]).
+
+Death handling follows the maintainer's 2026-07-12 guidance -- death is not a flat in/out
+toggle: plain death is only "mildly interesting" (excluded from the default "Interesting
+only" view but still visible with it unchecked); death traceable to an earlier
+micronucleus-flagged division of the same track is treated as tier-1 interesting
+(micronucleus is a known precursor to death); a death the vision model called a likely
+tracking dropout during division is flagged separately as a probable missed division, not
+a death, since review_deaths() already makes that call. Distinguishing "drifted out of
+the z-axis" (not interesting) from "died in-plane" (interesting) is NOT implemented --
+review_deaths()'s prompt has no such option yet -- so that distinction cannot be surfaced
+here; treat plain "mildly interesting" deaths as an unfiltered mix of both until that's
+built.
 
 Annotations (free-text researcher notes + flag-for-followup) are stored in browser
 localStorage and survive page reloads. Use the Export button to download
@@ -66,7 +88,11 @@ def _is_split_type_mismatch(row: dict) -> bool:
 
 
 def _interest_score(row: dict) -> tuple[int, float]:
-    """Return (tier_score, confidence) for sorting. Higher = more interesting."""
+    """Return (tier_score, confidence) for sorting. Higher = more interesting.
+
+    row may carry a synthetic "_micronucleus_history" key (see _build_manifest) --
+    death-only, never present in the raw CSV.
+    """
     conf_col = _conf_col(row)
     conf = float(row.get(conf_col) or 0)
     acd = (row.get("acd_division_type") or "").lower()
@@ -74,6 +100,29 @@ def _interest_score(row: dict) -> tuple[int, float]:
     has_anomaly = any(row.get(f) == "1" for f in _FLAG_COLS) or bool((row.get("anomaly_notes") or "").strip())
     is_failed = row.get("split_topology") == "failed_split"
     mismatch = _is_split_type_mismatch(row)
+    is_death = row.get("split_topology") == "death"
+
+    if is_death:
+        # Deaths never carry ai_confidence in the "trustworthy real/FP" sense splits do --
+        # classification_source == "rule" means classify_track_ends's persistence score
+        # only, no vision review at all yet (see review_deaths()'s docstring). Score
+        # per the maintainer's 2026-07-12 death/micronucleus/dropout guidance, not confidence.
+        reviewed = row.get("classification_source", "rule") != "rule"
+        dropout = row.get("likely_division_dropout")
+        if row.get("_micronucleus_history"):
+            score = 40      # death preceded by micronucleus -- genuinely interesting
+        elif not reviewed:
+            score = 3       # rule-only guess, ~most turn out to be tracking dropouts (see
+                             # [[project_cell_split_counter_interesting_events]] M5 finding:
+                             # 139/194 rule-only deaths were dropouts) -- not trustworthy
+        elif dropout == "1":
+            score = 15      # probable missed division, not a death -- a pipeline gap worth
+                             # a look, but not new biology
+        else:
+            score = 8       # plain reviewed real death -- "mildly interesting" per the maintainer
+        if near:
+            score -= 3
+        return score, conf
 
     if conf <= 0:
         score = 5          # false positive / unconfirmed
@@ -94,6 +143,21 @@ def _interest_score(row: dict) -> tuple[int, float]:
     return score, conf
 
 
+def _birth_micronucleus_by_track(rows: list[dict]) -> dict[str, bool]:
+    """Map track_id -> True if that track's OWN birth event (the split row where it first
+    appears as a new daughter track_id) had micronucleus flagged. Most tracks in a run have
+    no birth-split row at all (alive since frame 0) and are simply absent from this dict --
+    callers should treat a missing key as "no history available", not "no micronucleus"."""
+    birth: dict[str, bool] = {}
+    for r in rows:
+        if r.get("split_topology") not in ("normal_split", "multi_way_split", "failed_split"):
+            continue
+        tid = r.get("track_id")
+        if tid and tid not in birth:
+            birth[tid] = r.get("micronucleus") == "1"
+    return birth
+
+
 def _build_manifest(
     run_dir: Path,
     min_conf: float,
@@ -102,8 +166,10 @@ def _build_manifest(
 ) -> list[dict]:
     rows = list(csv.DictReader(open(run_dir / "events.csv", encoding="utf-8", errors="replace")))
 
-    # Deduplicate to one row per unique split point
+    # Deduplicate to one row per unique split point; keep every sibling too (folder lookup
+    # below needs to try each daughter's track_id, not just the first row's).
     by_split: dict[tuple, dict] = {}
+    siblings_by_split: dict[tuple, list[dict]] = {}
     for r in rows:
         # failed_split included 2026-07-09 -- previously excluded entirely, meaning a real,
         # confirmed failed division was invisible in this tool despite being a distinct,
@@ -112,17 +178,45 @@ def _build_manifest(
         if r.get("split_topology") not in ("normal_split", "multi_way_split", "failed_split"):
             continue
         key = (r.get("parent_id", ""), r.get("peak_frame", ""))
-        if key not in by_split:
-            by_split[key] = r
+        by_split.setdefault(key, r)
+        siblings_by_split.setdefault(key, []).append(r)
 
+    deaths = [r for r in rows if r.get("split_topology") == "death"]
+    micronucleus_history = _birth_micronucleus_by_track(rows)
+
+    # Folders are keyed on track_id (changed 2026-07-12 -- see src/review.py's
+    # _save_debug_crops docstring for why parent_id collided between splits and deaths).
     crops_dir = run_dir / "review_crops"
-    folder_re = re.compile(r"^frame_(\d+)_parent_(\d+)$")
-    folder_by_parent: dict[str, Path] = {}
+    folder_re = re.compile(r"^frame_(\d+)_track_(\d+)$")
+    folder_by_track: dict[str, Path] = {}
     if crops_dir.exists():
         for d in crops_dir.iterdir():
             m = folder_re.match(d.name)
             if m:
-                folder_by_parent[m.group(2)] = d
+                folder_by_track[m.group(2)] = d
+
+    def _resolve_crops(candidate_track_ids: list[str], peak_frame: str, centroid_x: str, centroid_y: str) -> tuple[list[str], float, float]:
+        folder = None
+        for tid in candidate_track_ids:
+            folder = folder_by_track.get(tid)
+            if folder is not None:
+                break
+        if folder is None:
+            return [], 50.0, 50.0
+        imgs = _sampled_only(sorted(folder.glob("*.png")), int(peak_frame))
+        if not imgs:
+            return [], 50.0, 50.0
+        crosshair_x_pct, crosshair_y_pct = 50.0, 50.0
+        try:
+            crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(
+                imgs[0],
+                float(centroid_x or _CROP_RADIUS),
+                float(centroid_y or _CROP_RADIUS),
+            )
+        except Exception:
+            pass
+        images = [f"../review_crops/{folder.name}/{p.name}" for p in imgs]
+        return images, crosshair_x_pct, crosshair_y_pct
 
     events = []
     for (parent_id, peak_frame), row in by_split.items():
@@ -133,30 +227,19 @@ def _build_manifest(
         if conf < min_conf and not include_fps:
             continue
 
-        folder = folder_by_parent.get(parent_id)
-        images: list[str] = []
-        crosshair_x_pct = 50.0
-        crosshair_y_pct = 50.0
-
-        if folder is not None:
-            imgs = _sampled_only(sorted(folder.glob("*.png")), int(peak_frame))
-            if imgs:
-                try:
-                    crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(
-                        imgs[0],
-                        float(row.get("centroid_x") or _CROP_RADIUS),
-                        float(row.get("centroid_y") or _CROP_RADIUS),
-                    )
-                except Exception:
-                    pass
-                images = [f"../review_crops/{folder.name}/{p.name}" for p in imgs]
+        candidate_ids = [s.get("track_id", "") for s in siblings_by_split.get((parent_id, peak_frame), [row])]
+        images, crosshair_x_pct, crosshair_y_pct = _resolve_crops(
+            candidate_ids, peak_frame, row.get("centroid_x"), row.get("centroid_y")
+        )
 
         flags = [_FLAG_LABELS[f] for f in _FLAG_COLS if row.get(f) == "1"]
         acd = row.get("acd_division_type") or ""
         score, _ = _interest_score(row)
 
         events.append({
+            "event_kind": "split",
             "parent_id": parent_id,
+            "track_id": row.get("track_id", ""),
             "peak_frame": peak_frame,
             "confidence": conf,
             "raw_ai_confidence": row.get("raw_ai_confidence") or None,
@@ -172,6 +255,57 @@ def _build_manifest(
             "split_type": row.get("split_type") or "",
             "is_failed_split": row.get("split_topology") == "failed_split",
             "split_type_mismatch": _is_split_type_mismatch(row),
+            "is_death": False,
+            "death_reviewed": False,
+            "likely_missed_division": False,
+            "micronucleus_history": False,
+            "images": images,
+            "has_crops": len(images) > 0,
+            "crosshair_x_pct": round(crosshair_x_pct, 2),
+            "crosshair_y_pct": round(crosshair_y_pct, 2),
+            "interest_score": score,
+        })
+
+    for row in deaths:
+        track_id = row.get("track_id", "")
+        peak_frame = row.get("peak_frame", "")
+        reviewed = row.get("classification_source", "rule") != "rule"
+        dropout = row.get("likely_division_dropout") == "1"
+        has_micro_history = bool(micronucleus_history.get(track_id))
+
+        # Score against a copy carrying the synthetic history flag -- keeps _interest_score
+        # ignorant of how that flag gets computed (birth-split lookup lives here, not there).
+        scored_row = dict(row)
+        scored_row["_micronucleus_history"] = has_micro_history
+        score, conf = _interest_score(scored_row)
+
+        images, crosshair_x_pct, crosshair_y_pct = _resolve_crops(
+            [track_id], peak_frame, row.get("centroid_x"), row.get("centroid_y")
+        )
+
+        events.append({
+            "event_kind": "death",
+            "parent_id": row.get("parent_id") or "",
+            "track_id": track_id,
+            "peak_frame": peak_frame,
+            "confidence": conf,
+            "raw_ai_confidence": row.get("raw_ai_confidence") or None,
+            "acd_division_type": "",
+            "flags": [],
+            "near_edge": row.get("near_edge") == "1",
+            "bleach_risk": row.get("bleach_risk") or None,
+            "classification_source": row.get("classification_source") or "",
+            "ai_notes": row.get("ai_notes") or "",
+            "anomaly_notes": row.get("anomaly_notes") or "",
+            "review_error": row.get("review_error") == "1",
+            "split_topology": "death",
+            "split_type": "",
+            "is_failed_split": False,
+            "split_type_mismatch": False,
+            "is_death": True,
+            "death_reviewed": reviewed,
+            "likely_missed_division": reviewed and dropout,
+            "micronucleus_history": has_micro_history,
             "images": images,
             "has_crops": len(images) > 0,
             "crosshair_x_pct": round(crosshair_x_pct, 2),
@@ -228,6 +362,7 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .conf-mid{background:var(--warning-wash);color:var(--warning);}
 .conf-low{background:var(--critical-wash);color:var(--critical);}
 .acd-badge{font-size:11.5px;padding:2px 8px;border-radius:4px;background:var(--tier2-wash);color:var(--tier2);white-space:nowrap;}
+.death-badge{background:var(--critical-wash);color:var(--critical);}
 .flag-chip{display:inline-block;font-size:11px;padding:2px 7px;border-radius:4px;background:var(--tier1-wash);color:var(--tier1);margin-right:4px;margin-bottom:4px;white-space:nowrap;}
 .near-edge-chip{background:var(--warning-wash);color:var(--warning);}
 .error-chip{background:var(--critical-wash);color:var(--critical);}
@@ -263,11 +398,15 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 def _render_html(
     manifest: list[dict],
     run_name: str,
-    total_confirmed: int,
+    total_confirmed_splits: int,
+    total_deaths: int,
     thumb_zoom: int,
 ) -> str:
     storage_key = f"researcher_{run_name}"
-    subtitle = f"{run_name} · {total_confirmed} confirmed splits · {len(manifest)} shown"
+    subtitle = (
+        f"{run_name} · {total_confirmed_splits} confirmed splits · "
+        f"{total_deaths} death events · {len(manifest)} shown"
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -282,7 +421,13 @@ def _render_html(
   <div class="run-name" id="run-name-label">{run_name}</div>
 
   <div class="filter-group">
-    <label title="Anomaly-flagged, failed division, split_type mismatch, or abnormal (tripolar/multipolar) geometry — same tiering that colors the card border."><input type="checkbox" id="filter-interesting-only" checked> Interesting only</label>
+    <label title="Anomaly-flagged/failed/mismatched split, abnormal geometry, or a death traceable to an earlier micronucleus-flagged division — same tiering that colors the card border. Plain reviewed deaths and low-confidence splits are 'mildly interesting' and stay hidden here on purpose."><input type="checkbox" id="filter-interesting-only" checked> Interesting only</label>
+  </div>
+
+  <div class="filter-group">
+    <label>Cell death events</label>
+    <label><input type="checkbox" id="filter-show-deaths" checked> Show death events</label>
+    <label><input type="checkbox" id="filter-hide-unreviewed-deaths" checked> Hide not-yet-reviewed deaths</label>
   </div>
 
   <div class="filter-group">
@@ -396,12 +541,18 @@ def _render_html(
   var filterHideNearEdge = false;
   var filterHideFps = true;
   var filterInterestingOnly = true;
+  var filterShowDeaths = true;
+  var filterHideUnreviewedDeaths = true;
 
   function passesFilter(ev) {{
+    if (ev.event_kind === 'death') {{
+      if (!filterShowDeaths) return false;
+      if (filterHideUnreviewedDeaths && ev.classification_source === 'rule') return false;
+    }}
     if (filterInterestingOnly && tierClass(ev) === '') return false;
-    if (filterHideFps && ev.confidence <= 0) return false;
+    if (filterHideFps && ev.event_kind !== 'death' && ev.confidence <= 0) return false;
     if (filterHideNearEdge && ev.near_edge) return false;
-    if (filterMinConf > 0 && ev.confidence < filterMinConf) return false;
+    if (filterMinConf > 0 && ev.event_kind !== 'death' && ev.confidence < filterMinConf) return false;
     if (filterAcd && ev.acd_division_type !== filterAcd) return false;
     if (filterFlags.length > 0) {{
       // event must have ALL checked flags in its flags array
@@ -418,11 +569,11 @@ def _render_html(
       }}
     }}
     if (filterAnnotatedOnly) {{
-      var a = annotations[ev.parent_id];
+      var a = annotations[ev.track_id];
       if (!a || !a.notes) return false;
     }}
     if (filterFlaggedOnly) {{
-      var a2 = annotations[ev.parent_id];
+      var a2 = annotations[ev.track_id];
       if (!a2 || !a2.followup) return false;
     }}
     return true;
@@ -436,6 +587,12 @@ def _render_html(
   }}
 
   function tierClass(ev) {{
+    if (ev.event_kind === 'death') {{
+      if (ev.micronucleus_history) return 'tier1';
+      return '';   // plain death (reviewed or not) and probable missed-division are both
+                   // "mildly interesting" at most -- deliberately excluded from the
+                   // default Interesting-only view, per the maintainer's 2026-07-12 guidance.
+    }}
     if ((ev.flags.length > 0 || ev.anomaly_notes) && ev.confidence >= 0.5) return 'tier1';
     if (ev.is_failed_split || ev.split_type_mismatch) return 'tier1';
     if (ev.acd_division_type === 'tripolar' || ev.acd_division_type === 'multipolar') return 'tier2';
@@ -443,17 +600,22 @@ def _render_html(
   }}
 
   function renderCard(ev) {{
-    var ann = annotations[ev.parent_id] || {{}};
+    var ann = annotations[ev.track_id] || {{}};
     var tier = tierClass(ev);
-    var confBadge = '<span class="conf-badge ' + confClass(ev.confidence) + '">' +
+    var isDeath = ev.event_kind === 'death';
+    var confBadge = isDeath ? '' : '<span class="conf-badge ' + confClass(ev.confidence) + '">' +
       (ev.confidence > 0 ? ev.confidence.toFixed(2) : 'FP') + '</span>';
     var acdBadge = ev.acd_division_type ? '<span class="acd-badge">' + ev.acd_division_type + '</span>' : '';
+    var deathBadge = isDeath ? '<span class="acd-badge death-badge">death</span>' : '';
     var flagChips = ev.flags.map(function(f) {{ return '<span class="flag-chip">' + f + '</span>'; }}).join('');
     var nearChip = ev.near_edge ? '<span class="flag-chip near-edge-chip">near edge</span>' : '';
     var errChip = ev.review_error ? '<span class="flag-chip error-chip">review error</span>' : '';
     var failedChip = ev.is_failed_split ? '<span class="flag-chip near-edge-chip">failed division</span>' : '';
     var mismatchChip = ev.split_type_mismatch ? '<span class="flag-chip error-chip">split_type mismatch: model saw multi_way</span>' : '';
     var anomalyChip = ev.anomaly_notes ? '<span class="flag-chip">anomaly noted</span>' : '';
+    var microHistChip = ev.micronucleus_history ? '<span class="flag-chip">micronucleus history</span>' : '';
+    var missedDivChip = ev.likely_missed_division ? '<span class="flag-chip near-edge-chip">possible missed division, not a death</span>' : '';
+    var unreviewedChip = (isDeath && !ev.death_reviewed) ? '<span class="flag-chip near-edge-chip">not yet vision-reviewed</span>' : '';
 
     var filmstrip = '';
     if (ev.images.length > 0) {{
@@ -472,30 +634,30 @@ def _render_html(
 
     var rawConf = ev.raw_ai_confidence ? ' (raw: ' + parseFloat(ev.raw_ai_confidence).toFixed(2) + ')' : '';
     var bleach = ev.bleach_risk ? ' · bleach risk: ' + parseFloat(ev.bleach_risk).toFixed(2) : '';
-    var meta = 'frame ' + ev.peak_frame + ' · parent ' + ev.parent_id +
+    var meta = 'frame ' + ev.peak_frame + ' · track ' + ev.track_id +
       ' · ' + (ev.classification_source || 'rule') + rawConf + bleach;
 
     var savedNote = ann.notes ? '<span style="color:var(--text-secondary);font-style:italic;">Saved: ' +
       ann.notes.substring(0, 80) + (ann.notes.length > 80 ? '…' : '') + '</span>' : '';
 
-    return '<div class="card ' + tier + '" data-parent="' + ev.parent_id + '">' +
+    return '<div class="card ' + tier + '" data-track="' + ev.track_id + '">' +
       '<div class="card-header">' +
         '<span class="frame-label">Frame ' + ev.peak_frame + '</span>' +
-        confBadge + acdBadge +
-        '<span>' + flagChips + anomalyChip + failedChip + mismatchChip + nearChip + errChip + '</span>' +
+        confBadge + acdBadge + deathBadge +
+        '<span>' + flagChips + anomalyChip + microHistChip + missedDivChip + unreviewedChip + failedChip + mismatchChip + nearChip + errChip + '</span>' +
       '</div>' +
       '<div class="filmstrip">' + filmstrip + '</div>' +
       (ev.ai_notes ? '<div class="ai-notes">&ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
       (ev.anomaly_notes ? '<div class="anomaly-notes">&#9888; ' + ev.anomaly_notes + '</div>' : '') +
       '<div class="meta-row">' + meta + '</div>' +
       '<div class="annotation-area">' +
-        '<textarea placeholder="Researcher notes…" data-parent="' + ev.parent_id + '">' +
+        '<textarea placeholder="Researcher notes…" data-track="' + ev.track_id + '">' +
           (ann.notes ? ann.notes.replace(/</g,'&lt;') : '') + '</textarea>' +
         '<label>' +
-          '<input type="checkbox" class="followup-check" data-parent="' + ev.parent_id + '"' +
+          '<input type="checkbox" class="followup-check" data-track="' + ev.track_id + '"' +
           (ann.followup ? ' checked' : '') + '> Flag for follow-up' +
         '</label>' +
-        '<div class="saved-note" id="saved-' + ev.parent_id + '">' + savedNote + '</div>' +
+        '<div class="saved-note" id="saved-' + ev.track_id + '">' + savedNote + '</div>' +
       '</div>' +
     '</div>';
   }}
@@ -509,8 +671,8 @@ def _render_html(
     grid.querySelectorAll('.crop-wrap[data-idx]').forEach(function(wrap) {{
       wrap.addEventListener('click', function() {{
         var card = wrap.closest('.card');
-        var parentId = card.getAttribute('data-parent');
-        var ev = manifest.find(function(e) {{ return e.parent_id === parentId; }});
+        var trackId = card.getAttribute('data-track');
+        var ev = manifest.find(function(e) {{ return e.track_id === trackId; }});
         if (ev && ev.images.length) {{
           openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10));
         }}
@@ -535,16 +697,16 @@ def _render_html(
     }});
 
     // annotation textarea → auto-save on change
-    grid.querySelectorAll('textarea[data-parent]').forEach(function(ta) {{
-      var pid = ta.getAttribute('data-parent');
+    grid.querySelectorAll('textarea[data-track]').forEach(function(ta) {{
+      var tid = ta.getAttribute('data-track');
       var timer = null;
       ta.addEventListener('input', function() {{
         clearTimeout(timer);
         timer = setTimeout(function() {{
-          if (!annotations[pid]) annotations[pid] = {{}};
-          annotations[pid].notes = ta.value;
+          if (!annotations[tid]) annotations[tid] = {{}};
+          annotations[tid].notes = ta.value;
           saveAnnotations(annotations);
-          var el = document.getElementById('saved-' + pid);
+          var el = document.getElementById('saved-' + tid);
           if (el) el.textContent = ta.value ? 'Saved.' : '';
         }}, 600);
       }});
@@ -553,9 +715,9 @@ def _render_html(
     // follow-up checkboxes
     grid.querySelectorAll('.followup-check').forEach(function(cb) {{
       cb.addEventListener('change', function() {{
-        var pid = cb.getAttribute('data-parent');
-        if (!annotations[pid]) annotations[pid] = {{}};
-        annotations[pid].followup = cb.checked;
+        var tid = cb.getAttribute('data-track');
+        if (!annotations[tid]) annotations[tid] = {{}};
+        annotations[tid].followup = cb.checked;
         saveAnnotations(annotations);
       }});
     }});
@@ -602,17 +764,23 @@ def _render_html(
   document.getElementById('filter-interesting-only').addEventListener('change', function() {{
     filterInterestingOnly = this.checked; renderGrid();
   }});
+  document.getElementById('filter-show-deaths').addEventListener('change', function() {{
+    filterShowDeaths = this.checked; renderGrid();
+  }});
+  document.getElementById('filter-hide-unreviewed-deaths').addEventListener('change', function() {{
+    filterHideUnreviewedDeaths = this.checked; renderGrid();
+  }});
 
   // --- Export ---
   document.getElementById('export-btn').addEventListener('click', function() {{
-    var lines = ['parent_id,peak_frame,researcher_notes,flagged_for_followup,ai_confidence,acd_division_type,anomaly_flags'];
+    var lines = ['track_id,parent_id,peak_frame,event_kind,researcher_notes,flagged_for_followup,ai_confidence,acd_division_type,anomaly_flags'];
     manifest.forEach(function(ev) {{
-      var ann = annotations[ev.parent_id] || {{}};
+      var ann = annotations[ev.track_id] || {{}};
       if (!ann.notes && !ann.followup) return;
       var notes = (ann.notes || '').replace(/"/g, '""');
       var flags = ev.flags.join('; ');
       lines.push([
-        ev.parent_id, ev.peak_frame,
+        ev.track_id, ev.parent_id, ev.peak_frame, ev.event_kind,
         '"' + notes + '"',
         ann.followup ? '1' : '0',
         ev.confidence, ev.acd_division_type,
@@ -659,6 +827,7 @@ def generate(
 
     conf_col = _conf_col(splits[0]) if splits else "ai_confidence"
     confirmed = sum(1 for r in by_split.values() if float(r.get(conf_col) or 0) > 0)
+    total_deaths = sum(1 for r in all_rows if r.get("split_topology") == "death")
 
     manifest = _build_manifest(run_dir, min_conf, include_fps, thumb_zoom)
     if not manifest:
@@ -668,17 +837,23 @@ def generate(
     out_path = out if out else run_dir / "reports" / "researcher_browser.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    html = _render_html(manifest, run_dir.name, confirmed, thumb_zoom)
+    html = _render_html(manifest, run_dir.name, confirmed, total_deaths, thumb_zoom)
     out_path.write_text(html, encoding="utf-8")
 
     anomaly_count = sum(1 for e in manifest if e["flags"] or e["anomaly_notes"])
     abnormal_geom = sum(1 for e in manifest if e["acd_division_type"] in ("tripolar", "multipolar"))
     failed_count = sum(1 for e in manifest if e["is_failed_split"])
     mismatch_count = sum(1 for e in manifest if e["split_type_mismatch"])
+    death_reviewed = sum(1 for e in manifest if e["is_death"] and e["death_reviewed"])
+    death_micro = sum(1 for e in manifest if e["micronucleus_history"])
+    death_missed_div = sum(1 for e in manifest if e["likely_missed_division"])
     print(f"  [researcher_browser] wrote {out_path}")
-    print(f"    {len(manifest)} events · {confirmed} confirmed splits total")
-    print(f"    {anomaly_count} anomaly-flagged · {abnormal_geom} tripolar/multipolar · "
+    print(f"    {len(manifest)} events · {confirmed} confirmed splits · {total_deaths} deaths total")
+    print(f"    splits: {anomaly_count} anomaly-flagged · {abnormal_geom} tripolar/multipolar · "
           f"{failed_count} failed_split · {mismatch_count} split_type mismatch")
+    print(f"    deaths: {death_reviewed}/{total_deaths} vision-reviewed · "
+          f"{death_micro} with micronucleus history (tier-1 interesting) · "
+          f"{death_missed_div} flagged as probable missed division")
     return out_path
 
 
