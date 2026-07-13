@@ -63,7 +63,8 @@ def write_events_csv(events: list[LineageEvent], out_path: Path, source_video: s
 
 
 def write_summary_json(
-    events: list[LineageEvent], video_metadata: dict, out_path: Path, vision_usage: dict | None = None
+    events: list[LineageEvent], video_metadata: dict, out_path: Path,
+    vision_usage: dict | None = None, timing_sec: dict | None = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     counts = Counter(e.event_type.value for e in events)
@@ -74,5 +75,7 @@ def write_summary_json(
     }
     if vision_usage is not None:
         summary["vision_usage"] = vision_usage
+    if timing_sec is not None:
+        summary["timing_sec"] = timing_sec
     with open(out_path, "w") as f:
         json.dump(summary, f, indent=2)

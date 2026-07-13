@@ -1,6 +1,7 @@
 """End-to-end orchestration: video in, events out."""
 
 import dataclasses
+import time
 from pathlib import Path
 
 import cv2
@@ -34,6 +35,8 @@ def run(
     min_gpt_confidence: float = 0.85,
     review_death_events: bool = True,
 ) -> None:
+    t_start = time.time()
+
     if pixel_size_um is None:
         pixel_size_um = get_pixel_size_um(config.video_path)
 
@@ -55,6 +58,8 @@ def run(
     else:
         masks_by_frame = segment_all(frame_paths, model_type=segmentation_model)
         tracks = link_frames(masks_by_frame)
+
+    t_after_track = time.time()
 
     total_frames = len(frame_paths)
     events = classify_events(tracks, config.roi) + classify_track_ends(tracks, last_frame=total_frames - 1)
@@ -106,11 +111,15 @@ def run(
         gpt_reasoning_effort=gpt_reasoning_effort, min_gpt_confidence=min_gpt_confidence,
     )
 
+    t_after_splits = time.time()
+
     death_vision_usage: dict = {}
     reviewed_deaths = review_deaths(
         deaths, frame_dir, backend=vision_backend, save_debug_crops=save_debug_crops,
         usage_out=death_vision_usage, gpt_reasoning_effort=gpt_reasoning_effort,
     ) if review_death_events else deaths
+
+    t_after_deaths = time.time()
 
     events = reviewed_splits + reviewed_deaths
 
@@ -121,11 +130,24 @@ def run(
         "deaths": death_vision_usage,
         "estimated_cost_usd": split_cost + death_cost,
     }
+    # Wall-clock timing, not just cost/token counts -- added 2026-07-13 after estimating
+    # a new run's duration from memory of an unrelated slow run (a heavily-throttled M4
+    # validation rerun) rather than any actually-recorded number, and being off by 4-8x.
+    # Broken into segmentation+tracking (scales with frame count, local GPU-bound) vs.
+    # split/death review (scales with candidate count, network/quota-bound) since those
+    # scale on different axes -- a single total wouldn't transfer to a differently-shaped
+    # video (e.g. more frames but fewer split candidates).
+    timing_sec = {
+        "extract_segment_track": round(t_after_track - t_start, 1),
+        "split_review": round(t_after_splits - t_after_track, 1),
+        "death_review": round(t_after_deaths - t_after_splits, 1),
+        "total": round(t_after_deaths - t_start, 1),
+    }
 
     write_events_csv(events, output_dir / "events.csv", source_video=config.video_path.name)
     write_summary_json(
         events, {"video_path": str(config.video_path), "pixel_size_um": pixel_size_um},
-        output_dir / "summary.json", vision_usage=vision_usage
+        output_dir / "summary.json", vision_usage=vision_usage, timing_sec=timing_sec,
     )
 
     # Auto-generate the researcher review + death shape HTML reports so they're ready

@@ -661,7 +661,13 @@ def review_deaths(
         api_key = os.environ.get("AZURE_OPENAI_API_KEY")
         if not endpoint or not api_key:
             raise EnvironmentError("AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY not set — cannot run GPT vision review")
-        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview")
+        # max_retries default (2) wasn't enough to ride out sustained rate-limiting once
+        # max_workers concurrent calls started bursting past the shared Azure TPM quota's
+        # sustainable per-second rate -- found 2026-07-13 on TSC_batch2, 40-45% of death
+        # review calls permanently failed after exhausting the SDK's default retry budget
+        # within ~1-2 seconds of jittered backoff. Bumped so the SDK's own exponential
+        # backoff gets more attempts before giving up and surfacing as a review_error row.
+        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview", max_retries=8)
         resolved_model = model or GPT_DEPLOYMENT
         review_fn = review_death_gpt
 
@@ -798,7 +804,13 @@ def review_ambiguous(
         api_key = os.environ.get("AZURE_OPENAI_API_KEY")
         if not endpoint or not api_key:
             raise EnvironmentError("AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY not set — cannot run GPT vision review")
-        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview")
+        # max_retries default (2) wasn't enough to ride out sustained rate-limiting once
+        # max_workers concurrent calls started bursting past the shared Azure TPM quota's
+        # sustainable per-second rate -- found 2026-07-13 on TSC_batch2, 40-45% of death
+        # review calls permanently failed after exhausting the SDK's default retry budget
+        # within ~1-2 seconds of jittered backoff. Bumped so the SDK's own exponential
+        # backoff gets more attempts before giving up and surfacing as a review_error row.
+        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview", max_retries=8)
         resolved_model = model or GPT_DEPLOYMENT
         review_fn = review_and_classify_gpt
 
