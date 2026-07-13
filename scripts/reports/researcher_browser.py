@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.reports._crop_shared import CROP_RADIUS as _CROP_RADIUS
 from scripts.reports._crop_shared import centroid_in_crop_pct as _centroid_in_crop_pct
+from scripts.reports._crop_shared import frame_idx_from_name as _frame_idx_from_name
 from scripts.reports._crop_shared import sampled_only as _sampled_only
 
 _FLAG_COLS = [
@@ -195,17 +196,19 @@ def _build_manifest(
             if m:
                 folder_by_track[m.group(2)] = d
 
-    def _resolve_crops(candidate_track_ids: list[str], peak_frame: str, centroid_x: str, centroid_y: str) -> tuple[list[str], float, float]:
+    def _resolve_crops(candidate_track_ids: list[str], peak_frame: str, centroid_x: str, centroid_y: str) -> dict:
+        empty = {"images": [], "dense_images": [], "has_dense": False, "crosshair_x_pct": 50.0, "crosshair_y_pct": 50.0}
         folder = None
         for tid in candidate_track_ids:
             folder = folder_by_track.get(tid)
             if folder is not None:
                 break
         if folder is None:
-            return [], 50.0, 50.0
-        imgs = _sampled_only(sorted(folder.glob("*.png")), int(peak_frame))
+            return empty
+        all_imgs = sorted(folder.glob("*.png"))
+        imgs = _sampled_only(all_imgs, int(peak_frame))
         if not imgs:
-            return [], 50.0, 50.0
+            return empty
         crosshair_x_pct, crosshair_y_pct = 50.0, 50.0
         try:
             crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(
@@ -216,7 +219,21 @@ def _build_manifest(
         except Exception:
             pass
         images = [f"../review_crops/{folder.name}/{p.name}" for p in imgs]
-        return images, crosshair_x_pct, crosshair_y_pct
+        # Every consecutive frame in the review window is saved to disk (_build_dense_debug_
+        # window, src/review.py) even though the AI only sees the stride-sampled subset above --
+        # exposing it here lets a researcher ask for more temporal context around a slow/subtle
+        # event without any new crop generation (2026-07-12 real-usage feedback: repeated
+        # requests for "more frames" that were already sitting on disk, just not surfaced).
+        dense_names = {p.name for p in imgs}
+        dense_images = [
+            {"src": f"../review_crops/{folder.name}/{p.name}", "sampled": p.name in dense_names}
+            for p in all_imgs if p.name != "verdict.txt" and _frame_idx_from_name(p.name) is not None
+        ]
+        has_dense = len(dense_images) > len(images)
+        return {
+            "images": images, "dense_images": dense_images, "has_dense": has_dense,
+            "crosshair_x_pct": crosshair_x_pct, "crosshair_y_pct": crosshair_y_pct,
+        }
 
     events = []
     for (parent_id, peak_frame), row in by_split.items():
@@ -228,9 +245,7 @@ def _build_manifest(
             continue
 
         candidate_ids = [s.get("track_id", "") for s in siblings_by_split.get((parent_id, peak_frame), [row])]
-        images, crosshair_x_pct, crosshair_y_pct = _resolve_crops(
-            candidate_ids, peak_frame, row.get("centroid_x"), row.get("centroid_y")
-        )
+        crops = _resolve_crops(candidate_ids, peak_frame, row.get("centroid_x"), row.get("centroid_y"))
 
         flags = [_FLAG_LABELS[f] for f in _FLAG_COLS if row.get(f) == "1"]
         acd = row.get("acd_division_type") or ""
@@ -260,10 +275,12 @@ def _build_manifest(
             "death_reviewed": False,
             "likely_missed_division": False,
             "micronucleus_history": False,
-            "images": images,
-            "has_crops": len(images) > 0,
-            "crosshair_x_pct": round(crosshair_x_pct, 2),
-            "crosshair_y_pct": round(crosshair_y_pct, 2),
+            "images": crops["images"],
+            "dense_images": crops["dense_images"],
+            "has_dense": crops["has_dense"],
+            "has_crops": len(crops["images"]) > 0,
+            "crosshair_x_pct": round(crops["crosshair_x_pct"], 2),
+            "crosshair_y_pct": round(crops["crosshair_y_pct"], 2),
             "interest_score": score,
         })
 
@@ -280,9 +297,7 @@ def _build_manifest(
         scored_row["_micronucleus_history"] = has_micro_history
         score, conf = _interest_score(scored_row)
 
-        images, crosshair_x_pct, crosshair_y_pct = _resolve_crops(
-            [track_id], peak_frame, row.get("centroid_x"), row.get("centroid_y")
-        )
+        crops = _resolve_crops([track_id], peak_frame, row.get("centroid_x"), row.get("centroid_y"))
 
         events.append({
             "event_kind": "death",
@@ -308,10 +323,12 @@ def _build_manifest(
             "death_reviewed": reviewed,
             "likely_missed_division": reviewed and dropout,
             "micronucleus_history": has_micro_history,
-            "images": images,
-            "has_crops": len(images) > 0,
-            "crosshair_x_pct": round(crosshair_x_pct, 2),
-            "crosshair_y_pct": round(crosshair_y_pct, 2),
+            "images": crops["images"],
+            "dense_images": crops["dense_images"],
+            "has_dense": crops["has_dense"],
+            "has_crops": len(crops["images"]) > 0,
+            "crosshair_x_pct": round(crops["crosshair_x_pct"], 2),
+            "crosshair_y_pct": round(crops["crosshair_y_pct"], 2),
             "interest_score": score,
         })
 
@@ -372,6 +389,9 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .crop-wrap{position:relative;display:inline-block;line-height:0;border-radius:4px;overflow:hidden;border:1px solid var(--border);cursor:zoom-in;flex-shrink:0;}
 .crop-thumb{display:block;width:120px;height:120px;background-repeat:no-repeat;background-color:var(--border);}
 .crop-thumb.loading{background-image:none!important;}
+.crop-wrap.dense-skipped{opacity:0.5;}
+.crop-wrap.dense-sampled{border-color:var(--good);border-width:2px;}
+.dense-legend{font-size:11.5px;color:var(--text-muted);margin:0 0 8px;}
 
 .no-crops-note{font-size:12px;color:var(--text-muted);padding:8px 0;}
 .ai-notes{font-size:13px;color:var(--text-secondary);line-height:1.55;margin:6px 0 10px;font-style:italic;}
@@ -465,6 +485,7 @@ def _render_html(
     <label><input type="checkbox" id="filter-flagged-only"> Flagged for follow-up only</label>
     <label><input type="checkbox" id="filter-hide-near-edge"> Hide near-edge</label>
     <label><input type="checkbox" id="filter-hide-fps" checked> Hide false positives</label>
+    <label title="Every consecutive frame in the review window is saved on disk even though the AI only sees every 3rd -- this shows all of them, dimming the ones the AI didn't see."><input type="checkbox" id="filter-dense-mode"> Show every frame (more context)</label>
   </div>
 
   <button class="export-btn" id="export-btn">Export researcher_notes.csv</button>
@@ -548,6 +569,7 @@ def _render_html(
   var filterInterestingOnly = true;
   var filterShowDeaths = true;
   var filterHideUnreviewedDeaths = true;
+  var denseMode = false;
 
   function passesFilter(ev) {{
     if (ev.event_kind === 'death') {{
@@ -622,11 +644,18 @@ def _render_html(
     var missedDivChip = ev.likely_missed_division ? '<span class="flag-chip near-edge-chip">possible missed division, not a death</span>' : '';
     var unreviewedChip = (isDeath && !ev.death_reviewed) ? '<span class="flag-chip near-edge-chip">not yet vision-reviewed</span>' : '';
 
+    var showDense = denseMode && ev.has_dense;
+    var frames = showDense
+      ? ev.dense_images
+      : ev.images.map(function(src) {{ return {{src: src, sampled: true}}; }});
+
     var filmstrip = '';
-    if (ev.images.length > 0) {{
-      filmstrip = ev.images.map(function(src, i) {{
+    if (frames.length > 0) {{
+      filmstrip = frames.map(function(f, i) {{
+        var src = f.src;
         var label = src.split('/').pop().replace(/^\d+_/, '').replace(/_\d+\.png$/, '');
-        return '<span class="crop-wrap" data-idx="' + i + '" title="' + label + '">' +
+        var denseCls = showDense ? (f.sampled ? ' dense-sampled' : ' dense-skipped') : '';
+        return '<span class="crop-wrap' + denseCls + '" data-idx="' + i + '" title="' + label + '">' +
           '<span class="crop-thumb loading" data-bg="' +
           'background-image:url(' + src + ');' +
           'background-position:' + ev.crosshair_x_pct + '% ' + ev.crosshair_y_pct + '%;' +
@@ -636,6 +665,8 @@ def _render_html(
     }} else {{
       filmstrip = '<p class="no-crops-note">No crop images available for this event.</p>';
     }}
+
+    var denseLegend = showDense ? '<p class="dense-legend">green border = frame the AI actually reviewed; dimmed = extra context frame, not seen by the AI</p>' : '';
 
     var rawConf = ev.raw_ai_confidence ? ' (raw: ' + parseFloat(ev.raw_ai_confidence).toFixed(2) + ')' : '';
     var bleach = ev.bleach_risk ? ' · bleach risk: ' + parseFloat(ev.bleach_risk).toFixed(2) : '';
@@ -652,6 +683,7 @@ def _render_html(
         '<span>' + flagChips + anomalyChip + microHistChip + missedDivChip + unreviewedChip + failedChip + mismatchChip + nearChip + errChip + '</span>' +
       '</div>' +
       '<div class="filmstrip">' + filmstrip + '</div>' +
+      denseLegend +
       (ev.ai_notes ? '<div class="ai-notes"><b>AI verdict:</b> &ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
       (ev.anomaly_notes ? '<div class="anomaly-notes"><b>&#9888; AI anomaly note:</b> ' + ev.anomaly_notes + '</div>' : '') +
       '<div class="meta-row">' + meta + '</div>' +
@@ -678,8 +710,11 @@ def _render_html(
         var card = wrap.closest('.card');
         var key = card.getAttribute('data-key');
         var ev = manifest.find(function(e) {{ return e.entry_key === key; }});
-        if (ev && ev.images.length) {{
-          openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10));
+        if (!ev) return;
+        var showDense = denseMode && ev.has_dense;
+        var srcs = showDense ? ev.dense_images.map(function(f) {{ return f.src; }}) : ev.images;
+        if (srcs.length) {{
+          openLightbox(srcs, parseInt(wrap.getAttribute('data-idx'), 10));
         }}
       }});
     }});
@@ -776,6 +811,9 @@ def _render_html(
   }});
   document.getElementById('filter-hide-unreviewed-deaths').addEventListener('change', function() {{
     filterHideUnreviewedDeaths = this.checked; renderGrid();
+  }});
+  document.getElementById('filter-dense-mode').addEventListener('change', function() {{
+    denseMode = this.checked; renderGrid();
   }});
 
   // --- Export ---
