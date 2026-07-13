@@ -107,9 +107,29 @@ def _interest_score(row: dict) -> tuple[int, float]:
     conf = float(row.get(conf_col) or 0)
     acd = (row.get("acd_division_type") or "").lower()
     near = row.get("near_edge") == "1"
-    has_anomaly = any(row.get(f) == "1" for f in _FLAG_COLS) or bool((row.get("anomaly_notes") or "").strip())
+    active_flags = [f for f in _FLAG_COLS if row.get(f) == "1"]
+    # anaphase_bridge alone no longer counts as a corroborated anomaly (2026-07-13: a real
+    # human-annotated sample found 0/4 agreement on solo bridge calls -- already documented
+    # as the least reliable flag; see generate_package_readme.py's "least reliable
+    # abnormality flag" note). Still shown as an informational chip on the card -- this only
+    # stops it from single-handedly promoting an event into the top interest tier. Any OTHER
+    # flag, or bridge alongside another flag, still counts fully.
+    other_flag = any(f != "anaphase_bridge" for f in active_flags)
     is_failed = row.get("split_topology") == "failed_split"
     mismatch = _is_split_type_mismatch(row)
+    has_anomaly_note = bool((row.get("anomaly_notes") or "").strip())
+    # The freeform anomaly_notes field is usually the model explaining its OWN flag/failed
+    # call, not an independent second observation -- so it only counts as its own
+    # (unchanged, pre-existing) "generic note" tier-1 path when there's no structured flag
+    # AND no failed-split call already explaining it; it must NOT be used to "corroborate"
+    # a solo bridge flag or a failed-split call, or the demotions above would be silently
+    # defeated (found this exact loophole while validating the fix against real annotations
+    # -- the model always writes some explanatory text alongside a flag/failed call).
+    generic_note_only = has_anomaly_note and not active_flags and not is_failed
+    # is_failed_split alone no longer earns top-tier status either (2026-07-13: same sample,
+    # 0/5 agreement that a "failed" split_type call was a real failed division) -- still
+    # shown as an informational chip, still promoted if corroborated by an actual OTHER
+    # anomaly flag (not by its own explanatory text -- see note above).
     is_death = row.get("split_topology") == "death"
 
     if is_death:
@@ -136,12 +156,13 @@ def _interest_score(row: dict) -> tuple[int, float]:
 
     if conf <= 0:
         score = 5          # false positive / unconfirmed
-    elif has_anomaly and conf >= 0.5:
+    elif (other_flag or generic_note_only) and conf >= 0.5:
         score = 40         # Tier 1: anomaly-flagged + confirmed
-    elif is_failed or mismatch:
-        score = 35         # Tier 1b: failed division, or tracker undercounted a multi-way split
-                            # (both added 2026-07-09 -- biologically/correctness interesting on
-                            # their own, independent of confidence tier or ACD geometry)
+    elif mismatch or (is_failed and other_flag):
+        score = 35         # Tier 1b: failed division (only when corroborated by a real
+                            # OTHER anomaly flag), or tracker undercounted a multi-way split
+                            # (2026-07-09 -- biologically/correctness interesting on its own,
+                            # independent of confidence tier or ACD geometry)
     elif acd in ("tripolar", "multipolar"):
         score = 30         # Tier 2: abnormal geometry
     elif conf >= 0.5:
@@ -702,8 +723,19 @@ def _render_html(
                    // "mildly interesting" at most -- deliberately excluded from the
                    // default Interesting-only view, per the maintainer's 2026-07-12 guidance.
     }}
-    if ((ev.flags.length > 0 || ev.anomaly_notes) && ev.confidence >= 0.5) return 'tier1';
-    if (ev.is_failed_split || ev.split_type_mismatch) return 'tier1';
+    // anaphase_bridge alone, and is_failed_split alone, no longer grant tier1 by themselves
+    // (2026-07-13: 0/4 and 0/5 agreement respectively in a real human-annotated sample) --
+    // must be corroborated by another flag or a split_type mismatch. anomaly_notes is
+    // usually the model explaining its OWN flag/failed call, not independent evidence, so
+    // it must NOT count as corroboration for either -- it only grants tier1 on its own
+    // (unchanged, pre-existing "generic note" path) when there's no structured flag AND no
+    // failed-split call already explaining it. Mirrors _interest_score's
+    // other_flag/generic_note_only in the Python build step exactly.
+    var otherFlag = ev.flags.some(function(f) {{ return f !== 'anaphase bridge'; }});
+    var genericNoteOnly = !!ev.anomaly_notes && ev.flags.length === 0 && !ev.is_failed_split;
+    if ((otherFlag || genericNoteOnly) && ev.confidence >= 0.5) return 'tier1';
+    if (ev.split_type_mismatch) return 'tier1';
+    if (ev.is_failed_split && otherFlag) return 'tier1';
     if (ev.acd_division_type === 'tripolar' || ev.acd_division_type === 'multipolar') return 'tier2';
     return '';
   }}
