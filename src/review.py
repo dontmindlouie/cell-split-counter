@@ -282,7 +282,15 @@ Split type:
 - "asymmetric": one daughter is clearly larger (stem cell-like or budding)
 - "multi_way": three or more daughters visible
 - "failed": cytokinesis began (rounding, elongation, cleavage furrow) but the daughters re-fused \
-into one cell before separating -- this is a real, biologically meaningful event, not a false positive
+into one cell before separating -- this is a real, biologically meaningful event, not a false \
+positive, but it is also RARE -- most real divisions you see will complete normally. Only use \
+"failed" if you can cite two specific frames: one where a narrowing cleavage furrow/waist is \
+clearly visible between two forming masses, and a later frame where that furrow is gone and the \
+two masses have merged back into one. A cell that merely changes shape, rotates, or shifts \
+position without a clearly visible narrowing furrow at any point is NOT a failed division -- use \
+"symmetric"/"asymmetric" if it actually separates, or false_positive/null if it never showed real \
+division machinery at all. If you cannot point to both of those two specific frames, do not use \
+"failed" even if the sequence looks ambiguous or unusual.
 
 ACD classification (spindle geometry from chromosome staining):
 - "bipolar": chromosomes separate into exactly 2 groups (normal)
@@ -290,10 +298,18 @@ ACD classification (spindle geometry from chromosome staining):
 - "multipolar": 4 or more groups
 - "unknown": image quality too poor to determine
 
-Chromosomal abnormalities — examine each frame carefully:
+Chromosomal abnormalities — examine each frame carefully. These are all RARE; most divisions have \
+none of them. When genuinely uncertain whether one is present, answer false rather than true --
+a missed abnormality is far less costly than a false one, since every candidate here is already \
+being surfaced to a human reviewer regardless of these flags.
 - misaligned_chromosomes: one or more chromosomes offset from the metaphase plate pre-split
 - lagging_chromosome: a single chromosome or fragment trailing between the two separating masses
-- anaphase_bridge: a thin continuous chromatin thread connecting the two separating chromosome masses
+- anaphase_bridge: a thin continuous chromatin thread connecting the two separating chromosome \
+masses. This flag is frequently over-called -- do not set it true unless the same thread is \
+visible connecting the two masses in at least two consecutive sampled frames, not just a single \
+frame. A thin line visible in only one frame, general chromatin texture/graininess, background \
+noise, or an unrelated neighboring cell that happens to be close to the candidate are NOT bridges \
+-- if you cannot trace a continuous thread across at least two consecutive frames, answer false.
 - micronucleus: a small distinct bright spot separate from the main daughter nucleus in post-split frames
 - binucleation: a single cell body containing two separate, similarly-sized nuclei that do NOT \
 progressively separate (karyokinesis without cytokinesis) -- distinct from a normal division still \
