@@ -180,25 +180,28 @@ def _find_siblings(rows: list[dict]) -> dict[tuple, list[dict]]:
     return siblings
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("package_dir", type=Path, help="output package directory to document")
-    parser.add_argument("--video-label", default=None,
-                         help="human-readable label for the README title (defaults to source_video from the CSV)")
-    args = parser.parse_args()
+def generate(package_dir: Path, video_label: str | None = None) -> Path | None:
+    """Build README.md + index.csv documenting a run/package directory. Returns the
+    README path, or None if there's nothing to document (no events.csv).
 
-    package_dir: Path = args.package_dir
+    Callable directly (e.g. from src/pipeline.py to auto-generate at the end of a run)
+    as well as via this script's CLI -- see main() below. Works against a raw pipeline
+    output_dir just as well as a curated package_events.py export -- it only documents
+    whichever of events.csv/events_formatted.xlsx/review_crops/frames/summary.json
+    happen to exist, same as the other auto-generated reports.
+    """
     events_csv = package_dir / "events.csv"
     if not events_csv.exists():
-        raise SystemExit(f"no events.csv found at {events_csv}")
+        print(f"  [generate_package_readme] no events.csv found in {package_dir}, skipping")
+        return None
 
-    with open(events_csv, newline="") as f:
+    with open(events_csv, newline="", encoding="utf-8", errors="replace") as f:
         rows = list(csv.DictReader(f))
 
     pairs = _find_pairs(rows)
     siblings = _find_siblings(rows)
     source_video = rows[0].get("source_video", "") if rows else ""
-    label = args.video_label or source_video or package_dir.name
+    label = video_label or source_video or package_dir.name
 
     real_pairs = {k: r for k, r in pairs.items() if r.get("ai_confidence") and float(r["ai_confidence"]) > 0}
 
@@ -343,8 +346,22 @@ def main() -> None:
                               "yes" if has_crop else "no",
                               f"review_crops/{crop_name}" if has_crop else ""])
 
-    print(f"Wrote {package_dir / 'README.md'}")
-    print(f"Wrote {index_path}")
+    readme_path = package_dir / "README.md"
+    print(f"  [generate_package_readme] wrote {readme_path}")
+    print(f"  [generate_package_readme] wrote {index_path}")
+    return readme_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("package_dir", type=Path, help="output package directory to document")
+    parser.add_argument("--video-label", default=None,
+                         help="human-readable label for the README title (defaults to source_video from the CSV)")
+    args = parser.parse_args()
+
+    result = generate(args.package_dir, args.video_label)
+    if result is None:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

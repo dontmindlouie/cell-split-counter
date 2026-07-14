@@ -14,6 +14,7 @@ from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 from scripts.reports.researcher_browser import generate as generate_researcher_browser
 from scripts.reports.death_shape_browser import generate as generate_death_shape_browser
+from scripts.generate_package_readme import generate as generate_readme
 
 
 def run(
@@ -163,3 +164,7 @@ def run(
         generate_death_shape_browser(output_dir)
     except Exception as exc:
         print(f"  [death_shape_browser] auto-generation failed (non-fatal): {type(exc).__name__}: {exc}")
+    try:
+        generate_readme(output_dir, video_label=config.video_path.name)
+    except Exception as exc:
+        print(f"  [generate_package_readme] auto-generation failed (non-fatal): {type(exc).__name__}: {exc}")
