@@ -667,7 +667,11 @@ def review_deaths(
         # review calls permanently failed after exhausting the SDK's default retry budget
         # within ~1-2 seconds of jittered backoff. Bumped so the SDK's own exponential
         # backoff gets more attempts before giving up and surfacing as a review_error row.
-        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview", max_retries=8)
+        # timeout= added after a real hang during TSC_batch2 recovery (2026-07-13): with
+        # no explicit timeout, a single unresponsive request blocked forever instead of
+        # failing and letting max_retries take over. 90s is generous for a vision call but
+        # bounds the worst case.
+        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview", max_retries=8, timeout=90.0)
         resolved_model = model or GPT_DEPLOYMENT
         review_fn = review_death_gpt
 
@@ -810,7 +814,11 @@ def review_ambiguous(
         # review calls permanently failed after exhausting the SDK's default retry budget
         # within ~1-2 seconds of jittered backoff. Bumped so the SDK's own exponential
         # backoff gets more attempts before giving up and surfacing as a review_error row.
-        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview", max_retries=8)
+        # timeout= added after a real hang during TSC_batch2 recovery (2026-07-13): with
+        # no explicit timeout, a single unresponsive request blocked forever instead of
+        # failing and letting max_retries take over. 90s is generous for a vision call but
+        # bounds the worst case.
+        client = AzureOpenAI(azure_endpoint=endpoint, api_key=api_key, api_version="2025-04-01-preview", max_retries=8, timeout=90.0)
         resolved_model = model or GPT_DEPLOYMENT
         review_fn = review_and_classify_gpt
 
