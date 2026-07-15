@@ -28,6 +28,12 @@ review_deaths()'s prompt has no such option yet -- so that distinction cannot be
 here; treat plain "mildly interesting" deaths as an unfiltered mix of both until that's
 built.
 
+"Interesting only" checkbox now unchecked by default (2026-07-14, was checked). The tier
+itself is unchanged, but a researcher opening the page cold saw a handful of tier-1 cards
+(e.g. 9 events) with no obvious signal that most events were hidden by a filter -- easy to
+read as "the pipeline only found 9 things" rather than "there are more, narrow this down."
+Full unfiltered view is now the default; she opts into the reduced view herself.
+
 Position marker (2026-07-13, real-usage feedback): the saved review_crops/ PNGs are
 deliberately unmarked (a researcher may want a clean copy for her own reports/slides), but
 crowded frames turned out to be ambiguous for a human reviewer too, not just the AI --
@@ -524,7 +530,7 @@ def _render_html(
   <div class="run-name" id="run-name-label">{run_name}</div>
 
   <div class="filter-group">
-    <label title="Anomaly-flagged/failed/mismatched split, abnormal geometry, or a death traceable to an earlier micronucleus-flagged division — same tiering that colors the card border. Plain reviewed deaths and low-confidence splits are 'mildly interesting' and stay hidden here on purpose."><input type="checkbox" id="filter-interesting-only" checked> Interesting only</label>
+    <label title="Anomaly-flagged/failed/mismatched split, abnormal geometry, or a death traceable to an earlier micronucleus-flagged division — same tiering that colors the card border. Plain reviewed deaths and low-confidence splits are 'mildly interesting' and stay hidden if you check this."><input type="checkbox" id="filter-interesting-only"> Interesting only</label>
   </div>
 
   <div class="filter-group">
@@ -680,7 +686,7 @@ def _render_html(
   var filterFlaggedOnly = false;
   var filterHideNearEdge = false;
   var filterHideFps = true;
-  var filterInterestingOnly = true;
+  var filterInterestingOnly = false;
   var filterShowDeaths = true;
   var filterHideUnreviewedDeaths = true;
   var denseMode = false;
