@@ -11,3 +11,4 @@ venv/
 .venv-spike/
 .pytest_cache/
 .env
+GEMINI.md
