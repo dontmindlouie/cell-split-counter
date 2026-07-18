@@ -1,0 +1,20 @@
+[
+  {
+    "config_id": "gpt_medium_floor85_200f",
+    "vision_backend": "gpt",
+    "gpt_reasoning_effort": "medium",
+    "min_gpt_confidence": 0.85,
+    "fixture": "200frame",
+    "repeats": 2,
+    "notes": "old default -- repeat confirmation on the cheap 200frame fixture, 2026-07-XX. The original 2026-07-16 3-config sweep found GPT-5-mini non-deterministic run-to-run (a floor85 re-run swung recall 0.583->0.250, larger than the swing credited to the confidence-floor change itself) -- this reruns both floors with real repeats before trusting which one is actually better."
+  },
+  {
+    "config_id": "gpt_medium_floor50_200f",
+    "vision_backend": "gpt",
+    "gpt_reasoning_effort": "medium",
+    "min_gpt_confidence": 0.5,
+    "fixture": "200frame",
+    "repeats": 2,
+    "notes": "current main.py default -- repeat confirmation on the cheap 200frame fixture, same purpose as floor85_200f above."
+  }
+]

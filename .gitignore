@@ -12,3 +12,5 @@ venv/
 .pytest_cache/
 .env
 GEMINI.md
+scripts/eval_harness/*.log
+scripts/eval_harness/*.log.err

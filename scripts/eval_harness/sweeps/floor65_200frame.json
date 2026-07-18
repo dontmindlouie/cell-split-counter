@@ -1,0 +1,11 @@
+[
+  {
+    "config_id": "gpt_medium_floor65_200f",
+    "vision_backend": "gpt",
+    "gpt_reasoning_effort": "medium",
+    "min_gpt_confidence": 0.65,
+    "fixture": "200frame",
+    "repeats": 2,
+    "notes": "midpoint between floor50 (current default) and floor85 (old default), checking whether precision improves meaningfully in between -- floor50/floor85 confirmation sweep (2026-07-18) found precision ~0.13-0.19 at both endpoints with no clear trend, recall stable/low (0.2) at floor85 vs real advantage (0.4-0.6) at floor50. Precision identified as the actual binding constraint per project_cell_split_counter_recall_over_precision memory, so this checks for a sweet spot rather than assuming linear interpolation."
+  }
+]

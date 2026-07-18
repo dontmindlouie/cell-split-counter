@@ -1,0 +1,21 @@
+[
+  {
+    "config_id": "gpt_medium_floor85",
+    "vision_backend": "gpt",
+    "gpt_reasoning_effort": "medium",
+    "min_gpt_confidence": 0.85,
+    "notes": "old main.py default (pre-2026-07-16) -- kept as a comparison point, no longer the default"
+  },
+  {
+    "config_id": "gpt_medium_floor50",
+    "vision_backend": "gpt",
+    "gpt_reasoning_effort": "medium",
+    "min_gpt_confidence": 0.5,
+    "notes": "current main.py default as of 2026-07-16 -- higher recall, comparable-or-better precision than floor85 in the first sweep"
+  },
+  {
+    "config_id": "claude_baseline",
+    "vision_backend": "claude",
+    "notes": "compare backend choice directly"
+  }
+]
