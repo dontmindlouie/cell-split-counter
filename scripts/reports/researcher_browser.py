@@ -405,7 +405,8 @@ def _build_manifest(
             "acd_division_type": acd,
             "flags": flags,
             "near_edge": row.get("near_edge") == "1",
-            "bleach_risk": row.get("bleach_risk") or None,
+            "cell_area_px": row.get("cell_area_px") or None,
+            "cell_size_um2": row.get("cell_size_um2") or None,
             "classification_source": row.get("classification_source") or "",
             "ai_notes": row.get(notes_col) or "",
             "anomaly_notes": row.get("anomaly_notes") or "",
@@ -418,6 +419,7 @@ def _build_manifest(
             "death_reviewed": False,
             "likely_missed_division": False,
             "micronucleus_history": False,
+            "daughter_count": len(siblings_by_split.get((parent_id, peak_frame), [row])),
             "images": crops["images"],
             "dense_images": crops["dense_images"],
             "has_dense": crops["has_dense"],
@@ -462,7 +464,8 @@ def _build_manifest(
             "acd_division_type": "",
             "flags": [],
             "near_edge": row.get("near_edge") == "1",
-            "bleach_risk": row.get("bleach_risk") or None,
+            "cell_area_px": row.get("cell_area_px") or None,
+            "cell_size_um2": row.get("cell_size_um2") or None,
             "classification_source": row.get("classification_source") or "",
             "ai_notes": row.get("ai_notes") or "",
             "anomaly_notes": row.get("anomaly_notes") or "",
@@ -475,6 +478,7 @@ def _build_manifest(
             "death_reviewed": reviewed,
             "likely_missed_division": reviewed and dropout,
             "micronucleus_history": has_micro_history,
+            "daughter_count": 1,
             "images": crops["images"],
             "dense_images": crops["dense_images"],
             "has_dense": crops["has_dense"],
@@ -896,9 +900,13 @@ def _render_html(
     var denseLegend = showDense ? '<p class="dense-legend">green border = frame the AI actually reviewed; dimmed = extra context frame, not seen by the AI</p>' : '';
 
     var rawConf = ev.raw_ai_confidence ? ' (raw: ' + parseFloat(ev.raw_ai_confidence).toFixed(2) + ')' : '';
-    var bleach = ev.bleach_risk ? ' · bleach risk: ' + parseFloat(ev.bleach_risk).toFixed(2) : '';
-    var meta = 'frame ' + ev.peak_frame + ' · track ' + ev.track_id +
-      ' · ' + (ev.classification_source || 'rule') + rawConf + bleach;
+    var coords = (ev.centroid_x && ev.centroid_y) ?
+      ' · (' + Math.round(ev.centroid_x) + ', ' + Math.round(ev.centroid_y) + ')' : '';
+    var size = ev.cell_size_um2 ? ' · ' + parseFloat(ev.cell_size_um2).toFixed(1) + 'µm²' :
+      (ev.cell_area_px ? ' · ' + Math.round(ev.cell_area_px) + 'px²' : '');
+    var daughters = ev.daughter_count > 1 ? ' · ' + ev.daughter_count + ' daughters' : '';
+    var meta = 'frame ' + ev.peak_frame + ' · track ' + ev.track_id + coords + size + daughters +
+      ' · ' + (ev.classification_source || 'rule') + rawConf;
 
     var savedNote = ann.notes ? '<span style="color:var(--text-secondary);font-style:italic;">Saved: ' +
       ann.notes.substring(0, 80) + (ann.notes.length > 80 ? '…' : '') + '</span>' : '';
