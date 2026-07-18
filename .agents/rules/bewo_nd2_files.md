@@ -1,0 +1,3 @@
+Raw ND2 files (Nikon NIS-Elements native format) for one 20x acquisition batch live outside this repo (~1.78GB each, configure your own path). These are the original captures behind a corresponding set of AVI exports (~2.67GB each) used in [[project_cell_split_counter]].
+
+The AVI exports have a confirmed header bug: metadata claims 8471 frames but only 848 are real decodable data (both M2 and M3 verified byte-identical in size and this exact mismatch). ND2 carries proper multi-dimensional metadata (channels/z/time) directly and should sidestep this — ND2 pipeline support is parked behind current backlog, not yet built (would need the `nd2` Python package, since `cv2.VideoCapture` can't read ND2 at all).
