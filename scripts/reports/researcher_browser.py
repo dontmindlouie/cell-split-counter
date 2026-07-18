@@ -212,6 +212,79 @@ def _marker_radius_pct(row: dict) -> float:
     return (radius_px * _DISPLAY_MARKER_SCALE / (2 * _CROP_RADIUS)) * 100
 
 
+def _cluster_events(events: list[dict], frame_window: int = 5, coord_radius: float = 60.0) -> None:
+    """Group events that likely represent the same physical event flagged more than
+    once -- e.g. a parent split and one of its daughters both crossing the review
+    threshold nearby, a tracker ID swap producing two adjacent candidates, or
+    neighbor mis-attribution -- so a researcher confirms/dismisses one cluster
+    instead of scrolling past several near-identical cards. Naive first pass
+    (2026-0X-XX, per the maintainer's real-usage complaint about duplicate review burden).
+    Mutates each event dict in place with cluster_id/cluster_size/is_cluster_primary.
+
+    Seed-based, NOT transitive union-find: process events highest-interest-first;
+    each not-yet-claimed event starts a new cluster as its seed/primary, and only
+    events within frame_window/coord_radius of THAT SAME SEED join it directly.
+    A first version used transitive single-linkage clustering (union whenever two
+    events were close to *any* existing cluster member) and it chained badly on
+    real data -- in a ~250-cell/frame crowded field, a b within radius of a, and c
+    within radius of b (but far from a) still merged a/b/c together, producing
+    clusters up to 51 members covering a much wider area than any single radius.
+    Anchoring every member to one fixed seed point bounds cluster spread to
+    coord_radius regardless of how many events exist nearby.
+
+    Deliberately does NOT merge verdicts/notes -- conflicting AI judgments (one
+    member "real", another "false_positive") have no clean automatic resolution, and
+    guessing one would hide information from the reviewer instead of saving them
+    time. Grouping only changes researcher_browser.py's PRESENTATION; events.csv on
+    disk (and everything scripts/eval_harness scores against) is untouched, so this
+    cannot corrupt Tier A/B scoring -- see scripts/eval_harness/README.md.
+
+    Threshold risk, not solved here: two genuinely different cells dividing near
+    each other at nearly the same time in a crowded field could still get wrongly
+    merged. Cheap to catch in review (an obviously-two-different-cells merged
+    cluster is a fast signal to tighten the threshold) since nothing is deleted,
+    only grouped.
+    """
+    n = len(events)
+    coords: list[tuple[float, float, int] | None] = []
+    for e in events:
+        try:
+            coords.append((float(e["centroid_x"]), float(e["centroid_y"]), int(e["peak_frame"])))
+        except (TypeError, ValueError):
+            coords.append(None)
+
+    order = sorted(range(n), key=lambda i: (-events[i]["interest_score"], -events[i]["confidence"]))
+    assigned = [False] * n
+    r2 = coord_radius**2
+
+    for i in order:
+        if assigned[i]:
+            continue
+        assigned[i] = True
+        members = [i]
+        seed = coords[i]
+        if seed is not None:
+            sx, sy, sf = seed
+            for j in range(n):
+                if assigned[j]:
+                    continue
+                cj = coords[j]
+                if cj is None:
+                    continue
+                cxj, cyj, pfj = cj
+                if abs(pfj - sf) > frame_window:
+                    continue
+                if (sx - cxj) ** 2 + (sy - cyj) ** 2 <= r2:
+                    members.append(j)
+                    assigned[j] = True
+
+        cluster_id = events[i]["entry_key"]
+        for idx in members:
+            events[idx]["cluster_id"] = cluster_id
+            events[idx]["cluster_size"] = len(members)
+            events[idx]["is_cluster_primary"] = idx == i
+
+
 def _birth_micronucleus_by_track(rows: list[dict]) -> dict[str, bool]:
     """Map track_id -> True if that track's OWN birth event (the split row where it first
     appears as a new daughter track_id) had micronucleus flagged. Most tracks in a run have
@@ -326,6 +399,8 @@ def _build_manifest(
             "track_id": row.get("track_id", ""),
             "peak_frame": peak_frame,
             "confidence": conf,
+            "centroid_x": row.get("centroid_x") or "",
+            "centroid_y": row.get("centroid_y") or "",
             "raw_ai_confidence": row.get("raw_ai_confidence") or None,
             "acd_division_type": acd,
             "flags": flags,
@@ -381,6 +456,8 @@ def _build_manifest(
             "track_id": track_id,
             "peak_frame": peak_frame,
             "confidence": conf,
+            "centroid_x": row.get("centroid_x") or "",
+            "centroid_y": row.get("centroid_y") or "",
             "raw_ai_confidence": row.get("raw_ai_confidence") or None,
             "acd_division_type": "",
             "flags": [],
@@ -408,6 +485,7 @@ def _build_manifest(
             "interest_score": score,
         })
 
+    _cluster_events(events)
     events.sort(key=lambda e: (-e["interest_score"], -e["confidence"]))
     return events
 
@@ -498,6 +576,12 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .lightbox-nav.prev{left:16px;}
 .lightbox-nav.next{right:16px;}
 .hidden{display:none!important;}
+.cluster-toggle{font-size:11.5px;font-weight:600;cursor:pointer;background:none;border:1px solid var(--border);border-radius:6px;padding:4px 9px;color:var(--text-secondary);margin:0 0 10px;}
+.cluster-toggle:hover{background:var(--page);}
+.cluster-siblings{display:none;margin-top:4px;margin-bottom:6px;padding-left:14px;border-left:2px solid var(--border);}
+.cluster-siblings.open{display:block;}
+.cluster-siblings .card{margin-bottom:10px;opacity:0.92;}
+.cluster-siblings .card:last-child{margin-bottom:0;}
 """
 
 
@@ -758,7 +842,7 @@ def _render_html(
     return '';
   }}
 
-  function renderCard(ev) {{
+  function renderCard(ev, isSibling) {{
     var ann = annotations[ev.entry_key] || {{}};
     var tier = tierClass(ev);
     var isDeath = ev.event_kind === 'death';
@@ -819,6 +903,25 @@ def _render_html(
     var savedNote = ann.notes ? '<span style="color:var(--text-secondary);font-style:italic;">Saved: ' +
       ann.notes.substring(0, 80) + (ann.notes.length > 80 ? '…' : '') + '</span>' : '';
 
+    // Possible-duplicate grouping (naive frame+coordinate clustering, computed in
+    // Python -- see _cluster_events). Grouped, never merged: every sibling's own
+    // verdict/notes stay independently visible in the expand, nothing is
+    // synthesized. isSibling guards against a nested card rendering its own
+    // duplicate toggle (every member of a cluster shares the same cluster_size).
+    var clusterBlock = '';
+    if (!isSibling && ev.cluster_size > 1) {{
+      var siblings = manifest.filter(function(e) {{ return e.cluster_id === ev.cluster_id && e.entry_key !== ev.entry_key; }});
+      var toggleId = 'cluster-' + ev.entry_key;
+      clusterBlock =
+        '<button class="cluster-toggle" type="button" data-target="' + toggleId + '">' +
+          siblings.length + ' possible duplicate' + (siblings.length > 1 ? 's' : '') +
+          ' nearby (same frame/location) ▾' +
+        '</button>' +
+        '<div class="cluster-siblings" id="' + toggleId + '">' +
+          siblings.map(function(s) {{ return renderCard(s, true); }}).join('') +
+        '</div>';
+    }}
+
     return '<div class="card ' + tier + '" data-key="' + ev.entry_key + '">' +
       '<div class="card-header">' +
         '<span class="frame-label">Frame ' + ev.peak_frame + '</span>' +
@@ -830,6 +933,7 @@ def _render_html(
       (ev.ai_notes ? '<div class="ai-notes"><b>AI verdict:</b> &ldquo;' + ev.ai_notes + '&rdquo;</div>' : '') +
       (ev.anomaly_notes ? '<div class="anomaly-notes"><b>&#9888; AI anomaly note:</b> ' + ev.anomaly_notes + '</div>' : '') +
       '<div class="meta-row">' + meta + '</div>' +
+      clusterBlock +
       '<div class="annotation-area">' +
         '<textarea placeholder="Researcher notes…" data-key="' + ev.entry_key + '">' +
           (ann.notes ? ann.notes.replace(/</g,'&lt;') : '') + '</textarea>' +
@@ -845,7 +949,34 @@ def _render_html(
   function renderGrid() {{
     var visible = manifest.filter(passesFilter);
     var grid = document.getElementById('grid');
-    grid.innerHTML = visible.map(renderCard).join('');
+
+    // Show one representative card per cluster (highest interest/confidence among
+    // currently-visible members) -- its sibling toggle (rendered inside renderCard)
+    // pulls the FULL cluster from `manifest`, not just this visible subset, so a
+    // duplicate that fails the current filter is still reachable for context
+    // instead of silently disappearing.
+    var seenClusters = {{}};
+    var toRender = [];
+    visible.forEach(function(ev) {{
+      var cid = ev.cluster_id;
+      if (seenClusters[cid]) return;
+      seenClusters[cid] = true;
+      var clusterVisible = visible.filter(function(e) {{ return e.cluster_id === cid; }});
+      clusterVisible.sort(function(a, b) {{ return (b.interest_score - a.interest_score) || (b.confidence - a.confidence); }});
+      toRender.push(clusterVisible[0]);
+    }});
+
+    grid.innerHTML = toRender.map(function(ev) {{ return renderCard(ev, false); }}).join('');
+
+    // possible-duplicate expand/collapse
+    grid.querySelectorAll('.cluster-toggle').forEach(function(btn) {{
+      btn.addEventListener('click', function() {{
+        var target = document.getElementById(btn.getAttribute('data-target'));
+        if (!target) return;
+        var open = target.classList.toggle('open');
+        btn.textContent = open ? btn.textContent.replace('▾', '▴') : btn.textContent.replace('▴', '▾');
+      }});
+    }});
 
     // filmstrip click → lightbox
     grid.querySelectorAll('.crop-wrap[data-idx]').forEach(function(wrap) {{
@@ -903,17 +1034,18 @@ def _render_html(
       }});
     }});
 
-    updateStats(visible.length);
+    updateStats(toRender.length, visible.length);
   }}
 
-  function updateStats(visibleCount) {{
+  function updateStats(cardCount, eventCount) {{
     var annotated = Object.keys(annotations).filter(function(k) {{ return annotations[k] && annotations[k].notes; }}).length;
     var flagged = Object.keys(annotations).filter(function(k) {{ return annotations[k] && annotations[k].followup; }}).length;
+    var dupNote = eventCount > cardCount ? ' (' + (eventCount - cardCount) + ' grouped as duplicates)' : '';
     document.getElementById('stats').innerHTML =
-      visibleCount + ' events shown<br>' +
+      cardCount + ' cards shown' + dupNote + '<br>' +
       annotated + ' annotated · ' + flagged + ' flagged';
     var headerCount = document.getElementById('header-shown-count');
-    if (headerCount) headerCount.textContent = visibleCount;
+    if (headerCount) headerCount.textContent = cardCount;
   }}
 
   // --- Filter wiring ---
@@ -961,14 +1093,22 @@ def _render_html(
   }});
 
   // --- Export ---
+  // source_dataset is baked in from the Python-side run_name at render time (not
+  // read from the page some other way) so an exported CSV always self-identifies
+  // even after Chrome renames it researcher_notes(1).csv, (2).csv, etc. -- prior to
+  // 2026-07-16 the export had no source label at all, requiring manual forensic
+  // exact-key-match archaeology against every candidate run's events.csv to figure
+  // out which download came from where. See project_cell_split_counter_human_review_ground_truth_backlog memory.
+  var SOURCE_DATASET = {run_name!r};
   document.getElementById('export-btn').addEventListener('click', function() {{
-    var lines = ['track_id,parent_id,peak_frame,event_kind,researcher_notes,flagged_for_followup,ai_confidence,acd_division_type,anomaly_flags'];
+    var lines = ['source_dataset,track_id,parent_id,peak_frame,event_kind,researcher_notes,flagged_for_followup,ai_confidence,acd_division_type,anomaly_flags'];
     manifest.forEach(function(ev) {{
       var ann = annotations[ev.entry_key] || {{}};
       if (!ann.notes && !ann.followup) return;
       var notes = (ann.notes || '').replace(/"/g, '""');
       var flags = ev.flags.join('; ');
       lines.push([
+        SOURCE_DATASET,
         ev.track_id, ev.parent_id, ev.peak_frame, ev.event_kind,
         '"' + notes + '"',
         ann.followup ? '1' : '0',
@@ -979,7 +1119,7 @@ def _render_html(
     var blob = new Blob([lines.join('\\n')], {{type:'text/csv'}});
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'researcher_notes.csv';
+    a.download = 'researcher_notes_' + SOURCE_DATASET + '.csv';
     a.click();
   }});
 
