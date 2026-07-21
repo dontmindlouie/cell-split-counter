@@ -161,7 +161,8 @@ def _build_frame_window(
 
 
 def _build_dense_debug_window(
-    event: "LineageEvent", frame_dir: Path
+    event: "LineageEvent", frame_dir: Path,
+    frames_before: int | None = None, frames_after: int | None = None,
 ) -> list[tuple[int, Path]]:
     """Return every consecutive frame (stride 1) spanning the same overall range as
     _build_frame_window, for debug crops only -- not sent to the vision model.
@@ -171,9 +172,18 @@ def _build_dense_debug_window(
     sampling can skip entirely) needs the frames in between too. Saving all of them
     to debug_dir lets a report tool offer a "every frame" view without any extra API
     calls or a pipeline rerun -- see backlog 2026-07-10, spot_check_review.py.
+
+    frames_before/frames_after default to the module's fixed _FRAMES_BEFORE/
+    _FRAMES_AFTER (every normal pipeline call site) but can be overridden wider --
+    added for scripts/reports/extend_event_timeline.py, which lets a researcher who
+    already spotted something interesting in researcher_browser.py pull more temporal
+    context (rewind further to see the run-up, or fast-forward further to see what
+    happened after) without a pipeline rerun.
     """
-    lo = max(0, event.frame - _FRAMES_BEFORE * _FRAME_STRIDE)
-    hi = event.frame + _FRAMES_AFTER * _FRAME_STRIDE
+    before = _FRAMES_BEFORE if frames_before is None else frames_before
+    after = _FRAMES_AFTER if frames_after is None else frames_after
+    lo = max(0, event.frame - before * _FRAME_STRIDE)
+    hi = event.frame + after * _FRAME_STRIDE
     return [(i, p) for i in range(lo, hi + 1) if (p := _find_frame(frame_dir, i)) is not None]
 
 
