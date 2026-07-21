@@ -780,6 +780,31 @@ def _render_html(
   var denseMode = false;
   var showMarker = true;
 
+  // --- Incremental render state (windowing) ---
+  // Building DOM for every matching card up front (6k+ on large runs) is what made
+  // load/filter-toggle/scroll all slow -- see [[project_cell_split_counter_researcher_browser_perf_backlog]].
+  // Cards render in batches instead, appended as the grid scrolls near its end.
+  // Deliberately append-only (nothing ever gets removed once rendered): a researcher's
+  // real workflow scrolls top-down through interest-sorted events and stops once she's
+  // seen enough, so unbounded DOM growth from scrolling the entire list is an accepted
+  // tradeoff for not having to solve variable-height card recycling.
+  var BATCH_SIZE = 60;
+  var currentToRender = [];
+  var renderedCount = 0;
+  var sentinel = null;
+  var batchObserver = null;
+  var thumbObserver = new IntersectionObserver(function(entries) {{
+    entries.forEach(function(entry) {{
+      if (!entry.isIntersecting) return;
+      var card = entry.target;
+      card.querySelectorAll('.crop-thumb.loading').forEach(function(thumb) {{
+        var bg = thumb.getAttribute('data-bg');
+        if (bg) {{ thumb.style.cssText = bg; thumb.classList.remove('loading'); }}
+      }});
+      thumbObserver.unobserve(card);
+    }});
+  }}, {{ rootMargin: '300px' }});
+
   function passesFilter(ev) {{
     if (ev.event_kind === 'death') {{
       if (!filterShowDeaths) return false;
@@ -918,16 +943,22 @@ def _render_html(
     // duplicate toggle (every member of a cluster shares the same cluster_size).
     var clusterBlock = '';
     if (!isSibling && ev.cluster_size > 1) {{
-      var siblings = manifest.filter(function(e) {{ return e.cluster_id === ev.cluster_id && e.entry_key !== ev.entry_key; }});
+      // Sibling count only, for the label -- the sibling CARDS themselves are not built
+      // here. Building every cluster's siblings up front defeats the point of batching
+      // (a run with many small clusters would front-load thousands of hidden sibling
+      // cards again); instead the toggle handler below renders them lazily on first
+      // expand and caches the result via data-populated.
+      var siblingCount = manifest.reduce(function(n, e) {{
+        return n + (e.cluster_id === ev.cluster_id && e.entry_key !== ev.entry_key ? 1 : 0);
+      }}, 0);
       var toggleId = 'cluster-' + ev.entry_key;
       clusterBlock =
-        '<button class="cluster-toggle" type="button" data-target="' + toggleId + '">' +
-          siblings.length + ' possible duplicate' + (siblings.length > 1 ? 's' : '') +
+        '<button class="cluster-toggle" type="button" data-target="' + toggleId +
+          '" data-cluster="' + ev.cluster_id + '" data-self="' + ev.entry_key + '">' +
+          siblingCount + ' possible duplicate' + (siblingCount > 1 ? 's' : '') +
           ' nearby (same frame/location) ▾' +
         '</button>' +
-        '<div class="cluster-siblings" id="' + toggleId + '">' +
-          siblings.map(function(s) {{ return renderCard(s, true); }}).join('') +
-        '</div>';
+        '<div class="cluster-siblings" id="' + toggleId + '"></div>';
     }}
 
     return '<div class="card ' + tier + '" data-key="' + ev.entry_key + '">' +
@@ -954,6 +985,27 @@ def _render_html(
     '</div>';
   }}
 
+  function renderNextBatch() {{
+    var grid = document.getElementById('grid');
+    var start = renderedCount;
+    var end = Math.min(start + BATCH_SIZE, currentToRender.length);
+    if (start >= end) return;
+    var chunk = document.createElement('div');
+    chunk.innerHTML = currentToRender.slice(start, end).map(function(ev) {{ return renderCard(ev, false); }}).join('');
+    // move out of the throwaway wrapper one at a time (appendChild on a live node
+    // detaches it from its current parent) so each card lands directly under #grid,
+    // where the delegated listeners set up in initGridEvents() expect them.
+    while (chunk.firstChild) {{
+      var card = chunk.firstChild;
+      grid.insertBefore(card, sentinel);
+      thumbObserver.observe(card);
+    }}
+    renderedCount = end;
+    if (renderedCount >= currentToRender.length) {{
+      batchObserver.unobserve(sentinel);
+    }}
+  }}
+
   function renderGrid() {{
     var visible = manifest.filter(passesFilter);
     var grid = document.getElementById('grid');
@@ -974,75 +1026,94 @@ def _render_html(
       toRender.push(clusterVisible[0]);
     }});
 
-    grid.innerHTML = toRender.map(function(ev) {{ return renderCard(ev, false); }}).join('');
+    // Reset and rebuild only the FIRST batch synchronously -- every filter toggle
+    // used to rebuild DOM for every matching card (thousands on a large run); now it
+    // only ever pays for BATCH_SIZE cards, with the rest streamed in as the
+    // researcher scrolls (see the state block above passesFilter for why append-only).
+    grid.innerHTML = '';
+    currentToRender = toRender;
+    renderedCount = 0;
+    sentinel = document.createElement('div');
+    sentinel.id = 'render-sentinel';
+    sentinel.style.height = '1px';   // a zero-area element never reports isIntersecting in some
+                                      // engines -- found this while testing, infinite-scroll
+                                      // sentinels conventionally need a nonzero height/width
+    grid.appendChild(sentinel);
+    if (!batchObserver) {{
+      batchObserver = new IntersectionObserver(function(entries) {{
+        entries.forEach(function(entry) {{
+          if (entry.isIntersecting) renderNextBatch();
+        }});
+      }}, {{ rootMargin: '600px' }});
+    }} else {{
+      batchObserver.disconnect();
+    }}
+    batchObserver.observe(sentinel);
+    renderNextBatch();
 
-    // possible-duplicate expand/collapse
-    grid.querySelectorAll('.cluster-toggle').forEach(function(btn) {{
-      btn.addEventListener('click', function() {{
-        var target = document.getElementById(btn.getAttribute('data-target'));
+    updateStats(toRender.length, visible.length);
+  }}
+
+  // Listeners are attached once to the (never-replaced) #grid container instead of
+  // per-card/per-batch -- delegation means newly streamed-in batches and lazily-
+  // rendered cluster siblings work for free, with no re-wiring step needed.
+  function initGridEvents() {{
+    var grid = document.getElementById('grid');
+
+    grid.addEventListener('click', function(e) {{
+      var toggleBtn = e.target.closest('.cluster-toggle');
+      if (toggleBtn) {{
+        var target = document.getElementById(toggleBtn.getAttribute('data-target'));
         if (!target) return;
+        if (!target.dataset.populated) {{
+          var clusterId = toggleBtn.getAttribute('data-cluster');
+          var selfKey = toggleBtn.getAttribute('data-self');
+          var siblings = manifest.filter(function(e2) {{
+            return e2.cluster_id === clusterId && e2.entry_key !== selfKey;
+          }});
+          target.innerHTML = siblings.map(function(s) {{ return renderCard(s, true); }}).join('');
+          target.querySelectorAll('.card').forEach(function(card) {{ thumbObserver.observe(card); }});
+          target.dataset.populated = '1';
+        }}
         var open = target.classList.toggle('open');
-        btn.textContent = open ? btn.textContent.replace('▾', '▴') : btn.textContent.replace('▴', '▾');
-      }});
-    }});
+        toggleBtn.textContent = open ? toggleBtn.textContent.replace('▾', '▴') : toggleBtn.textContent.replace('▴', '▾');
+        return;
+      }}
 
-    // filmstrip click → lightbox
-    grid.querySelectorAll('.crop-wrap[data-idx]').forEach(function(wrap) {{
-      wrap.addEventListener('click', function() {{
+      var wrap = e.target.closest('.crop-wrap[data-idx]');
+      if (wrap) {{
         var card = wrap.closest('.card');
         var key = card.getAttribute('data-key');
-        var ev = manifest.find(function(e) {{ return e.entry_key === key; }});
+        var ev = manifest.find(function(e2) {{ return e2.entry_key === key; }});
         if (!ev) return;
         if ((denseMode && ev.has_dense ? ev.dense_images.length : ev.images.length) > 0) {{
           openLightbox(ev, denseMode, parseInt(wrap.getAttribute('data-idx'), 10));
         }}
-      }});
+      }}
     }});
 
-    // lazy-load filmstrip thumbnails: swap in background-image only when card scrolls
-    // near the viewport -- prevents the browser from fetching all ~16k images at once.
-    var thumbObserver = new IntersectionObserver(function(entries) {{
-      entries.forEach(function(entry) {{
-        if (!entry.isIntersecting) return;
-        var card = entry.target;
-        card.querySelectorAll('.crop-thumb.loading').forEach(function(thumb) {{
-          var bg = thumb.getAttribute('data-bg');
-          if (bg) {{ thumb.style.cssText = bg; thumb.classList.remove('loading'); }}
-        }});
-        thumbObserver.unobserve(card);
-      }});
-    }}, {{ rootMargin: '300px' }});
-    grid.querySelectorAll('.card').forEach(function(card) {{
-      thumbObserver.observe(card);
-    }});
-
-    // annotation textarea → auto-save on change
-    grid.querySelectorAll('textarea[data-key]').forEach(function(ta) {{
+    grid.addEventListener('input', function(e) {{
+      if (!e.target.matches('textarea[data-key]')) return;
+      var ta = e.target;
       var key = ta.getAttribute('data-key');
-      var timer = null;
-      ta.addEventListener('input', function() {{
-        clearTimeout(timer);
-        timer = setTimeout(function() {{
-          if (!annotations[key]) annotations[key] = {{}};
-          annotations[key].notes = ta.value;
-          saveAnnotations(annotations);
-          var el = document.getElementById('saved-' + key);
-          if (el) el.textContent = ta.value ? 'Saved.' : '';
-        }}, 600);
-      }});
-    }});
-
-    // follow-up checkboxes
-    grid.querySelectorAll('.followup-check').forEach(function(cb) {{
-      cb.addEventListener('change', function() {{
-        var key = cb.getAttribute('data-key');
+      clearTimeout(ta._saveTimer);
+      ta._saveTimer = setTimeout(function() {{
         if (!annotations[key]) annotations[key] = {{}};
-        annotations[key].followup = cb.checked;
+        annotations[key].notes = ta.value;
         saveAnnotations(annotations);
-      }});
+        var el = document.getElementById('saved-' + key);
+        if (el) el.textContent = ta.value ? 'Saved.' : '';
+      }}, 600);
     }});
 
-    updateStats(toRender.length, visible.length);
+    grid.addEventListener('change', function(e) {{
+      if (!e.target.matches('.followup-check')) return;
+      var cb = e.target;
+      var key = cb.getAttribute('data-key');
+      if (!annotations[key]) annotations[key] = {{}};
+      annotations[key].followup = cb.checked;
+      saveAnnotations(annotations);
+    }});
   }}
 
   function updateStats(cardCount, eventCount) {{
@@ -1131,6 +1202,7 @@ def _render_html(
     a.click();
   }});
 
+  initGridEvents();
   renderGrid();
 }})();
 </script>
