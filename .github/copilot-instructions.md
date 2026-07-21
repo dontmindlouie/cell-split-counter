@@ -31,7 +31,7 @@ High-level architecture (big picture)
   - simple IoU linking (link_frames) for small runs.
   Outputs a list of TrackNode objects describing lineage (track_id, parent_id, frame, mask metadata).
 - Classify (src/classify.py): rule-based logic to detect NORMAL_SPLIT, MULTI_WAY_SPLIT, FAILED_SPLIT, DEATH, and AMBIGUOUS using daughter persistence and cascade-noise suppression.
-- Review (src/review.py / src/review_gpt.py): ambiguous split candidates are routed to vision review (Anthropic Claude by default, or Azure OpenAI GPT). review_ambiguous implements 3-tier routing: suppress (very low confidence), review (ambiguous), auto-confirm (high confidence). The review call returns a JSON verdict used to overwrite/annotate events.
+- Review (src/review.py / src/review_gpt.py): ambiguous split candidates are routed to vision review (Azure OpenAI GPT by default, `--vision-backend claude` for Anthropic). review_ambiguous implements 3-tier routing: suppress (very low confidence), review (ambiguous), auto-confirm (high confidence). The review call returns a JSON verdict used to overwrite/annotate events.
 - Output (src/output.py): write events.csv (20+ columns) and summary.json. scripts/package_events.py creates per-event folders with crops and an index README.
 
 Key conventions & repo-specific patterns

@@ -1,6 +1,16 @@
 # Cell Split Counter
 
-Detects and classifies cell division events in microscopy video (Fiji/AVI etc).
+Detects, tracks, and classifies cell division events in microscopy time-lapse video
+(ND2/AVI) for a real research-scientist end user, who previously did this by eye in
+Fiji. Hybrid architecture: classical CV (Cellpose segmentation + Trackastra
+deep-learning tracking) handles per-frame detection and lineage-linking
+deterministically and cheaply; a vision-language model is used only as a targeted
+second opinion on ambiguous candidates (borderline confidence, anomaly-flagged
+geometry) rather than as a per-frame classifier — keeps cost and consistency in
+check on multi-thousand-frame videos with hundreds of dividing cells. Config/prompt
+changes to the review step are validated against a frozen, human-labeled golden
+dataset via a dedicated eval harness rather than by feel — see
+[Testing & Evaluation](#testing--evaluation).
 
 ## Pipeline
 1. **Ingest** ✅ — extract frames from video, optional ROI crop.
@@ -11,8 +21,33 @@ Detects and classifies cell division events in microscopy video (Fiji/AVI etc).
 6. **Classify divisions** ✅ — `--classify-divisions` flag runs ACD classifier on confirmed events (bipolar/tripolar/multipolar + 4 abnormality flags).
 7. **Package** ✅ — `scripts/package_events.py` outputs per-event folders with before/after crops + info.txt for papers/presentations.
 8. **Output** ✅ — `events.csv` (see `docs/output_schema.md` for the full, current column list) + `summary.json`.
-9. **Document** ✅ — `scripts/generate_package_readme.py` writes a self-contained README.md + index.csv into an output package directory, so it's self-describing when handed to someone (or their AI assistant) without repo access. (Currently a manual step, not run automatically at the end of a pipeline run — see backlog.)
-10. **QA tooling** ✅ — `scripts/reports/spot_check_review.py` generates a blind, self-contained HTML page for manually auditing a sample of review verdicts against your own judgment (stratified across risk buckets, live agreement scoring). `scripts/reports/researcher_browser.py` generates a filterable/sortable gallery of confirmed events with AI verdicts visible, for exploring what happened in a run.
+9. **Document** ✅ — every pipeline run auto-generates a self-contained `README.md` + `index.csv` in its output directory (`scripts/generate_package_readme.py`, wired into `src/pipeline.py`), so a run is self-describing when handed to someone (or their AI assistant) without repo access.
+10. **QA tooling** ✅ — `scripts/reports/spot_check_review.py` generates a blind, self-contained HTML page for manually auditing a sample of review verdicts against your own judgment (stratified across risk buckets, live agreement scoring). `scripts/reports/researcher_browser.py` generates a filterable/sortable gallery of a run's **potentially interesting events** (splits, anomaly-flagged divisions, deaths) with AI verdicts/notes visible from the start — recall over precision, sized to shrink a researcher's haystack without dropping real events. `scripts/reports/death_shape_browser.py` is a shape-outlier-ranked gallery specifically for death events (no vision review runs on deaths, so this is the primary QA surface for that event type).
+
+## Testing & Evaluation
+
+Three layers, each answering a different question:
+
+- **Unit tests** (`tests/`, run with `pytest`) — 118 tests across 9 files covering
+  segmentation/tracking memmap handling, classification rules, output formatting,
+  and the vision-review request/response parsing (mocked, no live API key or GPU
+  needed to run the suite).
+- **Eval harness** (`scripts/eval_harness/`) — sweeps vision-review config
+  (prompt wording, confidence floor, backend choice) against a frozen, human-labeled
+  golden set of real events and scores precision/recall/F1, with results logged
+  append-only for tracking changes over time. Answers "did this config change
+  actually help, measured against real human judgment" instead of eyeballing a
+  handful of examples. See `scripts/eval_harness/README.md` for the full design,
+  including an explicit Tier A (review-config changes, scoreable today) vs. Tier B
+  (segmentation/tracking changes, would need new ground truth) split, and honest
+  caveats on what the golden set's stratified sampling does and doesn't tell you.
+- **Human QA tooling** (`spot_check_review.py`, `researcher_browser.py`'s
+  annotation/export flow) — for validating a specific real run against a human
+  reviewer's own judgment, not a fixed golden set.
+
+The `Status` section below is intentionally candid about where the pipeline's own
+confidence score is and isn't trustworthy — that finding came from this same
+QA tooling, not from an assumption.
 
 ## Status
 Full pipeline implemented; ground-truth-scored recall/precision (63.6%/88.0%, F1 0.739) comes from one 575-frame validation video (Tom20, 33 GT events) run under an earlier review architecture — **not re-validated since**, and not necessarily representative of newer runs/videos. Repeated blind spot-checks (`spot_check_review.py`) across three independent samples on production Bewo runs found the *auto-confirmed, no-further-review* `>=0.85` confidence tier agrees with independent human judgment only ~12-25% of the time, well below the auto-rejected false-positive tier's ~60-87% — i.e. the model's own confidence score is not a reliable proxy for correctness at the high end. Treat any confidence-based accuracy claim as unverified until you've spot-checked your own run.
@@ -74,11 +109,17 @@ python scripts/generate_package_readme.py data/output/your_run_folder
 # Blind QA spot-check of review verdicts against your own judgment
 python scripts/reports/spot_check_review.py data/output/your_run_folder
 
-# Filterable gallery of confirmed events for exploring a run
+# Filterable gallery of a run's potentially interesting events (splits, anomalies, deaths)
 python scripts/reports/researcher_browser.py data/output/your_run_folder
 ```
 
-For development/tests only:
+### Tests
+
 ```bash
 pip install -r requirements-dev.txt
+pytest
 ```
+
+118 tests, synthetic fixtures throughout — no live API key or GPU required. See
+[Testing & Evaluation](#testing--evaluation) above for how this fits together with
+the eval harness and human QA tooling.
