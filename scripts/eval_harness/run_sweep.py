@@ -51,7 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # get_pixel_size_um), it just skips re-running Cellpose/trackastra.
 # Configure for your own dataset -- this is a local, machine-specific path, not
 # something a public checkout has by default.
-DEFAULT_VIDEO = REPO_ROOT.parent / "your_video.nd2"
+DEFAULT_VIDEO = REPO_ROOT.parent / "202660629_Bewop920x_M4.nd2"
 SWEEP_OUTPUT_ROOT = REPO_ROOT / "data/output/eval_harness_sweeps"
 
 # Two selectable frame-dir fixtures. "full" is the fixture the golden set's
@@ -73,8 +73,8 @@ SWEEP_OUTPUT_ROOT = REPO_ROOT / "data/output/eval_harness_sweeps"
 # BEFORE load_video_arrays). Without it: "Memmap size mismatch -- expected 0.89 GB /
 # 1.78 GB but found 0.21 GB / 0.42 GB" (0.21/0.89 = 200/848 exactly).
 FRAME_DIR_FIXTURES = {
-    "full": REPO_ROOT / "data/output/your_video/frames",
-    "200frame": REPO_ROOT / "data/output/your_video_200frame_fixture/frames",
+    "full": REPO_ROOT / "data/output/202660629_Bewop920x_M4/frames",
+    "200frame": REPO_ROOT / "data/output/202660629_Bewop920x_M4_200frame_fixture/frames",
 }
 FIXTURE_END_FRAME = {"full": None, "200frame": 200}
 FIXTURE_EXPECTED_GOLDEN = {"full": 56, "200frame": 24}

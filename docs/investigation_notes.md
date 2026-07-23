@@ -3,6 +3,103 @@
 Running log of spot-check findings that don't belong in code comments but shouldn't
 be lost between sessions. Newest entries on top.
 
+## 2026-07-21: Batch A/B human ground truth — failed-split precision ~0%, death/dropout confirmed at 96%, mitotic rounding as candidate root cause
+
+Full results for the two targeted review batches (`batch_review_viewer.py`, hand-labeled
+by the maintainer): `verdicts_Batch_A_-_Failed_Split_Review.csv` (30/30 complete) and
+`verdicts_Batch_B_-_Death_vs_Dropout_Review.csv` (50/50 complete). Batch A stratifies
+`gpt_medium_floor85`'s `failed_split` events by confidence tercile; Batch B stratifies
+the base M4 run's death events by the model's own `likely_division_dropout` flag
+(25 flagged / 25 not).
+
+### Batch A: failed-split characterization
+
+| verdict | count | % |
+|---|---:|---:|
+| not a real division attempt | 23 | 77% |
+| unsure | 7 | 23% |
+| genuine failed division | 0 | 0% |
+
+Zero of 30 were confirmed as a genuine failed division (furrow forms, then re-fuses) —
+the exact question this batch was built to answer. Of the 7 "unsure" rows, 2 carry an
+explicit override note ("successful mitosis, ignore unsure") — a real division did
+happen, it just *succeeded*, contradicting the model's "failed" label; "unsure" was
+only picked because "successful" wasn't one of the three offered verdict options. 2 more
+are a genuine partial case ("parent successful, daughter could fail") the binary
+failed/not-failed frame doesn't capture. 3 are unresolved with no clarifying note.
+
+Net: at minimum 25/30 (83%), arguably all 30/30, are not a real failed division under
+this confidence-floor config. Combined with the prior n=5 spot-check (also 0/5
+agreement, see memory), this is now a decisive, much larger sample landing on the same
+conclusion: `split_type=failed` has ~0% precision for what a human calls a real failed
+division, at least under `gpt_medium_floor85`.
+
+### Batch B: death vs. dropout
+
+| model's `likely_division_dropout` | still alive (tracking lost it) | real death | unsure |
+|---|---:|---:|---:|
+| 1 (flagged dropout) | 25/25 (100%) | 0 | 0 |
+| 0 ("plain"/confident death) | 23/25 (92%) | 1 | 1 |
+
+48/50 (96%) overall: the cell was actually still alive, tracking just lost it. The
+model's own dropout flag gives **no discriminating signal** here — the pool it was
+*not* flagging as suspicious is nearly as likely (92% vs. 100%) to turn out alive as the
+pool it flagged. This is real ground truth, sharper than the earlier cross-dataset
+estimate (69-84%, see memory) — and it says the current flag isn't doing useful
+discriminating work at all.
+
+24/50 (48%) of notes explicitly say "divided halfway through" — not a generic
+disappearance, an active division tracking dropped mid-way. This skewed toward the
+*non*-flagged pool (19 of 24) — the opposite of what the flag would ideally catch.
+
+Two individual cases worth a closer look later: track 1122 ("cytokinesis failure,
+interesting, but technically not death" — fits none of the three verdict options), and
+track 9975 (the one real death — "the researcher keeps saying necrosis not death," a taxonomy
+granularity not currently distinguished).
+
+### Candidate root cause: mitotic rounding
+
+the maintainer's own pattern from reviewing the crops: cell elongates, then appears to vanish
+for a few frames, then reappears already split — around what looks like the
+metaphase-to-anaphase transition. Checked against the literature (not verified against
+this pipeline's own raw masks yet — see caveat below), this maps cleanly onto
+well-documented mitotic mechanics, not something specific to this codebase:
+
+- **Rounding (prophase → metaphase):** mitotic cells detach from the substrate and round
+  into a near-sphere, driven by actomyosin cortex contraction plus a hydrostatic
+  pressure buildup — cortical stiffness increases ~2-4x (Stewart et al. 2011, *Nature*;
+  Frontiers 2020 review). In phase-contrast imaging this produces a sharp
+  brightness/contrast change right before division (more diffracted light from the
+  spherical shape) plus documented "shade-off"/"halo" optical artifacts that
+  "complicate standard image processing" for segmentation. A drastically different,
+  feature-poor, high-contrast blob is a plausible failure mode for both Cellpose
+  segmentation and Trackastra's frame-to-frame linking, independent of any bug here.
+- **Elongation (anaphase B):** a distinct, well-timed phase — spindle poles separate
+  fast initially, then a second, slightly slower phase specifically coincides with
+  visible cell elongation, a few minutes after anaphase onset, before the cleavage
+  furrow becomes visible (~6 min after anaphase onset).
+- **Split (telophase/cytokinesis):** furrow ingression completes the physical
+  separation into two daughters.
+
+This is a genuine, literature-grounded explanation for why a brightfield/phase-contrast
+tracker would specifically struggle right around division — not proof this is exactly
+what Trackastra/Cellpose are doing here, just a strong, testable hypothesis: if true,
+the failure window should cluster tightly around the few-frame rounding/elongation
+transition rather than being randomly distributed.
+
+**Not yet done:** confirm against this pipeline's own raw Cellpose masks for a few of
+the 24 "divided halfway through" events, same method as the 2026-07-04 raw-mask trace
+below, rather than resting on general literature alone. If confirmed, the fix is
+probably segmentation-side (e.g. loosening `cellprob_threshold` specifically for
+hyper-round/bright objects) or tracker-side (a rounding-aware gap-bridging heuristic),
+not a review-prompt fix.
+
+Sources: [Mitotic cell rounding (Wikipedia)](https://en.wikipedia.org/wiki/Mitotic_cell_rounding),
+[Hydrostatic pressure and the actomyosin cortex drive mitotic cell rounding (Nature)](https://www.nature.com/articles/nature09642),
+[The Mechanics of Mitotic Cell Rounding (Frontiers)](https://www.frontiersin.org/journals/cell-and-developmental-biology/articles/10.3389/fcell.2020.00687/full),
+[Mathematical imaging methods for mitosis analysis in live-cell phase contrast microscopy (ScienceDirect)](https://www.sciencedirect.com/science/article/pii/S1046202317300518),
+[Anaphase B (PMC)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5192431/).
+
 ## 2026-07-04 (follow-up): raw Cellpose mask trace for GT events 9/10 — refines the condensation hypothesis: it's intermittent low-confidence detection, not fragmentation
 
 Wrote `scripts/debug_raw_masks.py` to dump raw per-frame Cellpose mask count/area/

@@ -17,7 +17,22 @@ import argparse
 import csv
 import json
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.reports._crop_shared import CROP_RADIUS as _CROP_RADIUS
+from scripts.reports._crop_shared import centroid_in_crop_pct as _centroid_in_crop_pct
+from src.review import adaptive_radius as _adaptive_radius
+
+# Same 2026-07-13/07-13 real-usage-feedback marker as researcher_browser.py: a human
+# reviewer finds crowded frames ambiguous too, not just the AI, but baking a marker into
+# the saved review_crops/ PNGs would ruin a clean copy for a researcher's own
+# reports/slides -- so this is a display-only CSS overlay, reusing the AI's own
+# neighbor-aware adaptive_radius() but pushed further out (a human just needs
+# orientation, not a radius tight enough to disambiguate crowded neighbors).
+_DISPLAY_MARKER_SCALE = 1.7
 
 
 def _find_crop_folder(run_dir: Path, track_id: str, parent_id: str, peak_frame: str, pattern: str) -> Path | None:
@@ -29,6 +44,17 @@ def _find_crop_folder(run_dir: Path, track_id: str, parent_id: str, peak_frame: 
     return folder if folder.is_dir() else None
 
 
+def _marker_radius_pct(row: dict) -> float:
+    def _f(key: str) -> float | None:
+        v = row.get(key)
+        return float(v) if v not in (None, "") else None
+
+    radius_px = _adaptive_radius(
+        _f("neighbor_distance_px"), cell_area_px=_f("cell_area_px"), neighbor_area_px=_f("neighbor_area_px"),
+    )
+    return (radius_px * _DISPLAY_MARKER_SCALE / (2 * _CROP_RADIUS)) * 100
+
+
 def _build_manifest(run_dir: Path, sample_csv: Path, folder_pattern: str, extra_cols: list[str]) -> list[dict]:
     rows = list(csv.DictReader(open(sample_csv, encoding="utf-8", errors="replace")))
     manifest = []
@@ -37,8 +63,16 @@ def _build_manifest(run_dir: Path, sample_csv: Path, folder_pattern: str, extra_
         folder = _find_crop_folder(run_dir, track_id, parent_id, peak_frame, folder_pattern)
         images = []
         if folder is not None:
-            for p in sorted(folder.glob("*.png")):
+            for p in sorted(folder.glob("*.png"), key=lambda p: int(p.name.split("_", 1)[0])):
                 images.append(f"../review_crops/{folder.name}/{p.name}")
+
+        crosshair_x_pct = crosshair_y_pct = 50.0
+        cx, cy = r.get("centroid_x"), r.get("centroid_y")
+        if folder is not None and images and cx not in (None, "") and cy not in (None, ""):
+            crosshair_x_pct, crosshair_y_pct = _centroid_in_crop_pct(
+                folder / Path(images[0]).name, float(cx), float(cy)
+            )
+
         manifest.append({
             "entry_key": f"{track_id}_{peak_frame}",
             "track_id": track_id,
@@ -46,6 +80,9 @@ def _build_manifest(run_dir: Path, sample_csv: Path, folder_pattern: str, extra_
             "peak_frame": peak_frame,
             "extra": {c: r.get(c, "") for c in extra_cols},
             "images": images,
+            "crosshair_x_pct": round(crosshair_x_pct, 2),
+            "crosshair_y_pct": round(crosshair_y_pct, 2),
+            "marker_radius_pct": round(_marker_radius_pct(r), 2),
         })
     return manifest
 
@@ -99,6 +136,12 @@ body{background:var(--page);color:var(--text-primary);font-family:system-ui,-app
 .lightbox-nav:disabled{opacity:0.25;cursor:default;}
 .lightbox-nav.prev{left:16px;}
 .lightbox-nav.next{right:16px;}
+.marker-tick{position:absolute;width:10px;height:10px;border-color:rgba(230,170,60,0.75);border-style:solid;border-width:0;pointer-events:none;}
+.marker-tick.tl{border-top-width:1.5px;border-left-width:1.5px;}
+.marker-tick.tr{border-top-width:1.5px;border-right-width:1.5px;transform:translateX(-100%);}
+.marker-tick.bl{border-bottom-width:1.5px;border-left-width:1.5px;transform:translateY(-100%);}
+.marker-tick.br{border-bottom-width:1.5px;border-right-width:1.5px;transform:translate(-100%,-100%);}
+.marker-toggle{font-size:12px;color:var(--text-secondary);display:block;margin:6px 0 14px;}
 """
 
 
@@ -121,6 +164,7 @@ def _render_html(
   <div class="title">{title}</div>
   <div class="subtitle">{subtitle}</div>
   <div class="stats" id="stats"></div>
+  <label class="marker-toggle"><input type="checkbox" id="filter-show-marker" checked> Show position marker</label>
   <button class="export-btn" id="export-btn">Export verdicts CSV</button>
 </div>
 
@@ -134,6 +178,7 @@ def _render_html(
   <button class="lightbox-nav prev" id="lightbox-prev">&lsaquo;</button>
   <div class="lightbox-img-wrap">
     <img id="lightbox-img" alt="">
+    <div class="lightbox-marker" id="lightbox-marker"></div>
     <div class="lightbox-caption" id="lightbox-caption"></div>
   </div>
   <button class="lightbox-nav next" id="lightbox-next">&rsaquo;</button>
@@ -153,17 +198,19 @@ def _render_html(
     try {{ localStorage.setItem(storageKey, JSON.stringify(a)); }} catch(e) {{}}
   }}
   var annotations = loadAnnotations();
+  var showMarker = true;
 
   var lightbox = document.getElementById('lightbox');
   var lbImg = document.getElementById('lightbox-img');
+  var lbMarker = document.getElementById('lightbox-marker');
   var lbCaption = document.getElementById('lightbox-caption');
   var lbPrev = document.getElementById('lightbox-prev');
   var lbNext = document.getElementById('lightbox-next');
   var lbClose = document.getElementById('lightbox-close');
-  var lbImages = [], lbIdx = 0;
+  var lbImages = [], lbIdx = 0, lbMarkerData = null;
 
-  function openLightbox(images, startIdx) {{
-    lbImages = images; lbIdx = startIdx;
+  function openLightbox(images, startIdx, markerData) {{
+    lbImages = images; lbIdx = startIdx; lbMarkerData = markerData || null;
     showLbFrame();
     lightbox.classList.add('open');
   }}
@@ -172,6 +219,16 @@ def _render_html(
     lbCaption.textContent = (lbIdx + 1) + ' / ' + lbImages.length + '  —  ' + lbImages[lbIdx].split('/').pop();
     lbPrev.disabled = lbIdx === 0;
     lbNext.disabled = lbIdx === lbImages.length - 1;
+    if (showMarker && lbMarkerData) {{
+      var cx = lbMarkerData.x, cy = lbMarkerData.y, r = lbMarkerData.r;
+      lbMarker.innerHTML =
+        '<span class="marker-tick tl" style="left:' + (cx - r) + '%;top:' + (cy - r) + '%;"></span>' +
+        '<span class="marker-tick tr" style="left:' + (cx + r) + '%;top:' + (cy - r) + '%;"></span>' +
+        '<span class="marker-tick bl" style="left:' + (cx - r) + '%;top:' + (cy + r) + '%;"></span>' +
+        '<span class="marker-tick br" style="left:' + (cx + r) + '%;top:' + (cy + r) + '%;"></span>';
+    }} else {{
+      lbMarker.innerHTML = '';
+    }}
   }}
   lbPrev.addEventListener('click', function(e) {{ e.stopPropagation(); if(lbIdx>0){{lbIdx--;showLbFrame();}} }});
   lbNext.addEventListener('click', function(e) {{ e.stopPropagation(); if(lbIdx<lbImages.length-1){{lbIdx++;showLbFrame();}} }});
@@ -187,9 +244,18 @@ def _render_html(
 
   function renderCard(ev) {{
     var ann = annotations[ev.entry_key] || {{}};
+    var markerHtml = '';
+    if (showMarker) {{
+      var cx = ev.crosshair_x_pct, cy = ev.crosshair_y_pct, r = ev.marker_radius_pct;
+      markerHtml =
+        '<span class="marker-tick tl" style="left:' + (cx - r) + '%;top:' + (cy - r) + '%;"></span>' +
+        '<span class="marker-tick tr" style="left:' + (cx + r) + '%;top:' + (cy - r) + '%;"></span>' +
+        '<span class="marker-tick bl" style="left:' + (cx - r) + '%;top:' + (cy + r) + '%;"></span>' +
+        '<span class="marker-tick br" style="left:' + (cx + r) + '%;top:' + (cy + r) + '%;"></span>';
+    }}
     var filmstrip = ev.images.length > 0
       ? ev.images.map(function(src, i) {{
-          return '<span class="crop-wrap" data-idx="' + i + '"><img class="crop-thumb" src="' + src + '" loading="lazy"></span>';
+          return '<span class="crop-wrap" data-idx="' + i + '"><img class="crop-thumb" src="' + src + '" loading="lazy">' + markerHtml + '</span>';
         }}).join('')
       : '';
     var noCrops = ev.images.length === 0 ? '<p class="no-crops">No crops found on disk for this event.</p>' : '';
@@ -223,7 +289,8 @@ def _render_html(
         var rowId = card.getAttribute('data-row');
         var ev = manifest.find(function(e) {{ return e.entry_key === rowId; }});
         if (ev && ev.images.length) {{
-          openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10));
+          openLightbox(ev.images, parseInt(wrap.getAttribute('data-idx'), 10),
+            {{x: ev.crosshair_x_pct, y: ev.crosshair_y_pct, r: ev.marker_radius_pct}});
         }}
       }});
     }});
@@ -255,6 +322,11 @@ def _render_html(
     var done = Object.keys(annotations).filter(function(k) {{ return annotations[k] && annotations[k].verdict; }}).length;
     document.getElementById('stats').innerHTML = done + ' / ' + manifest.length + ' reviewed';
   }}
+
+  document.getElementById('filter-show-marker').addEventListener('change', function() {{
+    showMarker = this.checked; renderGrid();
+    if (lightbox.classList.contains('open')) showLbFrame();
+  }});
 
   document.getElementById('export-btn').addEventListener('click', function() {{
     var lines = ['track_id,parent_id,peak_frame,verdict,notes'];
