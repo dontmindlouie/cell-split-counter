@@ -31,7 +31,12 @@ def run(
     flow_threshold: float = 0.4,
     segmentation_model: str = "cyto3",
     pixel_size_um: float | None = None,
-    vision_backend: str = "claude",
+    # Must stay in sync with main.py's --vision-backend default. These disagreed until
+    # 2026-07-26 (this said "claude", the CLI said "gpt"), so a programmatic caller
+    # silently got a different model -- and different cost and results -- than any real
+    # run. Every production run to date goes through the CLI, so "gpt" is what the
+    # existing events.csv files were actually produced with.
+    vision_backend: str = "gpt",
     gpt_reasoning_effort: str = "medium",
     min_gpt_confidence: float = 0.85,
     review_death_events: bool = True,
