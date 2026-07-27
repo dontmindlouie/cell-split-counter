@@ -9,6 +9,7 @@ import cv2
 from src.classify import NEAR_EDGE_MARGIN_PX, EventType, classify_events, classify_track_ends
 from src.ingest import IngestConfig, extract_frames, get_pixel_size_um
 from src.output import write_events_csv, write_summary_json
+from src.triage import select_for_review
 from src.review import review_ambiguous  # review_deaths no longer used here (2026-07-26);
 # it remains in src/review.py for the eval-harness scripts that still score the old
 # death-prompt behaviour against historical runs.
@@ -43,6 +44,7 @@ def run(
     # Match main.py's --min-gpt-confidence default (0.65 since 2026-07-18); this said
     # 0.85, so a programmatic caller got a floor no real run has used. See review.py.
     min_gpt_confidence: float = 0.65,
+    triage_keep_fraction: float = 1.0,
     review_death_events: bool = True,
 ) -> None:
     t_start = time.time()
@@ -125,6 +127,21 @@ def run(
     # persistence-confirmed (confidence>=1.0) events skipping review.
     # max_reviews raised so busy videos don't silently fall back to rule-only
     # classification once the default 50-split-point cap is hit.
+    # Optional cheap triage pre-filter (src/triage.py). Ranks candidates by a local,
+    # CPU-only shape+density score and sends only the top slice to vision review.
+    # Validated on 130 labeled M12_RUES2 events at keep=0.6: significantly better junk
+    # rejection (p<0.0001) with no statistically detectable recall cost (3 events,
+    # p=0.25) and 40% fewer API calls. keep=0.5 makes the recall loss real (p=0.016).
+    # Defaults to 1.0 (disabled) -- validated on a single well so far, so it is opt-in
+    # until a cross-well check exists.
+    skipped_splits: list = []
+    skipped_deaths: list = []
+    if triage_keep_fraction < 1.0:
+        splits, skipped_splits = select_for_review(splits, tracks, triage_keep_fraction)
+        deaths, skipped_deaths = select_for_review(deaths, tracks, triage_keep_fraction)
+        print(f"  triage (keep={triage_keep_fraction:.2f}): reviewing {len(splits)} splits "
+              f"+ {len(deaths)} deaths, skipping {len(skipped_splits)}+{len(skipped_deaths)}")
+
     split_vision_usage: dict = {}
     reviewed_splits = review_ambiguous(
         splits, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
@@ -146,7 +163,10 @@ def run(
 
     t_after_deaths = time.time()
 
-    events = reviewed_splits + reviewed_deaths
+    # Triaged-out events pass through with their rule-based classification intact
+    # (classification_source stays "rule", so downstream can tell them from
+    # model-confirmed ones) -- same convention as events beyond max_reviews.
+    events = reviewed_splits + reviewed_deaths + skipped_splits + skipped_deaths
 
     split_cost = split_vision_usage.get("estimated_cost_usd") or 0.0
     death_cost = death_vision_usage.get("estimated_cost_usd") or 0.0

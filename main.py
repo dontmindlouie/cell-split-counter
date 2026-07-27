@@ -38,6 +38,7 @@ if __name__ == "__main__":
     parser.add_argument("--frame-dir", type=Path, default=None, help="directory for extracted frames (default: <output-dir>/frames, so a run's frames/crops/events.csv all live together; pass a shared path like data/frames to reuse a cache across runs)")
     parser.add_argument("--vision-backend", choices=["claude", "gpt"], default="gpt", help="vision review model: gpt (default, Azure OpenAI, draws down Azure credit -- see src/review_gpt.py; with --gpt-reasoning-effort medium and the default --min-gpt-confidence floor, precision is close to/slightly better than Claude on the 2026-07-06/07 spike) or claude (Anthropic Claude Haiku, higher precision but more expensive)")
     parser.add_argument("--gpt-reasoning-effort", choices=["low", "medium", "high"], default="medium", help="GPT backend only. 'high' is currently unusable -- burns its token budget on hidden reasoning and fails ~68%% of calls (2026-07-07 finding)")
+    parser.add_argument("--triage-keep-fraction", type=float, default=1.0, help="cheap local pre-filter (src/triage.py): rank candidates by a shape+density score and send only this top fraction to vision review. 1.0 (default) disables it. 0.6 was validated on 130 labeled M12_RUES2 events -- significantly better junk rejection (p<0.0001) with no detectable recall cost (p=0.25) and 40%% fewer API calls; 0.5 makes the recall loss real (p=0.016). Validated on ONE well only, hence opt-in.")
     parser.add_argument("--min-gpt-confidence", type=float, default=0.65, help="GPT backend only: verdicts below this self-reported confidence are downgraded to false_positive. 0.0 disables filtering. Raised from 0.5 to 0.65 on 2026-07-18 -- a repeats-based confirmation sweep (the original 0.85->0.5 sweep was later found confounded by GPT-5-mini's run-to-run non-determinism) found 0.65 with higher mean precision (0.214 vs 0.160) AND higher mean recall (0.600 vs 0.500) than 0.5, on 2 repeats x 24 golden events each -- not a strict precision/recall tradeoff point, dominates 0.5 on both axes in this sample. 0.85 remains clearly worse on recall (stable 0.200 across repeats, no overlap with either other floor). See scripts/eval_harness/README.md.")
     parser.add_argument("--no-review-deaths", dest="review_death_events", action="store_false", default=True, help="skip vision review of DEATH events (reviewed by default since 2026-07-10 -- see review_deaths in src/review.py; DEATH previously got no vision coverage at all, unlike splits)")
     args = parser.parse_args()
@@ -63,5 +64,6 @@ if __name__ == "__main__":
         vision_backend=args.vision_backend,
         gpt_reasoning_effort=args.gpt_reasoning_effort,
         min_gpt_confidence=args.min_gpt_confidence,
+        triage_keep_fraction=args.triage_keep_fraction,
         review_death_events=args.review_death_events,
     )
