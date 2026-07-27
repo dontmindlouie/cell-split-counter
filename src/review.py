@@ -734,6 +734,26 @@ def review_deaths(
     return [reviewed_by_id.get(id(e), e) for e in to_call] + events[max_reviews:]
 
 
+def _review_key(event: LineageEvent) -> tuple[int | None, int]:
+    """Dedup key for "one API call per distinct event".
+
+    SPLITS key on (parent_id, frame) deliberately: one division emits a separate
+    LineageEvent per daughter, and all daughters share that key, so the single review
+    result is correctly applied to every sibling.
+
+    DEATHS must NOT use parent_id. A death's parent_id is its distant birth-ancestor and
+    is EMPTY for most of them (64% in TSC_batch2_M12_RUES2, 44% in Bewo M4), so unrelated
+    deaths ending on the same frame collide and one death's verdict silently overwrites
+    another's -- measured 2026-07-26 as 466/1487 events in M12_RUES2 (31%) and 205/1457
+    in M4 (14%). track_id is each event's own unique subject, and gives 0 collisions on
+    both runs. This is the same reasoning that moved _save_debug_crops off parent_id on
+    2026-07-12 after 211 real folder collisions.
+    """
+    if event.event_type == EventType.DEATH:
+        return (event.track_id, event.frame)
+    return (event.parent_id, event.frame)
+
+
 def review_ambiguous(
     events: list[LineageEvent],
     frame_dir: Path,
@@ -835,7 +855,7 @@ def review_ambiguous(
     # One representative event per unique split point, in order, capped at max_reviews.
     to_call: dict[tuple[int | None, int], LineageEvent] = {}
     for event in to_review:
-        key = (event.parent_id, event.frame)
+        key = _review_key(event)
         if key not in to_call and len(to_call) < max_reviews:
             to_call[key] = event
 
@@ -882,7 +902,7 @@ def review_ambiguous(
 
     reviewed = []
     for event in to_review:
-        key = (event.parent_id, event.frame)
+        key = _review_key(event)
         if key not in split_result:
             # Beyond the max_reviews cap -- pass through unchanged.
             reviewed.append(event)

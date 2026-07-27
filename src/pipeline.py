@@ -9,7 +9,9 @@ import cv2
 from src.classify import NEAR_EDGE_MARGIN_PX, EventType, classify_events, classify_track_ends
 from src.ingest import IngestConfig, extract_frames, get_pixel_size_um
 from src.output import write_events_csv, write_summary_json
-from src.review import review_ambiguous, review_deaths
+from src.review import review_ambiguous  # review_deaths no longer used here (2026-07-26);
+# it remains in src/review.py for the eval-harness scripts that still score the old
+# death-prompt behaviour against historical runs.
 from src.segment import load_video_arrays, segment_all, segment_video_arrays
 from src.track import link_frames, link_frames_trackastra
 from scripts.reports.researcher_browser import generate as generate_researcher_browser
@@ -97,11 +99,22 @@ def run(
     # than reporting a frame-exit as if it were an interesting event.
     events = [e for e in events if not (e.event_type == EventType.DEATH and e.near_edge)]
 
-    # Splits go through review_ambiguous; DEATH events go through review_deaths --
-    # separate functions since a death has no split_type/reclassification concept,
-    # but both now get 100% vision coverage (backlog #27, 2026-07-10: DEATH events
-    # previously got none at all, despite item 23 finding that a healthy fraction of
-    # them are likely tracking dropouts during real divisions, not genuine death).
+    # 2026-07-26: DEATH events now go through review_ambiguous alongside splits, i.e. the
+    # SAME mitosis-capable prompt, instead of the separate review_deaths/_DEATH_SYSTEM
+    # path (which was a 2026-07-10 spike, backlog #27).
+    #
+    # Measured on 130 human-labeled M12_RUES2 events (45 mitoses / 78 artifacts,
+    # gpt-5-mini), the separate death prompt is this pipeline's precision problem: it
+    # answers likely_division_dropout=true on 38 of 43 death-topology ARTIFACTS (88%),
+    # catching all 13 real death-topology mitoses only by rubber-stamping nearly
+    # everything. Routing those events through _SYSTEM instead is a free win, paired on
+    # the same events: recall 34 vs 35 (p=1.0, statistically identical) with junk
+    # rejection 50% vs 23% (p=0.0002). Overall precision 37% -> 47%.
+    #
+    # NOTE this leaves `likely_division_dropout` unset (None) on every event -- nothing
+    # writes it now. The column is still emitted by output.py and read defensively by
+    # researcher_browser.py (both treat missing as false), so this is safe, but the field
+    # is now vestigial and should be removed once no historical run depends on it.
     splits = [e for e in events if e.event_type in (EventType.NORMAL_SPLIT, EventType.MULTI_WAY_SPLIT)]
     deaths = [e for e in events if e.event_type == EventType.DEATH]
 
@@ -119,10 +132,14 @@ def run(
 
     t_after_splits = time.time()
 
+    # Same reviewer as splits now. review_ambiguous keys deaths by (track_id, frame) --
+    # see _review_key; keying them by parent_id would collide, since most deaths have no
+    # parent_id at all.
     death_vision_usage: dict = {}
-    reviewed_deaths = review_deaths(
-        deaths, frame_dir, backend=vision_backend, save_debug_crops=save_debug_crops,
-        usage_out=death_vision_usage, gpt_reasoning_effort=gpt_reasoning_effort,
+    reviewed_deaths = review_ambiguous(
+        deaths, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
+        backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=death_vision_usage,
+        gpt_reasoning_effort=gpt_reasoning_effort, min_gpt_confidence=min_gpt_confidence,
     ) if review_death_events else deaths
 
     t_after_deaths = time.time()
