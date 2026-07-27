@@ -40,7 +40,9 @@ def run(
     # existing events.csv files were actually produced with.
     vision_backend: str = "gpt",
     gpt_reasoning_effort: str = "medium",
-    min_gpt_confidence: float = 0.85,
+    # Match main.py's --min-gpt-confidence default (0.65 since 2026-07-18); this said
+    # 0.85, so a programmatic caller got a floor no real run has used. See review.py.
+    min_gpt_confidence: float = 0.65,
     review_death_events: bool = True,
 ) -> None:
     t_start = time.time()

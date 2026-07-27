@@ -767,7 +767,12 @@ def review_ambiguous(
     max_workers: int = 10,
     usage_out: dict | None = None,
     gpt_reasoning_effort: str = "medium",
-    min_gpt_confidence: float = 0.85,
+    # Must stay in sync with main.py's --min-gpt-confidence default. This said 0.85
+    # while the CLI said 0.65 (lowered 2026-07-18 by a repeats-based sweep), so any
+    # programmatic caller silently got a far harsher floor than every real run --
+    # measured on 130 labeled M12_RUES2 events, 0.85 keeps only 29% of real mitoses
+    # vs 71% at 0.65. Same class of drift as pipeline.py's vision_backend default.
+    min_gpt_confidence: float = 0.65,
 ) -> list[LineageEvent]:
     """Three-tier confidence routing for split events.
 
