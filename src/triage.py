@@ -31,8 +31,34 @@ Deliberately NOT included: image focus/sharpness. It looked strong (AUC 0.75) bu
 local-density proxy in disguise -- within density strata it collapses to chance
 (0.45/0.50). See docs/investigation_notes.md 2026-07-26.
 
-CAVEAT: validated on ONE well. Cross-well transfer is untested, and prompt/feature
-behaviour has already proven well- and model-dependent in this project.
+CROSS-WELL TRANSFER WAS TESTED 2026-07-27 AND IT FAILED. Do not enable this by default.
+
+50 feature-blind events from 202660629_Bewop920x_M4 (BeWo, a confluent trophoblast
+line, vs RUES2's discrete colonies), all labeled in one sitting. Same 30% mitosis base
+rate as M12, so this is not a base-rate effect:
+
+    solidity_dip_sharpness   0.731 -> 0.533   95% CI [0.362, 0.705], includes 0.5
+    mask_area_fraction       0.731 -> 0.476   below chance
+    n_masks_in_crop          0.749 -> 0.632
+    family-wise permutation over all 12 features: p=0.336 -- nothing survives
+
+At keep=0.6 the filter delivers 33% precision vs the 30% no-filter baseline while
+discarding a third of the real mitoses (recall 67%). That is not a usable trade.
+
+The density half degrading was PREDICTED (BeWo's density spread is 1.11x vs M12's
+1.34x -- in a confluent sheet "is this in a living colony" has no variance to exploit).
+The dip half was predicted to HOLD, on the reasoning that chromatin mechanics are
+conserved and the score is baseline-normalized. It did not. Ruled out as explanations:
+trajectory-walk corruption in the crowded well (label-switch rate 0.089/frame vs M12's
+0.070, identical medians, full window coverage in both), the 12% of events whose marker
+sits off-screen, and death-kind events (chance in every slice: 0.533 all / 0.579
+excluding off-screen / 0.482 splits only).
+
+So `--triage-keep-fraction` should be read as RUES2-specific until re-validated per cell
+line. This is the second mask-geometry feature to look strong within a well and die on
+held-out data (area_max_delta_z, 0.696 -> 0.530, 2026-07-26) -- the same shape of
+failure both times. See docs/investigation_notes.md and
+scripts/eval_harness/test_bewo_m4_transfer.py.
 """
 
 import math
