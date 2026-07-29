@@ -15,3 +15,5 @@ GEMINI.md
 scripts/eval_harness/*.log
 scripts/eval_harness/*.log.err
 *.log
+
+.venv-mcp/

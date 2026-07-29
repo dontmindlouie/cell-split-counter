@@ -4,7 +4,8 @@
       "command": "uv",
       "args": ["run", "--directory", ".", "python", "cell_mcp.py"],
       "env": {
-        "CELL_BUNDLE_DIR": "${CELL_BUNDLE_DIR:-data/bundle}"
+        "CELL_BUNDLE_DIR": "${CELL_BUNDLE_DIR:-data/bundle}",
+        "UV_PROJECT_ENVIRONMENT": ".venv-mcp"
       }
     }
   }
