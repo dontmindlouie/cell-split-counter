@@ -1,0 +1,31 @@
+[project]
+name = "cell-split-counter"
+version = "0.1.0"
+description = "Time-lapse microscopy analysis, and a read-only MCP server over its output"
+requires-python = ">=3.10"
+
+# These are the RESEARCHER-side dependencies only -- what cell_mcp.py needs to serve a
+# prebuilt bundle. Deliberately excludes cellpose, torch, trackastra and nd2: the heavy
+# pipeline runs on the analysis machine, the bundle ships with calibration already baked
+# into its manifest, and an install that drags in a GPU stack will not still be working a
+# week later. See requirements.txt for the full pipeline environment.
+dependencies = [
+    "mcp>=2.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+# The analysis-machine environment: everything needed to RUN the pipeline and BUILD a
+# bundle, rather than just read one.
+pipeline = [
+    "nd2>=0.10",
+    "scikit-image>=0.22",
+    "opencv-python>=4.8",
+]
+
+[tool.uv]
+# Nothing here is importable as an installed package -- cell_mcp.py is run as a script and
+# src/ is imported via the repo root. Without this, uv tries to build a wheel and fails.
+package = false
