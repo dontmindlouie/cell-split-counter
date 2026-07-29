@@ -363,10 +363,17 @@ def main() -> None:
         m = _FRAME_RE.search(p.name)
         shutil.copy2(p, frames_out / f"frame_{int(m.group(1)):05d}.png")
 
-    for name in ("events.csv", "summary.json", "README.md"):
+    for name in ("events.csv", "summary.json"):
         src = run_dir / name
         if src.is_file():
             shutil.copy2(src, out_run / name)
+
+    # Ship the schema doc INSIDE the bundle -- it is routinely handed to someone
+    # (or some agent) with no repo, no docs/, and no history to reverse-engineer
+    # from. Same reasoning as scripts/generate_package_readme.py.
+    doc = Path(__file__).resolve().parents[1] / "docs" / "bundle_README.md"
+    if doc.is_file():
+        shutil.copy2(doc, out_run.parent / "README.md")
 
     manifest = {
         "run": run_dir.name,

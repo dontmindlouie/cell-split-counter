@@ -12,3 +12,5 @@ openpyxl
 azure-storage-blob
 nd2
 # cache-bust 2026-07-01
+
+mcp>=2.0  # stdio MCP server (cell_mcp.py)
