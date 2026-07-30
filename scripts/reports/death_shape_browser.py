@@ -28,6 +28,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.ingest import colorize, read_display_color
+
 _CROP_RADIUS = 110   # px around centroid -- smaller than review.py's 192, death crops only need
                       # to show the one flagged cell + immediate neighbors, not two daughters.
 _FRAMES_BEFORE = 6    # lead-up frames shown before the death frame (no "after" -- track ends there)
@@ -55,8 +57,11 @@ def _crop_with_marker(frame_cache: dict, frame_dir: Path, frame_idx: int, cx: fl
     out = np.zeros((r * 2, r * 2), dtype=np.uint8)
     out[py0:py0 + (y1c - y0c), px0:px0 + (x1c - x0c)] = img[y0c:y1c, x0c:x1c]
     out = cv2.normalize(out, None, 0, 255, cv2.NORM_MINMAX)
-    tile = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
-    cv2.drawMarker(tile, (r, r), (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=16, thickness=1)
+    tile = colorize(out, read_display_color(frame_dir))
+    if tile.ndim == 2:
+        tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
+    # White cross (was red) -- red blends into an mCherry-tinted background.
+    cv2.drawMarker(tile, (r, r), (255, 255, 255), markerType=cv2.MARKER_CROSS, markerSize=16, thickness=1)
     cv2.circle(tile, (r, r), 22, (0, 255, 255), 1)
     return tile
 

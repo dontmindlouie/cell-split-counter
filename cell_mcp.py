@@ -46,7 +46,10 @@ server = MCPServer(
         "Two more rules that matter: the interval between frames is NOT constant, so "
         "never compute durations from frame counts -- use measure() or time_ms; and some "
         "track_ids are flagged as merged cells, which must not be measured. Images show "
-        "chromatin only (H2B-mCherry), so the shapes are nuclei rather than whole cells."
+        "chromatin only (H2B-mCherry), so the shapes are nuclei rather than whole cells. "
+        "If a cell looks dim or unusual and you can't tell whether that's the cell itself "
+        "or the whole field, call get_neighbourhood_stats() before spending more images on "
+        "it -- it's free and separates a cell-autonomous change from bleaching/defocus."
     ),
 )
 
@@ -627,6 +630,71 @@ def measure(well: str, track_id: int, frame: int | None = None) -> str:
             f"  total bright.  mean {t.intensity_integrated.mean():,.0f}, "
             f"first {t.intensity_integrated.iloc[0]:,.0f}, last {t.intensity_integrated.iloc[-1]:,.0f}\n"
             f"  frames w/ >1 shape sharing this id: {(t.n_masks_in_frame > 1).sum()}")
+
+
+@server.tool()
+def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: int = 5) -> str:
+    """Compare one cell against its nearest neighbours at a single frame, in real units.
+
+    Free to call -- no images. Use this whenever you're guessing at *why* a cell
+    looks dim or unusual: a falling area/brightness z-score relative to neighbours
+    right now means something is happening to this specific cell (death, focal
+    drift out of this cell alone); a flat z-score with everything else also low
+    means the whole field is dim (bleaching, defocus, an optical effect), not this
+    cell dying. Neighbours are the N nearest OTHER tracked cells present in the
+    same frame, by centre-to-centre distance -- not a fixed radius, so a sparse
+    region still returns whatever is nearest, however far.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the cell to evaluate, from list_tracks().
+        frame: the frame to compare at. Must be a frame where this track is present.
+        n_neighbours: how many nearest other cells to compare against. Default 5.
+    """
+    df = _tracks(well)
+    f = df[df.frame == frame].drop_duplicates("track_id", keep="first")
+    if f.empty:
+        raise ValueError(f"no tracks present in {well} at frame {frame}.")
+    mine = f[f.track_id == track_id]
+    if mine.empty:
+        raise ValueError(f"track {track_id} not present in {well} at frame {frame}. "
+                          "Use measure() to find frames where it is.")
+    mine = mine.iloc[0]
+
+    others = f[f.track_id != track_id].copy()
+    if others.empty:
+        return f"{well} frame {frame}: track {track_id} is the only tracked cell -- no neighbours to compare."
+    others["dist_um"] = np.hypot(others.cx - mine.cx, others.cy - mine.cy) * _manifest(well)["pixel_size_um"]
+    nearest = others.sort_values("dist_um").head(n_neighbours)
+
+    def _z(value: float, pool: pd.Series) -> float:
+        std = pool.std()
+        return (value - pool.mean()) / std if std > 1e-9 else 0.0
+
+    lines = [
+        f"{well} frame {frame} ({_hours(well, frame):.2f} h), track {track_id} vs its "
+        f"{len(nearest)} nearest neighbours (of {len(others)} other cells in this frame):",
+        f"  this cell      area {mine.area_um2:.0f} um^2, mean brightness {mine.intensity_mean:.0f}",
+        f"  nearest {len(nearest)}   area median {nearest.area_um2.median():.0f} um^2, "
+        f"mean brightness median {nearest.intensity_mean.median():.0f}",
+        f"  field ({len(others) + 1})  area median {f.area_um2.median():.0f} um^2, "
+        f"mean brightness median {f.intensity_mean.median():.0f}",
+        f"  z-score vs nearest neighbours   area {_z(mine.area_um2, nearest.area_um2):+.2f}, "
+        f"brightness {_z(mine.intensity_mean, nearest.intensity_mean):+.2f}",
+        f"  z-score vs whole field          area {_z(mine.area_um2, f.area_um2):+.2f}, "
+        f"brightness {_z(mine.intensity_mean, f.intensity_mean):+.2f}",
+        "",
+        "  nearest cells: track_id | dist_um | area_um2 | mean_brightness",
+    ]
+    for r in nearest.itertuples():
+        lines.append(f"    {r.track_id} | {r.dist_um:.1f} | {r.area_um2:.0f} | {r.intensity_mean:.0f}")
+    lines.append(
+        "\nReading it: a negative brightness z-score against neighbours but ~0 against the "
+        "field means this cell alone is dim (cell-autonomous). A negative z-score against "
+        "BOTH means the whole neighbourhood/field is dim (bleaching or defocus, not this "
+        "cell's own state)."
+    )
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

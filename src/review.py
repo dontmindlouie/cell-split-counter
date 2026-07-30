@@ -23,6 +23,7 @@ import cv2
 
 from src.classify import EventType, LineageEvent
 from src.config import CLAUDE_MODEL
+from src.ingest import colorize, read_display_color
 
 _FRAMES_BEFORE = 8  # see metaphase plate alignment; widened 2026-07-03 sweep, see docs/investigation_notes.md
 _FRAMES_AFTER = 8   # see cytokinesis + any micronuclei forming; widened 2026-07-03 sweep, see docs/investigation_notes.md
@@ -348,12 +349,19 @@ def _find_frame(frame_dir: Path, index: int) -> Path | None:
     return matches[0] if matches else None
 
 
+def _load_colorized(path: Path):
+    """Load a frame PNG tinted with its acquisition's own display LUT (see
+    src.ingest.colorize) -- single-channel when no LUT is known for this run."""
+    grey = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    return colorize(grey, read_display_color(path.parent))
+
+
 def _crop_image_with_offset(path: Path, centroid: tuple[float, float]):
     """Like _crop_image, but also returns the crop's (x0, y0) offset in the source
     image -- needed to place the marker at the correct local position."""
-    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    img = _load_colorized(path)
     cx, cy = int(centroid[0]), int(centroid[1])
-    h, w = img.shape
+    h, w = img.shape[:2]
     y0, y1 = max(0, cy - _CROP_RADIUS), min(h, cy + _CROP_RADIUS)
     x0, x1 = max(0, cx - _CROP_RADIUS), min(w, cx + _CROP_RADIUS)
     return img[y0:y1, x0:x1], x0, y0
@@ -361,7 +369,7 @@ def _crop_image_with_offset(path: Path, centroid: tuple[float, float]):
 
 def _crop_image(path: Path, centroid: tuple[float, float] | None = None):
     if centroid is None:
-        return cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        return _load_colorized(path)
     return _crop_image_with_offset(path, centroid)[0]
 
 
