@@ -17,7 +17,31 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
   lineage.csv              mother/daughter links between track_ids
   manifest.json            calibration + acquisition metadata
   summary.json             the original pipeline run's own summary
+  annotations.csv          human-verified verdicts -- NOT written by build_bundle.py,
+                           only exists once someone calls the MCP server's annotate()
+                           tool. Append-only; a row is never edited or removed.
+  browsers/*.html          self-contained HTML galleries written by render_browser()
 ```
+
+## annotations.csv columns
+
+Written by `cell_mcp.py`'s `annotate()` tool, one row per call, never overwritten.
+Deliberately a SEPARATE file from `events.csv` (machine-generated, gets replaced on
+every pipeline re-run, and only has rows for events the detector found in the first
+place — so a human verdict recorded onto it would be capped at the detector's own
+recall). `event_id` links back to `events.csv` when the pipeline also flagged the
+same event; empty means the human found it and the pipeline didn't.
+
+| column | meaning |
+|---|---|
+| `timestamp`, `annotator` | when and who |
+| `well`, `cell_line`, `condition` | so a cohort rollup across wells is a query, not a rewrite |
+| `track_id` | the cell |
+| `event_id` | optional link to a row in `events.csv`; empty if human-found only |
+| `outcome_class` | free text, e.g. "divides" / "dies" / "neither" |
+| `condensation_frame`, `metaphase_frame`, `anaphase_frame`, `exit_frame` | the four stage marks; any may be empty |
+| `parent_id`, `daughter_ids` | may override `lineage.csv` if that link was determined to be wrong |
+| `notes` | free text |
 
 ## Two things that will produce wrong numbers if ignored
 

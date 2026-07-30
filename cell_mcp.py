@@ -1,9 +1,10 @@
 """Local stdio MCP server: a filesystem over time-lapse microscopy pixels.
 
-Read-only. Serves a bundle built by scripts/build_bundle.py -- indexed frame
-PNGs, PNG-16 label maps, a per-frame track table, and a manifest carrying
-calibration read from the ND2 at build time. Nothing here touches an ND2, a GPU,
-torch, or Cellpose, so the install stays pure-python.
+Read-only except for annotate(), which appends to a CSV of its own. Serves a bundle
+built by scripts/build_bundle.py -- indexed frame PNGs, PNG-16 label maps, a
+per-frame track table, and a manifest carrying calibration read from the ND2 at
+build time. Nothing here touches an ND2, a GPU, torch, or Cellpose, so the install
+stays pure-python.
 
 Point it at a bundle with the CELL_BUNDLE_DIR environment variable.
 
@@ -792,6 +793,98 @@ div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px 
     out_path = out_dir / f"browser_{time.strftime('%Y%m%d_%H%M%S')}.html"
     out_path.write_text(html, encoding="utf-8")
     return str(out_path)
+
+
+_ANNOTATION_FIELDS = [
+    "timestamp", "annotator", "well", "cell_line", "condition", "track_id",
+    "event_id", "outcome_class",
+    "condensation_frame", "metaphase_frame", "anaphase_frame", "exit_frame",
+    "parent_id", "daughter_ids", "notes",
+]
+
+
+@server.tool()
+def annotate(
+    well: str, track_id: int, outcome_class: str,
+    condensation_frame: int | None = None,
+    metaphase_frame: int | None = None,
+    anaphase_frame: int | None = None,
+    exit_frame: int | None = None,
+    parent_id: int | None = None,
+    daughter_ids: list[int] | None = None,
+    event_id: str | None = None,
+    notes: str | None = None,
+    annotator: str | None = None,
+) -> str:
+    """Record a human-verified verdict for a cell. Appends a new row -- never edits
+    or overwrites a previous one, so nothing is ever silently lost or replaced.
+
+    This is the actual payoff of everything else here: browsing produces nothing
+    durable on its own, this is what turns a review session into a labeled dataset.
+    Written to a SEPARATE file (<bundle>/<well>/annotations.csv), never mixed into
+    events.csv -- that file is machine-generated, gets overwritten on every pipeline
+    re-run, and only has a row for events the detector already found, so writing
+    human verdicts onto it would silently cap what can ever be recorded at the
+    detector's own recall. The most valuable annotation is often one where nothing
+    in events.csv corresponds to it at all.
+
+    Only call this after you (or the person you're working with) actually looked at
+    the pixels via get_filmstrip -- this is a verdict, not a guess from get_track_profile
+    numbers alone.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the cell being annotated.
+        outcome_class: e.g. "divides", "dies", "neither" -- free text, but stay
+            consistent within a well so later rollups can group on it.
+        condensation_frame, metaphase_frame, anaphase_frame, exit_frame: the four
+            stage marks (chromatin condensation onset -> metaphase alignment ->
+            anaphase separation -> mitotic exit), as frame numbers. Leave any that
+            don't apply or weren't determined as None -- durations between whichever
+            marks ARE set can still be computed later from manifest.frame_timestamps_ms.
+        parent_id: the track this cell was born from, if relevant and known (may
+            differ from lineage.csv's own record, if you determined it was wrong).
+        daughter_ids: track_ids of the cells born from this one, if it divided.
+        event_id: the events.csv row this corresponds to, if any (e.g. "peak_frame"
+            value or similar identifier) -- leave None if you found this yourself and
+            nothing in events.csv flagged it. Never invent one.
+        notes: free text for anything the typed fields don't capture.
+        annotator: who determined this. Defaults to the CELL_MCP_ANNOTATOR
+            environment variable if set, else "unspecified" -- set that env var once
+            rather than passing this every call.
+    """
+    from datetime import datetime, timezone
+    import csv as _csv
+
+    m = _manifest(well)
+    row = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "annotator": annotator or os.environ.get("CELL_MCP_ANNOTATOR", "unspecified"),
+        "well": well,
+        "cell_line": m.get("cell_line") or "",
+        "condition": m.get("condition") or "",
+        "track_id": track_id,
+        "event_id": event_id or "",
+        "outcome_class": outcome_class,
+        "condensation_frame": condensation_frame if condensation_frame is not None else "",
+        "metaphase_frame": metaphase_frame if metaphase_frame is not None else "",
+        "anaphase_frame": anaphase_frame if anaphase_frame is not None else "",
+        "exit_frame": exit_frame if exit_frame is not None else "",
+        "parent_id": parent_id if parent_id is not None else "",
+        "daughter_ids": " ".join(str(d) for d in daughter_ids) if daughter_ids else "",
+        "notes": notes or "",
+    }
+
+    out_path = BUNDLE / well / "annotations.csv"
+    is_new = not out_path.is_file()
+    with open(out_path, "a", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=_ANNOTATION_FIELDS)
+        if is_new:
+            w.writeheader()
+        w.writerow(row)
+
+    n = sum(1 for _ in open(out_path, encoding="utf-8")) - 1
+    return f"Recorded. {out_path} now has {n} annotation(s) for {well}."
 
 
 if __name__ == "__main__":
