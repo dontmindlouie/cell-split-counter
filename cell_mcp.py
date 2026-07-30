@@ -49,6 +49,16 @@ BUNDLE = Path(os.environ.get("CELL_BUNDLE_DIR", "data/bundle")).expanduser()
 # context, and a filmstrip of 40 frames reliably exhausts it mid-task.
 MAX_IMAGES = 12
 
+# Filmstrip crops are tiny in absolute pixels -- a 60 um crop is 104 px here, and a
+# nucleus inside it is about 21 px across. That 21 px is the microscope's limit, not
+# ours (the ND2 is natively 1024x1024, and nothing upstream downsamples), so upscaling
+# adds no information. It does add legibility: the previous 2x INTER_NEAREST to 160 px
+# turned soft chromatin into hard blocks, and chromatin texture is the entire evidence
+# for calling a stage. LANCZOS at 3x is visibly better on the same pixels. Ringing is
+# not a concern on diffraction-limited fluorescence, which has no sharp edges to ring.
+# Cost is negligible: an image this size is ~130 tokens.
+_UPSCALE_TO = 312
+
 
 # --------------------------------------------------------------------------- io
 
@@ -358,12 +368,12 @@ def get_filmstrip(
         # Where the cell actually landed in the crop, before any upscaling -- the crop
         # is clipped at the field edge, so this is not always the centre pixel.
         cx_crop, cy_crop = cx - x0, cy - y0
-        if img.shape[0] < 160:  # upscale small crops so the model can actually see them
-            s = int(np.ceil(160 / img.shape[0]))
-            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_NEAREST)
+        if img.shape[0] < _UPSCALE_TO:
+            s = _UPSCALE_TO / img.shape[0]
+            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
             cx_crop, cy_crop = cx_crop * s, cy_crop * s
         else:
-            s = 1
+            s = 1.0
         if marker or not on_track:
             # Ring radius from the cell's own area, pushed out far enough to clear it.
             # Dashed and off-colour when OFF-TRACK, so a held position can never be
