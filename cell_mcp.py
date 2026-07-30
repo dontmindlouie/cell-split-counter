@@ -359,45 +359,17 @@ def get_frame(well: str, frame: int, downscale: int = 2,
     return _encode(img)
 
 
-@server.tool()
-def get_filmstrip(
+def _filmstrip_frames(
     well: str, track_id: int,
-    start_frame: int | None = None, end_frame: int | None = None,
-    max_images: int = 8, crop_um: float = 60.0,
-    color: bool = True, scale_bar: bool = True, marker: bool = False,
-) -> list:
-    """Follow one cell over time as a series of close-up images.
+    start_frame: int | None, end_frame: int | None,
+    max_images: int, crop_um: float,
+    color: bool, scale_bar: bool, marker: bool,
+) -> tuple[str, list[np.ndarray]]:
+    """Shared by get_filmstrip (MCP images) and render_browser (HTML gallery).
 
-    The crop re-centres on the cell in every frame, so a moving cell stays in
-    view. This is the main tool for judging what a cell is actually doing --
-    dividing, dying, or sitting still.
-
-    You may request frames outside the track's own lifetime, and you often should:
-    a track usually ENDS as its cell divides, with the daughters carrying new
-    track_ids, so the division itself lies just past the last tracked frame. Those
-    frames are rendered with the crop held at the cell's nearest known position and
-    are labelled OFF-TRACK -- nothing is centred or identified for you there, so
-    read them as "this patch of the field", not "this cell".
-
-    Frames are sampled evenly across the requested range, so a wide range gives a
-    coarse overview and a narrow range gives frame-by-frame detail. Each image is
-    labelled with its frame number and elapsed time.
-
-    Args:
-        well: well name from list_wells().
-        track_id: the cell to follow, from list_tracks().
-        start_frame: defaults to when the cell first appears. May precede it.
-        end_frame: defaults to when it was last seen. May follow it.
-        max_images: how many frames to show (hard capped at 12).
-        crop_um: width of the crop in micrometres. 60 shows a cell and its
-            immediate neighbours; lower it to zoom in.
-        color: apply the microscope's own display colour.
-        scale_bar: burn in a labelled scale bar.
-        marker: draw a thin ring around the tracked cell, sized to sit clear of it.
-            Off by default because the ring is one more shape in an image whose
-            shapes are the evidence. Turn it on for wide crops, where "the one in
-            the middle" stops being obvious. Forced on for OFF-TRACK frames, where
-            the ring marks the held position rather than a detected cell.
+    Returns (header text, rendered crop images) -- see get_filmstrip's docstring
+    for the semantics; this is that function's body with the ImageContent
+    encoding split off so a second caller can embed the same pixels differently.
     """
     df = _tracks(well)
     t = df[df.track_id == track_id]
@@ -434,7 +406,6 @@ def get_filmstrip(
     half = max(8, int(round(crop_um / um_px / 2)))
     suspect = set(m.get("track_multiplicity", {}).get("suspect_tracks", []))
 
-    out: list = []
     n_off = sum(1 for f in picks if f not in by_frame)
     # The ring is drawn clear of the nucleus, never over it: the chromatin's shape is
     # the evidence being judged, so an overlay across it would destroy the thing the
@@ -454,9 +425,8 @@ def get_filmstrip(
     if track_id in suspect:
         header += (" WARNING: the tracker merged two different cells under this id -- "
                    "expect the crop to jump between them; do not measure it.")
-    from mcp.types import TextContent
-    out.append(TextContent(type="text", text=header))
 
+    images: list[np.ndarray] = []
     for f in picks:
         on_track = f in by_frame
         row = by_frame[f] if on_track else (first_row if f < t_lo else last_row)
@@ -501,7 +471,56 @@ def get_filmstrip(
                     (255, 255, 255), 1, cv2.LINE_AA)
         if scale_bar:
             img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
-        out.append(_encode(img))
+        images.append(img)
+    return header, images
+
+
+@server.tool()
+def get_filmstrip(
+    well: str, track_id: int,
+    start_frame: int | None = None, end_frame: int | None = None,
+    max_images: int = 8, crop_um: float = 60.0,
+    color: bool = True, scale_bar: bool = True, marker: bool = False,
+) -> list:
+    """Follow one cell over time as a series of close-up images.
+
+    The crop re-centres on the cell in every frame, so a moving cell stays in
+    view. This is the main tool for judging what a cell is actually doing --
+    dividing, dying, or sitting still.
+
+    You may request frames outside the track's own lifetime, and you often should:
+    a track usually ENDS as its cell divides, with the daughters carrying new
+    track_ids, so the division itself lies just past the last tracked frame. Those
+    frames are rendered with the crop held at the cell's nearest known position and
+    are labelled OFF-TRACK -- nothing is centred or identified for you there, so
+    read them as "this patch of the field", not "this cell".
+
+    Frames are sampled evenly across the requested range, so a wide range gives a
+    coarse overview and a narrow range gives frame-by-frame detail. Each image is
+    labelled with its frame number and elapsed time.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the cell to follow, from list_tracks().
+        start_frame: defaults to when the cell first appears. May precede it.
+        end_frame: defaults to when it was last seen. May follow it.
+        max_images: how many frames to show (hard capped at 12).
+        crop_um: width of the crop in micrometres. 60 shows a cell and its
+            immediate neighbours; lower it to zoom in.
+        color: apply the microscope's own display colour.
+        scale_bar: burn in a labelled scale bar.
+        marker: draw a thin ring around the tracked cell, sized to sit clear of it.
+            Off by default because the ring is one more shape in an image whose
+            shapes are the evidence. Turn it on for wide crops, where "the one in
+            the middle" stops being obvious. Forced on for OFF-TRACK frames, where
+            the ring marks the held position rather than a detected cell.
+    """
+    header, images = _filmstrip_frames(
+        well, track_id, start_frame, end_frame, max_images, crop_um, color, scale_bar, marker
+    )
+    from mcp.types import TextContent
+    out: list = [TextContent(type="text", text=header)]
+    out.extend(_encode(img) for img in images)
     return out
 
 
@@ -695,6 +714,84 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
         "cell's own state)."
     )
     return "\n".join(lines)
+
+
+@server.tool()
+def render_browser(well: str, events: list[dict]) -> str:
+    """Write a self-contained HTML gallery of specific cells, to hand to a person.
+
+    Use this once you've already worked out what's interesting via get_track_profile /
+    get_filmstrip / get_lineage / get_neighbourhood_stats, and want to show it rather
+    than describe it -- e.g. after answering "what happens to these 12 tracks", write
+    one browser covering all of them instead of pasting filmstrips into chat one at a
+    time. Renders each event with the exact same crop logic as get_filmstrip (colour
+    LUT, scale bar, OFF-TRACK handling), so it looks like what you already reviewed.
+
+    Args:
+        well: well name from list_wells().
+        events: one dict per cell to show, each with:
+            track_id (required): the cell, from list_tracks().
+            start_frame, end_frame (optional): as in get_filmstrip -- may fall outside
+                the track's own lifetime, e.g. to show a division just past its end.
+            label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
+                309/319/321". Defaults to "track <track_id>".
+            max_images (optional, default 6): frames to render for this event.
+            crop_um (optional, default 60.0): crop width in micrometres.
+            marker (optional, default False): ring the tracked cell.
+
+    Returns the path to the written .html file. Images are embedded as base64, so the
+    file is portable on its own -- open it directly, or serve it
+    (`python -m http.server`) if file:// is blocked in the browser being used.
+    """
+    if not events:
+        raise ValueError("events is empty -- nothing to render.")
+
+    sections = []
+    for i, ev in enumerate(events):
+        if "track_id" not in ev:
+            raise ValueError(f"events[{i}] is missing required key 'track_id': {ev!r}")
+        track_id = int(ev["track_id"])
+        header, images = _filmstrip_frames(
+            well, track_id,
+            ev.get("start_frame"), ev.get("end_frame"),
+            int(ev.get("max_images", 6)), float(ev.get("crop_um", 60.0)),
+            True, True, bool(ev.get("marker", False)),
+        )
+        label = ev.get("label") or f"track {track_id}"
+        tiles = []
+        for img in images:
+            ok, buf = cv2.imencode(".png", img)
+            if not ok:
+                continue
+            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            tiles.append(f'<img src="data:image/png;base64,{b64}" loading="lazy">')
+        sections.append(
+            f"<section><h2>{i + 1}. {label}</h2>"
+            f"<p class=hdr>{header}</p>"
+            f"<div class=filmstrip>{''.join(tiles)}</div></section>"
+        )
+
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{well} browser</title>
+<style>
+body {{ font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 2rem; }}
+h1 {{ font-weight: 400; }}
+section {{ margin-bottom: 2.5rem; border-top: 1px solid #333; padding-top: 1rem; }}
+h2 {{ font-size: 1.1rem; font-weight: 600; }}
+p.hdr {{ color: #999; font-size: 0.85rem; max-width: 60rem; }}
+div.filmstrip {{ display: flex; flex-wrap: wrap; gap: 4px; }}
+div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px solid #333; }}
+</style></head><body>
+<h1>{well}</h1>
+{''.join(sections)}
+</body></html>"""
+
+    out_dir = BUNDLE / well / "browsers"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    import time
+    out_path = out_dir / f"browser_{time.strftime('%Y%m%d_%H%M%S')}.html"
+    out_path.write_text(html, encoding="utf-8")
+    return str(out_path)
 
 
 if __name__ == "__main__":
