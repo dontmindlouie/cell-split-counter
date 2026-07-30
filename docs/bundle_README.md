@@ -43,6 +43,16 @@ event in the M12_RUES2 review set (130/130) sits exactly on a track boundary for
 this reason. Use `lineage.csv` to cross that gap, and read frames on both sides of
 it rather than only within one track.
 
+**4. A track can just as easily *begin* mid-division, not just end there.** The
+same rounding that breaks the mother's side of a division also breaks the
+daughter's: as chromatin condenses the nucleus goes round and dim, Cellpose loses
+the mask for a few frames, and the daughter's track only starts once it's
+detectable again — sometimes already mid-anaphase or later. So a track's own
+`first_frame` is not necessarily where the cell's story starts. If a track looks
+like it's already mid-event in its very first frame, check frames *before*
+`first_frame` (via the mother, from `lineage.csv`, or by widening a filmstrip
+request past the track's own start) before concluding the lead-up can't be seen.
+
 ## lineage.csv columns
 
 | column | meaning |
@@ -58,6 +68,10 @@ across a division, not that the division was real or normal. Check
 was recovered from `events.csv` and therefore only covers tracks the pipeline
 flagged, so a missing parent there means **unknown**, not orphan.
 
+**Bundles built before 2026-07-30 have no `solidity` column** — it was added to
+`scripts/build_bundle.py` on that date. Absence means "not yet rebuilt," not
+"solidity is zero here."
+
 ## tracks.csv columns
 
 | column | meaning |
@@ -69,6 +83,7 @@ flagged, so a missing parent there means **unknown**, not orphan.
 | `area_px`, `area_um2` | size; the µm² version uses this acquisition's own calibration |
 | `bbox_*` | bounding box, y0/x0/y1/x1 |
 | `intensity_mean`, `intensity_integrated` | brightness, measured on the original 16-bit data |
+| `solidity` | area / convex-hull area, 0–1. Drops when a mask rounds up or briefly fragments — the strongest single geometric signal found so far for locating mitosis (stronger than area or intensity alone); a dip that recovers over a few frames is more informative than the raw value at any one frame |
 | `raw_label` | pre-merge tracker label; real key is (track_id, frame, raw_label) |
 | `n_masks_in_frame` | >1 means this id covers several shapes here — see above |
 

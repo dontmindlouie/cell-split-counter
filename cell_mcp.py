@@ -29,17 +29,24 @@ server = MCPServer(
     version="0.1.0",
     instructions=(
         "Read-only access to time-lapse microscopy of dividing cells. Start with "
-        "list_wells(), then list_tracks() to find cells, then get_filmstrip() to watch "
-        "one over time and measure() for real units. Expect a track to END at the moment "
-        "its cell divides, with the daughters carrying new track_ids -- so if a cell's "
-        "filmstrip stops abruptly, the event you want is just past it: use get_lineage() "
-        "for the daughter ids, and pass start_frame/end_frame beyond the track's own "
-        "lifetime, which get_filmstrip renders rather than truncating. Two rules that "
-        "matter: the interval "
-        "between frames is NOT constant, so never compute durations from frame counts -- "
-        "use measure() or time_ms; and some track_ids are flagged as merged cells, which "
-        "must not be measured. Images show chromatin only (H2B-mCherry), so the shapes are "
-        "nuclei rather than whole cells."
+        "list_wells(), then list_tracks() to find cells. Before spending images on a "
+        "track, call get_track_profile() -- it's free (no images) and often shows where "
+        "to look: a sparkline of solidity, area, and brightness across the track's "
+        "frames. Solidity (area / convex-hull area) is the strongest single signal -- it "
+        "dips as a mask rounds up during mitosis, even when area barely moves. Then use "
+        "get_filmstrip() to watch "
+        "the flagged frames closely and measure() for real units. Expect a track to END "
+        "at the moment its cell divides, with the daughters carrying new track_ids -- so "
+        "if a cell's filmstrip stops abruptly, the event you want is just past it: use "
+        "get_lineage() for the daughter ids, and pass start_frame/end_frame beyond the "
+        "track's own lifetime, which get_filmstrip renders rather than truncating. The "
+        "same thing happens in reverse: a track can just as easily BEGIN mid-division, "
+        "so a track that looks already mid-event on its very first frame may need frames "
+        "from BEFORE first_frame (via the mother, from get_lineage) to see the lead-up. "
+        "Two more rules that matter: the interval between frames is NOT constant, so "
+        "never compute durations from frame counts -- use measure() or time_ms; and some "
+        "track_ids are flagged as merged cells, which must not be measured. Images show "
+        "chromatin only (H2B-mCherry), so the shapes are nuclei rather than whole cells."
     ),
 )
 
@@ -218,6 +225,100 @@ def list_tracks(
     lines.append(
         "\nUNRELIABLE-merged-cells: the tracker merged two different cells under one id; "
         "do not measure these. sometimes-2-masks: occasionally covers 2 shapes -- check visually."
+    )
+    return "\n".join(lines)
+
+
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: list[float]) -> str:
+    """Render a sequence of numbers as one line of unicode block characters.
+
+    Scaled to this sequence's own min/max, not any global range -- the point is
+    to show shape (a dip, a spike, a plateau), not to compare absolute levels
+    against another track's sparkline.
+    """
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return _SPARK_CHARS[0] * len(values)
+    n = len(_SPARK_CHARS)
+    return "".join(
+        _SPARK_CHARS[min(int((v - lo) / (hi - lo) * n), n - 1)] for v in values
+    )
+
+
+@server.tool()
+def get_track_profile(well: str, track_id: int) -> str:
+    """See how a cell's size, shape, and brightness change over its whole track, with no images.
+
+    Free to call -- reads numbers already measured from the video, not pixels --
+    so use this BEFORE get_filmstrip to decide which frames are worth spending
+    images on. `solidity` (area / convex-hull area) is the strongest single
+    signal: it dips when a mask rounds up or briefly fragments during mitosis,
+    even in cases where area barely moves, and recovers over a few frames once
+    the division resolves -- a dip-then-recover shape is a better division tell
+    than either channel's raw min/max. Area's own useful shape is different:
+    a division HALVES it and it stays down (the tracker follows one daughter),
+    while a transient area dip that fully bounces back is more often noise than
+    a real event. None of this is certain from numbers alone -- it narrows
+    where to look, it doesn't replace looking.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the cell to profile, from list_tracks().
+    """
+    df = _tracks(well)
+    t = df[df.track_id == track_id].sort_values("frame")
+    if t.empty:
+        raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
+    # One row per frame even where n_masks_in_frame > 1 -- profiling a multiplexed
+    # id would blend two cells' numbers, which is the same reason measure() warns.
+    t = t.drop_duplicates("frame", keep="first")
+
+    frames = t.frame.tolist()
+    area = t.area_um2.tolist()
+    inten = t.intensity_integrated.tolist()
+    has_solidity = "solidity" in t.columns
+    solidity = t.solidity.tolist() if has_solidity else []
+
+    def _biggest_jump(vals: list[float]) -> str:
+        if len(vals) < 2:
+            return "n/a (single frame)"
+        deltas = [vals[i + 1] - vals[i] for i in range(len(vals) - 1)]
+        i = max(range(len(deltas)), key=lambda k: abs(deltas[k]))
+        pct = (deltas[i] / vals[i] * 100) if vals[i] else float("inf")
+        return (f"frame {frames[i]}->{frames[i + 1]}: {vals[i]:.0f} -> {vals[i + 1]:.0f} "
+                f"({pct:+.0f}%)")
+
+    def _lowest_point(vals: list[float]) -> str:
+        i = min(range(len(vals)), key=lambda k: vals[k])
+        return f"frame {frames[i]}: {vals[i]:.3f} (track range {min(vals):.3f}-{max(vals):.3f})"
+
+    suspect = track_id in set(_manifest(well).get("track_multiplicity", {}).get("suspect_tracks", []))
+    warn = ("\nWARNING: this track is flagged as merged cells (see list_tracks) -- "
+            "these numbers mix two cells and any jump may be an id-swap, not a real "
+            "event.\n") if suspect else ""
+
+    lines = [
+        f"{well} track {track_id}: frames {frames[0]}-{frames[-1]} ({len(frames)} points)" + warn,
+    ]
+    if has_solidity:
+        lines.append(f"  solidity   {_sparkline(solidity)}  (min {min(solidity):.3f}, max {max(solidity):.3f})")
+    lines.append(f"  area_um2   {_sparkline(area)}  (min {min(area):.0f}, max {max(area):.0f})")
+    lines.append(f"  brightness {_sparkline(inten)}  (min {min(inten):.0f}, max {max(inten):.0f})")
+    if has_solidity:
+        lines.append(f"  lowest solidity (best mitosis candidate)  {_lowest_point(solidity)}")
+    else:
+        lines.append("  (no solidity column -- this bundle predates 2026-07-30; rebuild to get it)")
+    lines.append(f"  biggest area jump        {_biggest_jump(area)}")
+    lines.append(f"  biggest brightness jump  {_biggest_jump(inten)}")
+    lines.append(
+        "\nEach sparkline is scaled to this track's own min/max, so shape (a dip, a "
+        "spike, a plateau) is meaningful but the two bars are not on the same scale as "
+        "each other or as another track's. These are candidate frames to spend a "
+        "get_filmstrip call on -- not a verdict; none of these numbers alone can tell "
+        "a division from a death from a tracking artifact."
     )
     return "\n".join(lines)
 

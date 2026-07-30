@@ -262,6 +262,15 @@ def write_labels_and_tracks(
     affected ids, so a reader can exclude them from measurements rather than
     silently averaging through a tracker error. Note events.csv inherits the
     same canonical ids, so those events carry the defect too.
+
+    `solidity` (area / convex-hull area) is included because it's the strongest
+    single geometric feature found for locating mitosis so far -- a mask that
+    rounds up during chromatin condensation and briefly fragments visually dips
+    solidity even where area alone doesn't move (see
+    project-cell-split-counter-combo-lag-intensity-tests in Claude memory:
+    solidity-alone AUC 0.689, area+solidity combined 0.751-0.783). It's free
+    here since regionprops_table already computes area from the same mask --
+    solidity just asks it for the convex hull too.
     """
     from skimage.measure import regionprops_table
 
@@ -296,7 +305,7 @@ def write_labels_and_tracks(
                 continue
             props = regionprops_table(
                 lab, intensity_image=img,
-                properties=("label", "centroid", "area", "bbox", "intensity_mean"),
+                properties=("label", "centroid", "area", "bbox", "intensity_mean", "solidity"),
             )
             if bleach_curve:
                 # frame_mean alone is NOT a bleaching curve: it scales with how many
@@ -329,6 +338,7 @@ def write_labels_and_tracks(
                     "bbox_y1": int(props["bbox-2"][j]), "bbox_x1": int(props["bbox-3"][j]),
                     "intensity_mean": round(mean_i, 1),
                     "intensity_integrated": round(mean_i * area, 1),
+                    "solidity": round(float(props["solidity"][j]), 4),
                     "raw_label": rawlab,
                 })
             if i % 50 == 0:
