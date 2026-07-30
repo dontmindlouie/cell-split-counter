@@ -221,6 +221,72 @@ def _label_to_cellmask(label_map: np.ndarray, label_id: int, frame: int) -> Cell
     )
 
 
+def _write_lineage_csv(
+    memmap_dir,
+    df_ctc,
+    canonical_of: dict[int, int],
+    true_birth_label: dict[int, int],
+    parent_of: dict[int, int],
+    begin_of: dict[int, int],
+    e_col: str,
+    l_col: str,
+) -> None:
+    """Persist the mother/daughter graph for EVERY track, canonical ids, no verdicts.
+
+    Trackastra's CTC table is the only complete lineage this pipeline ever has, and
+    until 2026-07-29 it was discarded here: the graph survived only as far as
+    classify_events, which copied a parent_id onto the events it happened to emit.
+    That left events.csv as the sole record of lineage -- partial by construction
+    (938 of 5163 tracks in TSC_batch2_M12_RUES2) and welded to the AI's verdict
+    columns, so anything wanting pure topology had to read a file full of answers.
+
+    Written next to the memmaps rather than into the run root because it is a
+    tracking artifact keyed to canonical_labels.json's remap; scripts/build_bundle.py
+    lifts it into the bundle as lineage.csv.
+
+    Topology only. A daughter here means "Trackastra linked these across a division",
+    which is not a claim that the division was real -- judging that is the reviewer's
+    job, and keeping the two apart is what makes this safe to ship in an eval bundle.
+    """
+    import csv as _csv
+
+    end_of = {int(row[l_col]): int(row[e_col]) for _, row in df_ctc.iterrows()}
+
+    # Collapse raw labels into canonical tracks: a bridged group spans the earliest
+    # begin to the latest end across all of its member labels.
+    first_frame: dict[int, int] = {}
+    last_frame: dict[int, int] = {}
+    for lbl, canon in canonical_of.items():
+        b, e = begin_of[lbl], end_of[lbl]
+        first_frame[canon] = min(b, first_frame.get(canon, b))
+        last_frame[canon] = max(e, last_frame.get(canon, e))
+
+    # Only the true birth label of a group may carry a parent -- a resumed label is a
+    # continuation of the same cell, not a new birth (same rule the node builder uses).
+    parent: dict[int, int | None] = {}
+    for canon, birth_lbl in true_birth_label.items():
+        raw = parent_of.get(birth_lbl, 0)
+        canon_parent = canonical_of.get(raw, raw)
+        parent[canon] = canon_parent if canon_parent > 0 and canon_parent != canon else None
+
+    daughters: dict[int, list[int]] = {}
+    for canon, p in parent.items():
+        if p is not None:
+            daughters.setdefault(p, []).append(canon)
+
+    path = memmap_dir / "ctc_lineage.csv"
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["track_id", "parent_id", "first_frame", "last_frame",
+                    "n_daughters", "daughter_ids"])
+        for canon in sorted(first_frame):
+            kids = sorted(daughters.get(canon, []))
+            w.writerow([canon, parent.get(canon) if parent.get(canon) is not None else "",
+                        first_frame[canon], last_frame[canon],
+                        len(kids), " ".join(str(k) for k in kids)])
+    print(f"  wrote lineage for {len(first_frame)} canonical tracks -> {path}", flush=True)
+
+
 def _normalize_on_memmap(float_frames: np.ndarray, subsample: int = 4) -> np.ndarray:
     """Percentile-normalize a float32 memmap in-place.
 
@@ -371,6 +437,9 @@ def link_frames_trackastra(
     for lbl, canon in canonical_of.items():
         if canon not in true_birth_label or begin_of[lbl] < begin_of[true_birth_label[canon]]:
             true_birth_label[canon] = lbl
+
+    _write_lineage_csv(memmap_dir, df_ctc, canonical_of, true_birth_label,
+                       parent_of, begin_of, e_col, l_col)
 
     # Build nodes — one TrackNode per (label, frame) occurrence in tracked_video.
     # Use regionprops for a single pass per frame: instead of N separate boolean array

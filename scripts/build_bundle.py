@@ -171,6 +171,60 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
     return cal
 
 
+def write_lineage(run_dir: Path, out_run: Path) -> dict:
+    """Emit lineage.csv -- who each track's mother was, and which tracks are its
+    daughters -- so a track that ends mid-division can be followed into the next one.
+
+    Preferred source is _memmap/ctc_lineage.csv, written by src.track from
+    Trackastra's own CTC table: complete, every track, topology only.
+
+    Runs tracked before 2026-07-29 have no such file, and the graph cannot be
+    recovered from what they left on disk (canonical_labels.json preserves the label
+    remap, but the parent table lived only in memory). For those, fall back to
+    events.csv's parent_id -- correct where present, but partial by construction,
+    since a track only appears there if the pipeline emitted an event for it. The
+    coverage field records which happened, so nobody mistakes a partial graph for a
+    complete one: a missing parent under "events" means unknown, not orphan.
+    """
+    full = run_dir / "frames" / "_memmap" / "ctc_lineage.csv"
+    if full.is_file():
+        shutil.copy2(full, out_run / "lineage.csv")
+        n = sum(1 for _ in open(full, encoding="utf-8")) - 1
+        print(f"  lineage.csv: {n:,} tracks (complete, from Trackastra CTC)")
+        return {"coverage": "complete", "source": "ctc", "n_tracks": n}
+
+    events = run_dir / "events.csv"
+    if not events.is_file():
+        print("  lineage.csv: skipped (no ctc_lineage.csv and no events.csv)")
+        return {"coverage": "none"}
+
+    parent: dict[int, int] = {}
+    for r in csv.DictReader(open(events, encoding="utf-8", errors="replace")):
+        tid, pid = r.get("track_id"), r.get("parent_id")
+        if not tid or pid in (None, "", "None"):
+            continue
+        p = int(float(pid))
+        t = int(float(tid))
+        if p != t:
+            parent[t] = p
+
+    daughters: dict[int, list[int]] = {}
+    for t, p in parent.items():
+        daughters.setdefault(p, []).append(t)
+
+    with open(out_run / "lineage.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["track_id", "parent_id", "n_daughters", "daughter_ids"])
+        for t in sorted(set(parent) | set(daughters)):
+            kids = sorted(daughters.get(t, []))
+            w.writerow([t, parent.get(t, ""), len(kids), " ".join(str(k) for k in kids)])
+
+    n = len(set(parent) | set(daughters))
+    print(f"  lineage.csv: {n:,} tracks (PARTIAL -- derived from events.csv; "
+          f"re-run tracking for a complete graph)")
+    return {"coverage": "partial", "source": "events", "n_tracks": n}
+
+
 def write_labels_and_tracks(
     run_dir: Path, out_run: Path, pairs: list[tuple[int, int]],
     nd2_path: Path, cal: dict, bleach_curve: bool,
@@ -368,6 +422,8 @@ def main() -> None:
         if src.is_file():
             shutil.copy2(src, out_run / name)
 
+    lineage_info = write_lineage(run_dir, out_run)
+
     # Ship the schema doc INSIDE the bundle -- it is routinely handed to someone
     # (or some agent) with no repo, no docs/, and no history to reverse-engineer
     # from. Same reasoning as scripts/generate_package_readme.py.
@@ -381,6 +437,7 @@ def main() -> None:
         "condition": args.condition,
         "n_frames": len(pairs),
         "n_tracks": n_tracks,
+        "lineage": lineage_info,
         **cal,
         **extra,
     }

@@ -14,6 +14,7 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
                            0 = background. Lossless.
   tracks.csv               one row per cell shape per frame
   events.csv               candidate division/death events found by the pipeline
+  lineage.csv              mother/daughter links between track_ids
   manifest.json            calibration + acquisition metadata
   summary.json             the original pipeline run's own summary
 ```
@@ -34,6 +35,28 @@ lists ids where this happens in more than half the track's frames. Those ids
 should be excluded from any measurement — averaging two cells 18 µm apart
 produces a position where no cell is. Corpus-wide this affects ~1.4% of tracks.
 `events.csv` uses the same ids, so it inherits the same caveat.
+
+**3. A track usually ends at the moment its cell divides.** The two daughters get
+new `track_id`s, so the division is not contained in any single track — it falls in
+the gap between the mother's last frame and the daughters' first. Every labelled
+event in the M12_RUES2 review set (130/130) sits exactly on a track boundary for
+this reason. Use `lineage.csv` to cross that gap, and read frames on both sides of
+it rather than only within one track.
+
+## lineage.csv columns
+
+| column | meaning |
+| --- | --- |
+| `track_id` | the cell |
+| `parent_id` | the track it was born from; empty = none recorded |
+| `first_frame`, `last_frame` | its span (complete-coverage bundles only) |
+| `n_daughters`, `daughter_ids` | space-separated track_ids born from this one |
+
+Topology only, no verdicts: a daughter link means the tracker connected two ids
+across a division, not that the division was real or normal. Check
+`manifest.lineage.coverage` first — `complete` covers every track, while `partial`
+was recovered from `events.csv` and therefore only covers tracks the pipeline
+flagged, so a missing parent there means **unknown**, not orphan.
 
 ## tracks.csv columns
 

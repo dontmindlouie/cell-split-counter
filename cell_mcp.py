@@ -30,7 +30,12 @@ server = MCPServer(
     instructions=(
         "Read-only access to time-lapse microscopy of dividing cells. Start with "
         "list_wells(), then list_tracks() to find cells, then get_filmstrip() to watch "
-        "one over time and measure() for real units. Two rules that matter: the interval "
+        "one over time and measure() for real units. Expect a track to END at the moment "
+        "its cell divides, with the daughters carrying new track_ids -- so if a cell's "
+        "filmstrip stops abruptly, the event you want is just past it: use get_lineage() "
+        "for the daughter ids, and pass start_frame/end_frame beyond the track's own "
+        "lifetime, which get_filmstrip renders rather than truncating. Two rules that "
+        "matter: the interval "
         "between frames is NOT constant, so never compute durations from frame counts -- "
         "use measure() or time_ms; and some track_ids are flagged as merged cells, which "
         "must not be measured. Images show chromatin only (H2B-mCherry), so the shapes are "
@@ -145,7 +150,7 @@ def list_wells() -> str:
 @server.tool()
 def list_tracks(
     well: str,
-    min_frames: int = 20,
+    min_frames: int = 1,
     present_at_frame: int | None = None,
     sort_by: str = "duration",
     limit: int = 30,
@@ -157,8 +162,10 @@ def list_tracks(
 
     Args:
         well: well name from list_wells().
-        min_frames: ignore tracks seen in fewer frames than this. Short tracks are
-            usually segmentation noise rather than real cells.
+        min_frames: ignore tracks seen in fewer frames than this. Defaults to 1, i.e.
+            nothing is hidden -- many real divisions and deaths produce 1-2 frame
+            tracks, so a higher floor silently deletes the events you are looking
+            for. Raise it only to suppress segmentation noise while browsing.
         present_at_frame: only tracks visible at this frame number.
         sort_by: "duration" (longest-lived first), "area" (largest first), or
             "start" (earliest first).
@@ -169,10 +176,16 @@ def list_tracks(
         keep = set(df.loc[df.frame == present_at_frame, "track_id"])
         df = df[df.track_id.isin(keep)]
 
+    df = df.sort_values("frame")
     g = df.groupby("track_id").agg(
         first_frame=("frame", "min"), last_frame=("frame", "max"),
         n_frames=("frame", "nunique"), mean_area_um2=("area_um2", "mean"),
         max_masks=("n_masks_in_frame", "max"),
+        # Position at birth and at death. Enough to find a track's neighbours, or to
+        # spot the daughters of a division near where the mother was last seen,
+        # without a measure() call per candidate.
+        first_x=("cx", "first"), first_y=("cy", "first"),
+        last_x=("cx", "last"), last_y=("cy", "last"),
     ).reset_index()
     g = g[g.n_frames >= min_frames]
     if g.empty:
@@ -182,7 +195,7 @@ def list_tracks(
     g = g.sort_values(key, ascending=(sort_by == "start")).head(limit)
 
     suspect = set(_manifest(well).get("track_multiplicity", {}).get("suspect_tracks", []))
-    lines = ["track_id | frames | first | last | mean_area_um2 | flags"]
+    lines = ["track_id | frames | first | last | mean_area_um2 | xy_at_first | xy_at_last | flags"]
     for r in g.itertuples():
         flags = []
         if r.track_id in suspect:
@@ -190,7 +203,8 @@ def list_tracks(
         elif r.max_masks > 1:
             flags.append("sometimes-2-masks")
         lines.append(f"{r.track_id} | {r.n_frames} | {r.first_frame} | {r.last_frame} | "
-                     f"{r.mean_area_um2:.0f} | {','.join(flags) or '-'}")
+                     f"{r.mean_area_um2:.0f} | {r.first_x:.0f},{r.first_y:.0f} | "
+                     f"{r.last_x:.0f},{r.last_y:.0f} | {','.join(flags) or '-'}")
     lines.append(
         "\nUNRELIABLE-merged-cells: the tracker merged two different cells under one id; "
         "do not measure these. sometimes-2-masks: occasionally covers 2 shapes -- check visually."
@@ -198,7 +212,12 @@ def list_tracks(
     return "\n".join(lines)
 
 
-@server.tool()
+# structured_output=False is load-bearing, not tidiness. ImageContent is a pydantic
+# model, so annotating it as the return type makes the SDK build a structured-output
+# model for the tool and emit the result TWICE -- once as an image content block, and
+# again as JSON in structured_content, base64 payload and all. At downscale=1 that
+# second copy is ~550k characters of base64 and blows the tool-output limit on its own.
+@server.tool(structured_output=False)
 def get_frame(well: str, frame: int, downscale: int = 2,
               color: bool = True, scale_bar: bool = True) -> ImageContent:
     """Show one whole field of view, to get oriented.
@@ -209,7 +228,10 @@ def get_frame(well: str, frame: int, downscale: int = 2,
     Args:
         well: well name from list_wells().
         frame: frame number, 0-based. See list_wells() for how many exist.
-        downscale: shrink by this factor to save space. 2 is usually plenty.
+        downscale: shrink by this factor to save space. 2 is usually plenty. At 1 a
+            single frame costs a large fraction of the context window, and a nucleus
+            is still only ~20 px across -- too coarse to judge chromatin either way.
+            Use get_filmstrip for anything that depends on a cell's shape.
         color: apply the microscope's own display colour (matches Fiji).
         scale_bar: burn in a labelled scale bar.
     """
@@ -228,13 +250,20 @@ def get_filmstrip(
     well: str, track_id: int,
     start_frame: int | None = None, end_frame: int | None = None,
     max_images: int = 8, crop_um: float = 60.0,
-    color: bool = True, scale_bar: bool = True,
+    color: bool = True, scale_bar: bool = True, marker: bool = False,
 ) -> list:
     """Follow one cell over time as a series of close-up images.
 
     The crop re-centres on the cell in every frame, so a moving cell stays in
     view. This is the main tool for judging what a cell is actually doing --
     dividing, dying, or sitting still.
+
+    You may request frames outside the track's own lifetime, and you often should:
+    a track usually ENDS as its cell divides, with the daughters carrying new
+    track_ids, so the division itself lies just past the last tracked frame. Those
+    frames are rendered with the crop held at the cell's nearest known position and
+    are labelled OFF-TRACK -- nothing is centred or identified for you there, so
+    read them as "this patch of the field", not "this cell".
 
     Frames are sampled evenly across the requested range, so a wide range gives a
     coarse overview and a narrow range gives frame-by-frame detail. Each image is
@@ -243,41 +272,71 @@ def get_filmstrip(
     Args:
         well: well name from list_wells().
         track_id: the cell to follow, from list_tracks().
-        start_frame: defaults to when the cell first appears.
-        end_frame: defaults to when it was last seen.
+        start_frame: defaults to when the cell first appears. May precede it.
+        end_frame: defaults to when it was last seen. May follow it.
         max_images: how many frames to show (hard capped at 12).
         crop_um: width of the crop in micrometres. 60 shows a cell and its
             immediate neighbours; lower it to zoom in.
         color: apply the microscope's own display colour.
         scale_bar: burn in a labelled scale bar.
+        marker: draw a thin ring around the tracked cell, sized to sit clear of it.
+            Off by default because the ring is one more shape in an image whose
+            shapes are the evidence. Turn it on for wide crops, where "the one in
+            the middle" stops being obvious. Forced on for OFF-TRACK frames, where
+            the ring marks the held position rather than a detected cell.
     """
     df = _tracks(well)
     t = df[df.track_id == track_id]
     if t.empty:
         raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
 
-    lo = int(t.frame.min() if start_frame is None else max(start_frame, t.frame.min()))
-    hi = int(t.frame.max() if end_frame is None else min(end_frame, t.frame.max()))
-    if hi < lo:
-        raise ValueError(f"track {track_id} is only present in frames {t.frame.min()}-{t.frame.max()}")
+    m = _manifest(well)
+    n_frames = int(m["n_frames"])
+    t_lo, t_hi = int(t.frame.min()), int(t.frame.max())
 
-    avail = sorted(set(t[(t.frame >= lo) & (t.frame <= hi)].frame))
+    # Deliberately NOT clamped to the track's lifetime. The clamp this replaces was
+    # silent, and since a track typically terminates at the very event the caller is
+    # asking about, it reliably withheld the only frames that answered the question.
+    # The range is still clamped to frames that exist on disk, which is a real limit
+    # rather than a bookkeeping one.
+    lo = max(0, t_lo if start_frame is None else int(start_frame))
+    hi = min(n_frames - 1, t_hi if end_frame is None else int(end_frame))
+    if hi < lo:
+        raise ValueError(
+            f"empty range: start_frame={start_frame} end_frame={end_frame} resolves to "
+            f"{lo}-{hi}. {well} has frames 0-{n_frames - 1}; track {track_id} is tracked "
+            f"in {t_lo}-{t_hi}."
+        )
+
+    avail = list(range(lo, hi + 1))
     n = min(max_images, MAX_IMAGES, len(avail))
     picks = [avail[i] for i in np.linspace(0, len(avail) - 1, n).astype(int)]
 
-    m = _manifest(well)
+    # Anchor for frames outside the track's lifetime: its first or last known position.
+    by_frame = {int(r.frame): r for r in t.itertuples()}
+    first_row, last_row = by_frame[t_lo], by_frame[t_hi]
+
     um_px = m["pixel_size_um"]
     half = max(8, int(round(crop_um / um_px / 2)))
     suspect = set(m.get("track_multiplicity", {}).get("suspect_tracks", []))
 
     out: list = []
-    # No marker is drawn on the cell deliberately: the subject is centred by
-    # construction, and an overlay would sit on top of the chromatin whose shape
-    # is the thing being judged.
+    n_off = sum(1 for f in picks if f not in by_frame)
+    # The ring is drawn clear of the nucleus, never over it: the chromatin's shape is
+    # the evidence being judged, so an overlay across it would destroy the thing the
+    # image exists to show.
     header = (f"{well} track {track_id}: frames {lo}-{hi}, showing {n} of {len(avail)}. "
               f"Crop {crop_um:g} um wide, re-centred on the tracked cell each frame -- "
               f"the cell of interest is the one at the CENTRE of every image; others are "
               f"neighbours. Time is elapsed hours from the start of the recording.")
+    if n_off:
+        header += (
+            f" NOTE: {n_off} of these {n} frames fall outside the track's own lifetime "
+            f"({t_lo}-{t_hi}) and are labelled OFF-TRACK. There the crop is frozen at the "
+            f"cell's nearest known position and ringed: nothing is tracked or centred, so "
+            f"whatever sits there may be this cell, its daughters, or an unrelated "
+            f"neighbour that drifted in. Judge those frames on the pixels alone."
+        )
     if track_id in suspect:
         header += (" WARNING: the tracker merged two different cells under this id -- "
                    "expect the crop to jump between them; do not measure it.")
@@ -285,7 +344,8 @@ def get_filmstrip(
     out.append(TextContent(type="text", text=header))
 
     for f in picks:
-        row = t[t.frame == f].iloc[0]
+        on_track = f in by_frame
+        row = by_frame[f] if on_track else (first_row if f < t_lo else last_row)
         grey = _frame_png(well, int(f))
         h, w = grey.shape
         cx, cy = int(round(row.cx)), int(round(row.cy))
@@ -295,18 +355,116 @@ def get_filmstrip(
         if crop.size == 0:
             continue
         img = _colorize(crop, well, color)
+        # Where the cell actually landed in the crop, before any upscaling -- the crop
+        # is clipped at the field edge, so this is not always the centre pixel.
+        cx_crop, cy_crop = cx - x0, cy - y0
         if img.shape[0] < 160:  # upscale small crops so the model can actually see them
             s = int(np.ceil(160 / img.shape[0]))
             img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_NEAREST)
+            cx_crop, cy_crop = cx_crop * s, cy_crop * s
+        else:
+            s = 1
+        if marker or not on_track:
+            # Ring radius from the cell's own area, pushed out far enough to clear it.
+            # Dashed and off-colour when OFF-TRACK, so a held position can never be
+            # mistaken for a detected cell.
+            r_px = float(np.sqrt(max(float(row.area_px), 1.0) / np.pi)) * 1.9 * s
+            r_px = float(np.clip(r_px, 10, min(img.shape[:2]) / 2 - 2))
+            ring = (255, 255, 255) if on_track else (80, 160, 255)
+            if on_track:
+                cv2.circle(img, (int(cx_crop), int(cy_crop)), int(r_px), ring, 1, cv2.LINE_AA)
+            else:
+                for a in range(0, 360, 30):  # dashed
+                    cv2.ellipse(img, (int(cx_crop), int(cy_crop)), (int(r_px), int(r_px)),
+                                0, a, a + 15, ring, 1, cv2.LINE_AA)
         label = f"f{int(f)} t={_hours(well, int(f)):.1f}h"
-        if row.n_masks_in_frame > 1:
-            label += f" [{int(row.n_masks_in_frame)} masks]"
+        if on_track:
+            if row.n_masks_in_frame > 1:
+                label += f" [{int(row.n_masks_in_frame)} masks]"
+        else:
+            label += f" OFF-TRACK (held @f{t_lo if f < t_lo else t_hi})"
         cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
                     (255, 255, 255), 1, cv2.LINE_AA)
         if scale_bar:
             img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
         out.append(_encode(img))
     return out
+
+
+@lru_cache(maxsize=8)
+def _lineage(well: str) -> dict[int, dict]:
+    p = BUNDLE / well / "lineage.csv"
+    if not p.is_file():
+        return {}
+    import csv
+    out = {}
+    for r in csv.DictReader(p.open(encoding="utf-8")):
+        out[int(r["track_id"])] = {
+            "parent": int(r["parent_id"]) if r.get("parent_id") not in (None, "") else None,
+            "daughters": [int(x) for x in (r.get("daughter_ids") or "").split() if x],
+        }
+    return out
+
+
+@server.tool()
+def get_lineage(well: str, track_id: int) -> str:
+    """Find a cell's mother and daughters, to follow it across a division.
+
+    Essential because a track usually ENDS when its cell divides: the two daughters
+    are given new track_ids, so a mother's own filmstrip stops just as the
+    interesting part begins. This tells you which ids to look at next.
+
+    This is tracking bookkeeping, not a judgement. "Daughters" means the tracker
+    linked these ids across a division; whether that division was real, normal, or
+    even a division at all is still yours to decide from the images.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the cell whose relatives you want.
+    """
+    lin = _lineage(well)
+    if not lin:
+        return (f"No lineage.csv in this bundle for {well}, so mother/daughter links are "
+                f"unavailable. You can still follow a cell past the end of its track: "
+                f"get_filmstrip accepts start_frame/end_frame outside the track's lifetime "
+                f"and will render those frames as OFF-TRACK.")
+
+    cov = _manifest(well).get("lineage", {}).get("coverage", "unknown")
+    df = _tracks(well)
+    t = df[df.track_id == track_id]
+    if t.empty:
+        raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
+    lo, hi = int(t.frame.min()), int(t.frame.max())
+
+    rec = lin.get(track_id, {"parent": None, "daughters": []})
+    lines = [f"{well} track {track_id}: tracked in frames {lo}-{hi}"]
+
+    def _span(tid: int) -> str:
+        s = df[df.track_id == tid]
+        return f"frames {int(s.frame.min())}-{int(s.frame.max())}" if not s.empty else "not in tracks.csv"
+
+    p = rec["parent"]
+    lines.append(f"  mother    {p} ({_span(p)})" if p is not None else "  mother    none recorded")
+    if rec["daughters"]:
+        lines.append(f"  daughters {len(rec['daughters'])}")
+        for d in rec["daughters"]:
+            lines.append(f"    {d} ({_span(d)})")
+    else:
+        lines.append("  daughters none recorded")
+
+    if cov == "partial":
+        lines.append(
+            "\nNOTE: this bundle's lineage is PARTIAL -- it was recovered from the "
+            "pipeline's event list, which only covers tracks it flagged, so a missing "
+            "mother or daughter here means UNKNOWN, not none. Absence is not evidence "
+            "that the cell did not divide."
+        )
+    lines.append(
+        "\nTo see the division itself, ask get_filmstrip for a range spanning the "
+        "mother's last frames and the daughters' first frames -- it renders frames "
+        "outside a track's own lifetime rather than truncating to it."
+    )
+    return "\n".join(lines)
 
 
 @server.tool()
