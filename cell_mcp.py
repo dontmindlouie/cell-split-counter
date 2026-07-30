@@ -360,6 +360,76 @@ def get_frame(well: str, frame: int, downscale: int = 2,
     return _encode(img)
 
 
+# Ported from the trajectory-features branch's walk_trajectory() (never merged --
+# that copy walked the pipeline's raw tracked_masks.dat memmap; this one walks the
+# bundle's own labels/*.png, so it needs nothing beyond what already ships). Follows
+# the nearest detected blob frame-to-frame, tolerant of a few consecutive misses
+# (Cellpose mask flicker) before giving up and freezing -- replaces OFF-TRACK's old
+# behaviour of freezing immediately at the track's last known position, which could
+# not distinguish "the cell moved out of a static crop" from "it vanished".
+_WALK_MAX_GAP_DIST = 60.0  # px; matches src/track.py's _bridge_track_gaps convention
+_WALK_MAX_GAP_FRAMES = 4   # consecutive unresolved frames tolerated before freezing
+
+
+def _label_img(well: str, frame: int) -> np.ndarray | None:
+    p = BUNDLE / well / "labels" / f"frame_{frame:05d}.png"
+    if not p.is_file():
+        return None
+    return cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+
+
+def _blob_centroids(label_img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Centroid (x, y) of every distinct nonzero label value in one label map.
+
+    No regionprops/skimage needed -- the label map is already a per-pixel id
+    assignment, so this is a groupby-mean, not a connected-components pass.
+    """
+    ys, xs = np.nonzero(label_img)
+    if len(ys) == 0:
+        return np.array([]), np.array([])
+    vals = label_img[ys, xs].astype(np.int64)
+    order = np.argsort(vals, kind="stable")
+    vals, ys, xs = vals[order], ys[order].astype(np.float64), xs[order].astype(np.float64)
+    _, start_idx = np.unique(vals, return_index=True)
+    counts = np.diff(np.append(start_idx, len(vals)))
+    cxs = np.add.reduceat(xs, start_idx) / counts
+    cys = np.add.reduceat(ys, start_idx) / counts
+    return cxs, cys
+
+
+def _walk_positions(
+    well: str, frames: list[int], seed_cx: float, seed_cy: float
+) -> dict[int, tuple[float, float, bool]]:
+    """Nearest-centroid walk across `frames` (already ordered outward from the
+    track's boundary), starting adjacent to (seed_cx, seed_cy).
+
+    Returns {frame: (cx, cy, resolved)}. `resolved=False` means the walk lost the
+    cell here (too far, or nothing detected) and the position is carried over from
+    the last frame it WAS resolved at -- a real "last known position", same as the
+    old behaviour, just reached only after actually trying rather than immediately.
+    """
+    out: dict[int, tuple[float, float, bool]] = {}
+    cx, cy = seed_cx, seed_cy
+    misses = 0
+    for f in frames:
+        img = _label_img(well, f)
+        cxs, cys = _blob_centroids(img) if img is not None else (np.array([]), np.array([]))
+        if len(cxs) == 0:
+            misses += 1
+            out[f] = (cx, cy, False)
+            continue
+        d = np.hypot(cxs - cx, cys - cy)
+        i = int(np.argmin(d))
+        if d[i] > _WALK_MAX_GAP_DIST * (misses + 1):
+            misses += 1
+            out[f] = (cx, cy, False)
+            continue
+        misses = 0
+        cx, cy = float(cxs[i]), float(cys[i])
+        out[f] = (cx, cy, True)
+    return out
+
+
 def _filmstrip_frames(
     well: str, track_id: int,
     start_frame: int | None, end_frame: int | None,
@@ -408,6 +478,20 @@ def _filmstrip_frames(
     suspect = set(m.get("track_multiplicity", {}).get("suspect_tracks", []))
 
     n_off = sum(1 for f in picks if f not in by_frame)
+    # Walk outward from each boundary across every frame in range (not just the
+    # sampled picks) so the miss-tolerance state stays meaningful -- a walk that
+    # skipped straight to a far pick would have no idea how many frames it "missed".
+    off_before = [f for f in picks if f not in by_frame and f < t_lo]
+    off_after = [f for f in picks if f not in by_frame and f > t_hi]
+    walked: dict[int, tuple[float, float, bool]] = {}
+    if off_before:
+        walked.update(_walk_positions(
+            well, list(range(t_lo - 1, min(off_before) - 1, -1)), first_row.cx, first_row.cy))
+    if off_after:
+        walked.update(_walk_positions(
+            well, list(range(t_hi + 1, max(off_after) + 1)), last_row.cx, last_row.cy))
+    n_walked = sum(1 for f in (off_before + off_after) if walked.get(f, (0, 0, False))[2])
+
     # The ring is drawn clear of the nucleus, never over it: the chromatin's shape is
     # the evidence being judged, so an overlay across it would destroy the thing the
     # image exists to show.
@@ -418,10 +502,12 @@ def _filmstrip_frames(
     if n_off:
         header += (
             f" NOTE: {n_off} of these {n} frames fall outside the track's own lifetime "
-            f"({t_lo}-{t_hi}) and are labelled OFF-TRACK. There the crop is frozen at the "
-            f"cell's nearest known position and ringed: nothing is tracked or centred, so "
-            f"whatever sits there may be this cell, its daughters, or an unrelated "
-            f"neighbour that drifted in. Judge those frames on the pixels alone."
+            f"({t_lo}-{t_hi}) and are labelled OFF-TRACK. {n_walked} of them were "
+            f"re-centred by following the nearest detected blob frame-to-frame (solid "
+            f"orange ring); the rest could not be resolved that way and are frozen at "
+            f"the last position that WAS resolved (dashed blue ring). Either way nothing "
+            f"is confirmed to be this cell rather than its daughters or a neighbour that "
+            f"drifted in -- judge those frames on the pixels alone."
         )
     if track_id in suspect:
         header += (" WARNING: the tracker merged two different cells under this id -- "
@@ -431,9 +517,14 @@ def _filmstrip_frames(
     for f in picks:
         on_track = f in by_frame
         row = by_frame[f] if on_track else (first_row if f < t_lo else last_row)
+        walk_resolved = False
         grey = _frame_png(well, int(f))
         h, w = grey.shape
-        cx, cy = int(round(row.cx)), int(round(row.cy))
+        if on_track:
+            cx, cy = int(round(row.cx)), int(round(row.cy))
+        else:
+            wcx, wcy, walk_resolved = walked.get(f, (row.cx, row.cy, False))
+            cx, cy = int(round(wcx)), int(round(wcy))
         x0, x1 = max(0, cx - half), min(w, cx + half)
         y0, y1 = max(0, cy - half), min(h, cy + half)
         crop = grey[y0:y1, x0:x1]
@@ -451,14 +542,21 @@ def _filmstrip_frames(
             s = 1.0
         if marker or not on_track:
             # Ring radius from the cell's own area, pushed out far enough to clear it.
-            # Dashed and off-colour when OFF-TRACK, so a held position can never be
-            # mistaken for a detected cell.
+            # Solid white when on-track (a real detection); solid orange when
+            # OFF-TRACK but the nearest-centroid walk resolved a position (likely
+            # real, but never confirmed to be THIS cell); dashed blue when the walk
+            # lost it and the position is frozen at the last resolved point, so
+            # that case can never be mistaken for an actual detection.
             r_px = float(np.sqrt(max(float(row.area_px), 1.0) / np.pi)) * 1.9 * s
             r_px = float(np.clip(r_px, 10, min(img.shape[:2]) / 2 - 2))
-            ring = (255, 255, 255) if on_track else (80, 160, 255)
             if on_track:
+                ring = (255, 255, 255)
+                cv2.circle(img, (int(cx_crop), int(cy_crop)), int(r_px), ring, 1, cv2.LINE_AA)
+            elif walk_resolved:
+                ring = (0, 165, 255)
                 cv2.circle(img, (int(cx_crop), int(cy_crop)), int(r_px), ring, 1, cv2.LINE_AA)
             else:
+                ring = (80, 160, 255)
                 for a in range(0, 360, 30):  # dashed
                     cv2.ellipse(img, (int(cx_crop), int(cy_crop)), (int(r_px), int(r_px)),
                                 0, a, a + 15, ring, 1, cv2.LINE_AA)
@@ -466,6 +564,8 @@ def _filmstrip_frames(
         if on_track:
             if row.n_masks_in_frame > 1:
                 label += f" [{int(row.n_masks_in_frame)} masks]"
+        elif walk_resolved:
+            label += " OFF-TRACK (walked)"
         else:
             label += f" OFF-TRACK (held @f{t_lo if f < t_lo else t_hi})"
         cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
@@ -492,9 +592,14 @@ def get_filmstrip(
     You may request frames outside the track's own lifetime, and you often should:
     a track usually ENDS as its cell divides, with the daughters carrying new
     track_ids, so the division itself lies just past the last tracked frame. Those
-    frames are rendered with the crop held at the cell's nearest known position and
-    are labelled OFF-TRACK -- nothing is centred or identified for you there, so
-    read them as "this patch of the field", not "this cell".
+    frames are labelled OFF-TRACK and rendered by following the nearest detected
+    blob frame-to-frame from the track's boundary (solid orange ring) -- usually
+    keeps the crop on the same physical object even though its track_id changed,
+    but is never confirmed to be THIS cell rather than a neighbour. Where that walk
+    loses the trail (nothing nearby, or a multi-frame gap), the crop freezes at the
+    last position it WAS resolved (dashed blue ring) instead of guessing further.
+    Either way, nothing there is centred or identified the way an on-track frame
+    is -- read OFF-TRACK frames as "this patch of the field", not "this cell".
 
     Frames are sampled evenly across the requested range, so a wide range gives a
     coarse overview and a narrow range gives frame-by-frame detail. Each image is
