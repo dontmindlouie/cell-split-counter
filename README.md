@@ -70,7 +70,7 @@ she copied a bundle, opens Claude Code in the repo root, and approves the MCP se
 once. `UV_PROJECT_ENVIRONMENT=.venv-mcp` is pinned in `.mcp.json` so `uv run` never
 touches a full pipeline `.venv` if one happens to exist on the same machine.
 
-**Tools** (`cell_mcp.py`, 9 total — docstrings are written as the model-facing schema,
+**Tools** (`cell_mcp.py`, 10 total — docstrings are written as the model-facing schema,
 see the file itself for full argument docs):
 - `list_wells()` / `list_tracks(well, filters...)` — orientation, the `ls`.
 - `get_track_profile(well, track_id)` — free (no images) sparkline of a track's own
@@ -90,10 +90,10 @@ see the file itself for full argument docs):
 - `render_browser(well, events)` — writes a self-contained HTML gallery (images
   embedded as base64) of specific cells/frame-ranges, to hand off rather than
   describe in chat.
-
-Not yet built: `annotate()` — writing stage marks (condensation/metaphase/anaphase/
-exit) and outcome class to a separate `annotations.csv`, which is what turns her
-usage of these tools into labeled data as a byproduct.
+- `annotate(well, track_id, outcome_class, ...)` — appends stage marks
+  (condensation/metaphase/anaphase/exit) and outcome class to a separate,
+  append-only `annotations.csv`, which is what turns her usage of these tools
+  into labeled data as a byproduct.
 
 ## Testing & Evaluation
 
