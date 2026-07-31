@@ -284,3 +284,27 @@ def test_geometric_lineage_covers_every_track():
     assert set(out.index) == {1, 7}
     assert out.loc[7, "parent_id"] == ""
     assert out.loc[7, "first_frame"] == 5 and out.loc[7, "last_frame"] == 5
+
+
+def test_geometric_lineage_records_the_runner_up_mother():
+    """Nearest-mother is a tie-break, not a fact -- the loser must ship alongside
+    the winner so a reader can see the parent_id was a judgement call."""
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (2, 0, 118.0, 100.0, 200.0, 1000.0),
+        (3, 1, 98.0, 100.0, 100.0, 500.0),
+        (4, 1, 102.0, 100.0, 100.0, 500.0),
+    ])
+    assert out.loc[3, "parent_id"] == 1
+    assert out.loc[3, "alt_parents"].startswith("2:")
+    assert out.loc[4, "alt_parents"].startswith("2:")
+
+
+def test_geometric_lineage_leaves_alt_parents_empty_when_unambiguous():
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (2, 1, 98.0, 100.0, 100.0, 500.0),
+        (3, 1, 102.0, 100.0, 100.0, 500.0),
+    ])
+    assert out.loc[2, "alt_parents"] == ""
+    assert out.loc[3, "alt_parents"] == ""

@@ -691,7 +691,24 @@ def _lineage(well: str) -> dict[int, dict]:
             "dna_ratio": _f("dna_ratio"),
             "size_ratio": _f("size_ratio"),
             "link_px": _f("link_distance_px"),
+            "alt_parents": (r.get("alt_parents") or "").strip(),
         }
+
+    # Percentile a link against THIS well's own links rather than a fixed cutoff.
+    # An absolute threshold does not survive a change of cell line -- WGD nuclei are
+    # large and lobed where RUES2 are compact, so "size_ratio < 0.25 is a fragment"
+    # is calibrated to whichever well it was written against and silently mis-fires
+    # elsewhere. Same lesson as the max-delta feature, where normalisation was the
+    # whole game and the raw statistic did not transfer between wells.
+    for key in ("dna_ratio", "size_ratio"):
+        vals = sorted(v[key] for v in out.values() if v.get(key) is not None)
+        for v in out.values():
+            x = v.get(key)
+            if x is None or not vals:
+                v[key + "_pct"] = None
+            else:
+                lo = sum(1 for y in vals if y < x)
+                v[key + "_pct"] = 100.0 * lo / len(vals)
     return out
 
 
@@ -732,36 +749,51 @@ def get_lineage(well: str, track_id: int) -> str:
         s = df[df.track_id == tid]
         return f"frames {int(s.frame.min())}-{int(s.frame.max())}" if not s.empty else "not in tracks.csv"
 
-    def _quality(r: dict) -> str:
-        """One-line strength readout for a link, when the source scored it."""
+    def _quality(r: dict) -> list[str]:
+        """Strength readout for a link, when the source scored it.
+
+        Each number is given with its percentile against this well's own links, so
+        the comparison recalibrates per cell line instead of assuming one cutoff
+        fits RUES2, WGD and Bewo alike.
+        """
         if r.get("dna_ratio") is None and r.get("size_ratio") is None:
-            return ""
+            return []
         bits = []
         if r.get("link_px") is not None:
             bits.append(f"{r['link_px']:.0f}px apart")
-        if r.get("dna_ratio") is not None:
-            bits.append(f"DNA {r['dna_ratio']:.2f}")
-        if r.get("size_ratio") is not None:
-            bits.append(f"size {r['size_ratio']:.2f}")
-        flag = ""
-        sr, dr = r.get("size_ratio"), r.get("dna_ratio")
-        if sr is not None and sr < 0.25:
-            flag = "  <-- WEAK: one 'daughter' is under a quarter the other's area, " \
-                   "which is the micronucleus/fragment signature, not a division"
-        elif dr is not None and not (0.7 <= dr <= 1.3):
-            flag = "  <-- WEAK: DNA is not conserved across this link"
-        return "      " + ", ".join(bits) + flag
+        # Which tail is suspicious differs by measure. A LOW size ratio means one
+        # "daughter" is a fragment; a high one is just a symmetric division, which
+        # is normal. DNA is conserved across a real division, so BOTH tails are
+        # wrong -- far below 1 means signal went missing, far above means the pair
+        # carries more DNA than the mother had, i.e. something else got included.
+        for key, label, both in (("dna_ratio", "DNA", True), ("size_ratio", "size", False)):
+            if r.get(key) is None:
+                bits.append("")
+                continue
+            pct = r.get(key + "_pct")
+            tail = ""
+            if pct is not None:
+                if pct <= 25:
+                    tail = f" (bottom {pct:.0f}% in this well)"
+                elif both and pct >= 75:
+                    tail = f" (top {100 - pct:.0f}% in this well)"
+            bits.append(f"{label} {r[key]:.2f}{tail}")
+        bits = [b for b in bits if b]
+        out = ["      " + ", ".join(bits)]
+        if r.get("alt_parents"):
+            out.append(f"      CONTESTED: {r['alt_parents']} were also in range "
+                       f"(id:px). Nearest won, which is a tie-break, not a finding.")
+        return out
 
     p = rec["parent"]
     lines.append(f"  mother    {p} ({_span(p)})" if p is not None else "  mother    none recorded")
-    if p is not None and (q := _quality(rec)):
-        lines.append(q)
+    if p is not None:
+        lines.extend(_quality(rec))
     if rec["daughters"]:
         lines.append(f"  daughters {len(rec['daughters'])}")
         for d in rec["daughters"]:
             lines.append(f"    {d} ({_span(d)})")
-            if (q := _quality(lin.get(d, {}))):
-                lines.append(q)
+            lines.extend(_quality(lin.get(d, {})))
     else:
         lines.append("  daughters none recorded")
 

@@ -247,8 +247,10 @@ def build_lineage_from_tracks(tracks: "pd.DataFrame") -> "pd.DataFrame":
                 pairs.append((d, int(m), int(c)))
 
     claimed: dict[int, tuple[float, int]] = {}
+    contenders: dict[int, list[tuple[float, int]]] = {}
     for d, m, c in sorted(pairs):
         claimed.setdefault(c, (d, m))
+        contenders.setdefault(c, []).append((d, m))
 
     kids: dict[int, list[int]] = {}
     for c, (_d, m) in claimed.items():
@@ -281,6 +283,17 @@ def build_lineage_from_tracks(tracks: "pd.DataFrame") -> "pd.DataFrame":
     rows = []
     for tid in sorted(set(int(x) for x in first.index)):
         kid = sorted(daughters.get(tid, []))
+        # Which OTHER mothers could also have claimed this daughter. Nearest-mother
+        # is a tie-break, not a fact, so the runners-up ship alongside the winner
+        # rather than being silently discarded -- same reason the biology checks are
+        # columns and not filters. Empty for the vast majority; non-empty is the
+        # signal that this particular parent_id is a judgement call.
+        alts = ""
+        if tid in parent:
+            alts = " ".join(
+                f"{m}:{d:.0f}" for d, m in sorted(contenders.get(tid, []))
+                if m != parent[tid]
+            )
         rows.append({
             "track_id": tid,
             "parent_id": parent.get(tid, ""),
@@ -291,5 +304,6 @@ def build_lineage_from_tracks(tracks: "pd.DataFrame") -> "pd.DataFrame":
             "link_distance_px": round(dist[tid], 1) if tid in dist else "",
             "dna_ratio": round(dna[tid], 3) if tid in dna else "",
             "size_ratio": round(size[tid], 3) if tid in size else "",
+            "alt_parents": alts,
         })
     return pd.DataFrame(rows)
