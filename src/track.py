@@ -44,6 +44,25 @@ def _bridge_track_gaps(
     and must NOT be bridged. Only tracks with EXACTLY ONE nearby successor within
     the gap window are merged; two or more successors are left alone.
 
+    Two guards stop that merging from running away (added 2026-07-31 after the
+    original version blended distinct cells onto one id in 3.25% of M12_RUES2's
+    tracks, which is what made a "track" untrustworthy as a unit of navigation):
+
+    1. NO TEMPORAL OVERLAP. One cell cannot be in two places at once, so two labels
+       whose frame spans overlap are provably different cells and must never share a
+       canonical id. The one-successor rule alone does not prevent this, because
+       union-find is transitive: if two DIFFERENT predecessors each bridge to the
+       same successor, all three land in one group and the two predecessors can
+       overlap heavily. Measured on M12: 226 of 1,060 merged groups contained
+       co-existing labels, the worst overlapping by 118 frames, and chaining built
+       groups of up to 11 labels -- a single cell needing ten bridges is not
+       credible. The check is against the whole group, not the pair, because
+       chaining is the mechanism.
+    2. ONE CLAIMANT PER SUCCESSOR. The original asked "does this track have exactly
+       one successor?" but never "does this successor have exactly one predecessor?"
+       A successor two tracks both want is ambiguous, and guessing picks wrong half
+       the time, so it is left unbridged.
+
     Returns a mapping from every original Trackastra label to its canonical
     (post-merge) label -- labels merged into the same lineage share one value.
     """
@@ -83,6 +102,23 @@ def _bridge_track_gaps(
         if ra != rb:
             parent_uf[rb] = ra
 
+    # Every label's own frame span, for the overlap guard below.
+    spans: dict[int, tuple[int, int]] = {lbl: (begin_of[lbl], end_of[lbl]) for lbl in begin_of}
+    members: dict[int, list[int]] = {lbl: [lbl] for lbl in begin_of}
+
+    def _would_overlap(a: int, b: int) -> bool:
+        """True if merging a's group with b's would put two co-existing labels together."""
+        for x in members[find(a)]:
+            bx0, bx1 = spans[x]
+            for y in members[find(b)]:
+                by0, by1 = spans[y]
+                if bx0 <= by1 and by0 <= bx1:
+                    return True
+        return False
+
+    # Pass 1: collect every proposed bridge, so a successor wanted by two different
+    # predecessors can be spotted before anything is merged.
+    proposals: list[tuple[int, int]] = []
     for lbl, f_end in end_of.items():
         if f_end >= video_end:
             continue  # track runs to the end of the video, not a gap
@@ -104,7 +140,25 @@ def _bridge_track_gaps(
                 if ((start_c[0] - ex) ** 2 + (start_c[1] - ey) ** 2) ** 0.5 <= max_gap_dist:
                     successors.append(other)
         if len(successors) == 1:
-            union(lbl, successors[0])
+            proposals.append((lbl, successors[0]))
+
+    # Guard 2: a successor claimed by more than one predecessor is ambiguous.
+    claimants: dict[int, int] = defaultdict(int)
+    for _lbl, succ in proposals:
+        claimants[succ] += 1
+
+    # Pass 2: merge, skipping ambiguous claims and anything that would co-exist.
+    # Sorted so the result does not depend on dict iteration order.
+    for lbl, succ in sorted(proposals):
+        if claimants[succ] > 1:
+            continue
+        if _would_overlap(lbl, succ):
+            continue
+        ra, rb = find(lbl), find(succ)
+        if ra != rb:
+            merged_members = members[ra] + members[rb]
+            union(lbl, succ)
+            members[find(lbl)] = merged_members
 
     return {lbl: find(lbl) for lbl in begin_of}
 
