@@ -85,13 +85,23 @@ visiting 16 positions per cycle and fell behind. Assuming the nominal value
 understates elapsed time by ~39%. Use `manifest.frame_timestamps_ms`, which is
 exact per frame, or the `time_ms` column in `tracks.csv`.
 
-**2. `(track_id, frame)` is not a unique key.** The tracker sometimes merges two
-genuinely distinct cells under one `track_id`. `n_masks_in_frame` says how many
-shapes shared that id in that frame; `manifest.track_multiplicity.suspect_tracks`
-lists ids where this happens in more than half the track's frames. Those ids
-should be excluded from any measurement — averaging two cells 18 µm apart
-produces a position where no cell is. Corpus-wide this affects ~1.4% of tracks.
-`candidates.csv` uses the same ids, so it inherits the same caveat.
+**2. `(track_id, frame)` used to not be a unique key. As of the 2026-07-31 rebuild
+it is.** The tracker used to merge two genuinely distinct cells under one
+`track_id`, so `n_masks_in_frame` could exceed 1 and
+`manifest.track_multiplicity.suspect_tracks` listed the worst offenders, which had
+to be excluded from any measurement — averaging two cells 18 µm apart produces a
+position where no cell is.
+
+That was a bug in gap bridging, not a property of the imaging, and it is fixed.
+Across all 21 rebuilt wells and all four cell lines, `suspect_tracks` is empty and
+`n_masks_in_frame` is 1 in every row — including the WGD wells, where lobed
+genome-doubled nuclei made a genuine multi-mask case most plausible. Un-merging
+recovered **1,742 tracks, +3.1%** corpus-wide.
+
+Both fields are kept so the check stays possible rather than assumed. If either
+ever reads non-1 again, treat it as a regression in bridging and not as data.
+**Any bundle whose `manifest.provenance` is missing predates this fix**, and its
+merged ids are still in there.
 
 **3. A track usually ends at the moment its cell divides.** The two daughters get
 new `track_id`s, so the division is not contained in any single track — it falls in

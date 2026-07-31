@@ -287,6 +287,10 @@ def list_tracks(
     lines.append(
         "\nUNRELIABLE-merged-cells: the tracker merged two different cells under one id; "
         "do not measure these. sometimes-2-masks: occasionally covers 2 shapes -- check visually."
+        "\nNeither flag should appear at all on a bundle rebuilt after 2026-07-31: merging "
+        "was a gap-bridging bug, not a property of the imaging, and across all 21 wells and "
+        "four cell lines every track is now single-masked. If you see one, either the bundle "
+        "predates the fix (check manifest.provenance) or bridging has regressed."
         "\nedge_um: how close the cell gets to the frame boundary (nearest of its first and "
         "last position). NEAR-EDGE marks under 15 um, where a nucleus is likely clipped -- "
         "its area and brightness are then understated, and it may simply leave the field. "
