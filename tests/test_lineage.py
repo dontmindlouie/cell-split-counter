@@ -200,3 +200,87 @@ class TestTrace:
         run_dir = self._build_lineage_fixture(tmp_path)
         result = trace(run_dir, 999)
         assert result["found"] is False
+
+
+# --------------------------------------------------- build_lineage_from_tracks
+
+def _tracks_frame(rows):
+    """rows: (track_id, frame, cx, cy, area_um2, intensity_integrated)."""
+    import pandas as pd
+    return pd.DataFrame(rows, columns=[
+        "track_id", "frame", "cx", "cy", "area_um2", "intensity_integrated"])
+
+
+def _lin(rows):
+    from src.lineage import build_lineage_from_tracks
+    return build_lineage_from_tracks(_tracks_frame(rows)).set_index("track_id")
+
+
+def test_geometric_lineage_links_a_clean_division():
+    # Mother ends f1; two comparable daughters born f2 right where it was.
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (1, 1, 100.0, 100.0, 200.0, 1000.0),
+        (2, 2, 95.0, 100.0, 100.0, 500.0),
+        (3, 2, 105.0, 100.0, 100.0, 500.0),
+    ])
+    assert out.loc[2, "parent_id"] == 1
+    assert out.loc[3, "parent_id"] == 1
+    assert out.loc[1, "n_daughters"] == 2
+    assert out.loc[1, "daughter_ids"] == "2 3"
+    assert out.loc[2, "dna_ratio"] == 1.0
+    assert out.loc[2, "size_ratio"] == 1.0
+
+
+def test_geometric_lineage_scores_a_fragment_without_dropping_it():
+    """The track-6425 case: a micronucleus budding beside a nucleus is geometrically
+    identical to a division, so the link is still made -- but size_ratio must expose
+    it, because that is the column a reader discounts the link on."""
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (1, 1, 100.0, 100.0, 200.0, 1000.0),
+        (2, 2, 100.0, 100.0, 190.0, 960.0),   # the real continuation
+        (3, 2, 112.0, 100.0, 10.0, 40.0),     # a micronucleus
+    ])
+    assert out.loc[3, "parent_id"] == 1, "weak links are still reported, not filtered"
+    assert out.loc[3, "size_ratio"] < 0.25
+    assert out.loc[3, "dna_ratio"] > 0.9, "DNA alone would NOT have caught this"
+
+
+def test_geometric_lineage_assigns_a_contested_daughter_to_its_nearest_mother():
+    """Two mothers ending in the same frame near each other both reach the same
+    births. Without nearest-mother resolution the winner depends on row order."""
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (2, 0, 130.0, 100.0, 200.0, 1000.0),
+        (3, 1, 98.0, 100.0, 100.0, 500.0),
+        (4, 1, 102.0, 100.0, 100.0, 500.0),
+    ])
+    assert out.loc[3, "parent_id"] == 1
+    assert out.loc[4, "parent_id"] == 1
+    assert out.loc[2, "n_daughters"] == 0
+
+
+def test_geometric_lineage_ignores_single_successor_and_distant_births():
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (2, 1, 100.0, 100.0, 200.0, 1000.0),   # lone successor = continuation
+        (3, 0, 500.0, 500.0, 200.0, 1000.0),
+        (4, 1, 900.0, 900.0, 100.0, 500.0),    # far away
+        (5, 1, 901.0, 901.0, 100.0, 500.0),
+    ])
+    assert out.loc[2, "parent_id"] == ""
+    assert out.loc[4, "parent_id"] == ""
+    assert out.loc[5, "parent_id"] == ""
+
+
+def test_geometric_lineage_covers_every_track():
+    """Coverage is the whole point of replacing the events-derived graph: a track
+    with no parent must still get a row, or 'missing' and 'orphan' stay confused."""
+    out = _lin([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (7, 5, 300.0, 300.0, 150.0, 800.0),
+    ])
+    assert set(out.index) == {1, 7}
+    assert out.loc[7, "parent_id"] == ""
+    assert out.loc[7, "first_frame"] == 5 and out.loc[7, "last_frame"] == 5

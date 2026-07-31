@@ -677,9 +677,20 @@ def _lineage(well: str) -> dict[int, dict]:
     import csv
     out = {}
     for r in csv.DictReader(p.open(encoding="utf-8")):
+        def _f(key: str) -> float | None:
+            v = r.get(key)
+            try:
+                return float(v) if v not in (None, "") else None
+            except ValueError:
+                return None
+
         out[int(r["track_id"])] = {
             "parent": int(r["parent_id"]) if r.get("parent_id") not in (None, "") else None,
             "daughters": [int(x) for x in (r.get("daughter_ids") or "").split() if x],
+            # Only present on geometry-sourced lineage; None on CTC-sourced.
+            "dna_ratio": _f("dna_ratio"),
+            "size_ratio": _f("size_ratio"),
+            "link_px": _f("link_distance_px"),
         }
     return out
 
@@ -721,12 +732,36 @@ def get_lineage(well: str, track_id: int) -> str:
         s = df[df.track_id == tid]
         return f"frames {int(s.frame.min())}-{int(s.frame.max())}" if not s.empty else "not in tracks.csv"
 
+    def _quality(r: dict) -> str:
+        """One-line strength readout for a link, when the source scored it."""
+        if r.get("dna_ratio") is None and r.get("size_ratio") is None:
+            return ""
+        bits = []
+        if r.get("link_px") is not None:
+            bits.append(f"{r['link_px']:.0f}px apart")
+        if r.get("dna_ratio") is not None:
+            bits.append(f"DNA {r['dna_ratio']:.2f}")
+        if r.get("size_ratio") is not None:
+            bits.append(f"size {r['size_ratio']:.2f}")
+        flag = ""
+        sr, dr = r.get("size_ratio"), r.get("dna_ratio")
+        if sr is not None and sr < 0.25:
+            flag = "  <-- WEAK: one 'daughter' is under a quarter the other's area, " \
+                   "which is the micronucleus/fragment signature, not a division"
+        elif dr is not None and not (0.7 <= dr <= 1.3):
+            flag = "  <-- WEAK: DNA is not conserved across this link"
+        return "      " + ", ".join(bits) + flag
+
     p = rec["parent"]
     lines.append(f"  mother    {p} ({_span(p)})" if p is not None else "  mother    none recorded")
+    if p is not None and (q := _quality(rec)):
+        lines.append(q)
     if rec["daughters"]:
         lines.append(f"  daughters {len(rec['daughters'])}")
         for d in rec["daughters"]:
             lines.append(f"    {d} ({_span(d)})")
+            if (q := _quality(lin.get(d, {}))):
+                lines.append(q)
     else:
         lines.append("  daughters none recorded")
 
@@ -737,19 +772,28 @@ def get_lineage(well: str, track_id: int) -> str:
             "mother or daughter here means UNKNOWN, not none. Absence is not evidence "
             "that the cell did not divide."
         )
+    scored = any(rec.get(k) is not None for k in ("dna_ratio", "size_ratio"))
     lines.append(
-        "\nAnd the converse, which matters just as much: PRESENCE IS NOT EVIDENCE "
-        "EITHER. A recorded link means the tracker joined two ids, not that a division "
-        "happened. Both failure directions are real in this data -- verified cases "
-        "include three textbook anaphases with NO daughters recorded, a 'daughter' that "
-        "was a ~6 um^2 micronucleus budding off rather than a second nucleus, and a "
-        "recorded 'mother' that was simply a healthy neighbour a few microns away. "
-        "Two cheap sanity checks before you trust a link: a real division roughly "
-        "halves the mother's area and it STAYS halved, and the two daughters' areas "
-        "should sum to about the mother's; a 'daughter' far smaller than half is a "
-        "fragment or micronucleus. Check the frame spans printed above too -- a "
-        "'daughter' that starts long after the mother ends, or overlaps it heavily, is "
-        "an id-linking artifact rather than a division."
+        "\nPRESENCE IS NOT EVIDENCE. A recorded link means two ids were joined, not "
+        "that a division happened. Verified failures in both directions in this data: "
+        "three textbook anaphases with NO daughters recorded, a 'daughter' that was a "
+        "~6 um^2 micronucleus budding off, and a recorded 'mother' that was a healthy "
+        "neighbour a few microns away."
+        + (
+            "\nThe numbers on each link above are there so you can weigh it without "
+            "spending an image. DNA near 1.00 means the mother's signal is accounted "
+            "for by the daughters; size near 1.00 means they are comparable objects. "
+            "A low size ratio with a healthy DNA ratio is the classic fragment case -- "
+            "the big object carries the DNA and the small one is a micronucleus. These "
+            "are not filters and nothing was withheld: weak links are still shown, "
+            "labelled, and yours to judge."
+            if scored else
+            "\nThis bundle's lineage carries no link scores, so check by eye: a real "
+            "division roughly halves the mother's area and it STAYS halved, and the "
+            "daughters' areas should sum to about the mother's."
+        )
+        + " Check the frame spans too -- a 'daughter' starting long after the mother "
+        "ends, or overlapping it heavily, is an id-linking artifact."
     )
     lines.append(
         "\nTo see the division itself, ask get_filmstrip for a range spanning the "

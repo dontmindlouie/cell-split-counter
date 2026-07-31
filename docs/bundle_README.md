@@ -83,14 +83,31 @@ request past the track's own start) before concluding the lead-up can't be seen.
 | --- | --- |
 | `track_id` | the cell |
 | `parent_id` | the track it was born from; empty = none recorded |
-| `first_frame`, `last_frame` | its span (complete-coverage bundles only) |
+| `first_frame`, `last_frame` | its span |
 | `n_daughters`, `daughter_ids` | space-separated track_ids born from this one |
+| `link_distance_px` | mother's last centroid to this daughter's first (geometry source only) |
+| `dna_ratio` | both daughters' `intensity_integrated` at f+1 over the mother's at f. ~1.0 when DNA is conserved, i.e. a real division (geometry source only) |
+| `size_ratio` | smaller daughter's area over larger's. Near 1 for a symmetric division; **under ~0.25 is the micronucleus/fragment signature** (geometry source only) |
 
-Topology only, no verdicts: a daughter link means the tracker connected two ids
-across a division, not that the division was real or normal. Check
-`manifest.lineage.coverage` first — `complete` covers every track, while `partial`
-was recovered from `events.csv` and therefore only covers tracks the pipeline
-flagged, so a missing parent there means **unknown**, not orphan.
+`manifest.lineage.source` says where the graph came from. **`ctc`** is Trackastra's
+own table, written at tracking time — complete, unscored. **`geometry`** is rebuilt
+from `tracks.csv` adjacency (a mother ending at f linked to two births at f+1 within
+40 px, each daughter assigned to its nearest eligible mother) — also complete, and
+carrying the three score columns above. The old **`events`** source is retired: it
+was partial by construction (2,364 of 5,163 tracks on M12_RUES2) and welded topology
+to a file of AI verdicts.
+
+**The scores are not filters.** Weak links are still written, so the graph stays pure
+topology; the columns exist so you can discount one without opening an image. The
+case they were built from: track 6425's recorded mother 4866 has `dna_ratio` 0.94 —
+which looks healthy — but `size_ratio` 0.10, and it is a micronucleus beside a
+nucleus rather than a daughter (confirmed by eye 2026-07-30). A low size ratio with a
+healthy DNA ratio is the fragment signature: the large object carries the DNA and the
+small one is debris. Geometry cannot tell those apart, and neither could the events
+graph — the difference is that this one shows you the numbers.
+
+Topology only, no verdicts: a daughter link means two ids were connected across a
+division, not that the division was real or normal.
 
 **Links are unreliable in both directions, not just by omission.** Absence being
 "unknown" is the familiar half; the other half is that **presence is not evidence

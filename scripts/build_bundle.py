@@ -178,13 +178,20 @@ def write_lineage(run_dir: Path, out_run: Path) -> dict:
     Preferred source is _memmap/ctc_lineage.csv, written by src.track from
     Trackastra's own CTC table: complete, every track, topology only.
 
-    Runs tracked before 2026-07-29 have no such file, and the graph cannot be
-    recovered from what they left on disk (canonical_labels.json preserves the label
-    remap, but the parent table lived only in memory). For those, fall back to
-    events.csv's parent_id -- correct where present, but partial by construction,
-    since a track only appears there if the pipeline emitted an event for it. The
-    coverage field records which happened, so nobody mistakes a partial graph for a
-    complete one: a missing parent under "events" means unknown, not orphan.
+    Runs tracked before 2026-07-29 have no such file, and Trackastra's own graph
+    cannot be recovered from what they left on disk (canonical_labels.json preserves
+    the label remap, but the parent table lived only in memory). Rather than re-run a
+    GPU tracking pass per well, rebuild the topology from tracks.csv geometry --
+    see src.lineage.build_lineage_from_tracks. That is complete for every track,
+    costs nothing, and uses the same adjacency rule that generates division
+    candidates, so lineage and candidates cannot disagree with each other.
+
+    The events.csv fallback that used to sit here is GONE (2026-07-30). It was
+    partial by construction -- a track appeared only if the pipeline emitted an
+    event for it (2,364 of 5,163 tracks on M12_RUES2) -- and it welded pure topology
+    to a file of AI verdicts, so anything wanting the graph had to read the answers.
+    Both replacements are strictly better and neither depends on events.csv, which
+    is what lets that file leave the bundle entirely.
     """
     full = run_dir / "frames" / "_memmap" / "ctc_lineage.csv"
     if full.is_file():
@@ -193,36 +200,23 @@ def write_lineage(run_dir: Path, out_run: Path) -> dict:
         print(f"  lineage.csv: {n:,} tracks (complete, from Trackastra CTC)")
         return {"coverage": "complete", "source": "ctc", "n_tracks": n}
 
-    events = run_dir / "events.csv"
-    if not events.is_file():
-        print("  lineage.csv: skipped (no ctc_lineage.csv and no events.csv)")
+    tracks_csv = out_run / "tracks.csv"
+    if not tracks_csv.is_file():
+        print("  lineage.csv: skipped (no ctc_lineage.csv and no tracks.csv)")
         return {"coverage": "none"}
 
-    parent: dict[int, int] = {}
-    for r in csv.DictReader(open(events, encoding="utf-8", errors="replace")):
-        tid, pid = r.get("track_id"), r.get("parent_id")
-        if not tid or pid in (None, "", "None"):
-            continue
-        p = int(float(pid))
-        t = int(float(tid))
-        if p != t:
-            parent[t] = p
+    import pandas as pd
 
-    daughters: dict[int, list[int]] = {}
-    for t, p in parent.items():
-        daughters.setdefault(p, []).append(t)
+    from src.lineage import build_lineage_from_tracks
 
-    with open(out_run / "lineage.csv", "w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["track_id", "parent_id", "n_daughters", "daughter_ids"])
-        for t in sorted(set(parent) | set(daughters)):
-            kids = sorted(daughters.get(t, []))
-            w.writerow([t, parent.get(t, ""), len(kids), " ".join(str(k) for k in kids)])
-
-    n = len(set(parent) | set(daughters))
-    print(f"  lineage.csv: {n:,} tracks (PARTIAL -- derived from events.csv; "
-          f"re-run tracking for a complete graph)")
-    return {"coverage": "partial", "source": "events", "n_tracks": n}
+    lin = build_lineage_from_tracks(pd.read_csv(tracks_csv))
+    lin.to_csv(out_run / "lineage.csv", index=False)
+    n = len(lin)
+    n_linked = int((lin.parent_id != "").sum())
+    print(f"  lineage.csv: {n:,} tracks (complete, from tracks.csv geometry; "
+          f"{n_linked:,} have a parent)")
+    return {"coverage": "complete", "source": "geometry", "n_tracks": n,
+            "n_linked": n_linked}
 
 
 def write_labels_and_tracks(
