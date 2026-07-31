@@ -171,6 +171,111 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
     return cal
 
 
+#: Columns dropped on the way out of events.csv, with the reason each one goes.
+_CANDIDATE_DROP = {
+    # 0.0 on 174 of 216 split rows on M14_WGD while raw_ai_confidence on those same
+    # rows is a healthy 0.52-0.92. A column that looks usable and is wrong four times
+    # out of five is worse than an absent one: filtering `ai_confidence >= 0.8` keeps
+    # the deaths, discards nearly every division, and inverts the ratio it was meant
+    # to clean up. Self-reported confidence was independently found to be the LEAST
+    # reliable signal in this pipeline (the confirmed_high investigation), so this is
+    # dropped rather than repaired.
+    "ai_confidence",
+    # ~0% precision for a genuine failed division across a 30-event stratified human
+    # review (0/30 confirmed). It names a category the data does not support.
+    "split_type",
+}
+
+
+def write_candidates(run_dir: Path, out_dir: Path) -> dict:
+    """Write candidates.csv -- the detector's guesses -- OUTSIDE the bundle.
+
+    This file used to ship inside the bundle as events.csv, which was a category
+    error rather than a data problem: a list of machine CANDIDATES sitting next to
+    the frames, named and counted as if it were a list of FINDINGS. Every defect
+    downstream followed from that framing -- summary.json counted its rows as events,
+    lineage.csv was derived from it, and the MCP eval had to hide the file to stay
+    valid, which is the clearest possible tell that it read as an answer key.
+
+    So the bundle now holds data plus human annotations, and machine output lives
+    somewhere else under a name nobody mistakes for a verdict.
+
+    Two schema changes on the way out:
+
+    1. ONE ROW PER EVENT. Splits were written one row per daughter (sharing
+       frame_range/peak_frame/centroid/ai_notes) while deaths were written one row
+       per event, and summary.json counted rows -- so division:death read 216:179
+       (1.21) on M14_WGD when the truth was 108:179 (0.60). Only one category was
+       doubled, so it did not cancel. Every split_type tally in all 20 bundled wells
+       is an even number; the doubling is universal, not one well's bug. The
+       daughters move into a space-separated daughter_ids column, matching what
+       lineage.csv already does, so the count is right by construction instead of
+       every consumer being expected to dedupe. Two people who already knew about
+       the bug got it wrong within an hour of each other, which is the argument for
+       fixing the schema rather than the counter.
+    2. Columns in _CANDIDATE_DROP are removed -- see that dict for why each goes.
+    """
+    events = run_dir / "events.csv"
+    if not events.is_file():
+        print("  candidates.csv: skipped (no events.csv in the run)")
+        return {"n_events": 0}
+
+    rows = list(csv.DictReader(open(events, encoding="utf-8", errors="replace")))
+    if not rows:
+        print("  candidates.csv: skipped (events.csv is empty)")
+        return {"n_events": 0}
+
+    # An event is identified by where and when it happened -- track_id and parent_id
+    # are exactly the fields that differ between a split's two rows.
+    key_cols = [c for c in ("frame_range", "peak_frame", "centroid_x", "centroid_y",
+                            "split_topology") if c in rows[0]]
+    merged: dict[tuple, dict] = {}
+    for r in rows:
+        k = tuple(r.get(c, "") for c in key_cols)
+        if k not in merged:
+            out = {c: v for c, v in r.items() if c not in _CANDIDATE_DROP}
+            out["daughter_ids"] = ""
+            merged[k] = out
+        # Collect every track_id seen under this event as a daughter.
+        tid = (r.get("track_id") or "").strip()
+        if tid:
+            have = merged[k]["daughter_ids"].split()
+            if tid not in have:
+                merged[k]["daughter_ids"] = " ".join(have + [tid])
+
+    for out in merged.values():
+        kids = out["daughter_ids"].split()
+        if len(kids) == 1:
+            # A single-object event (a death). The id is the thing itself, not a
+            # daughter of anything, so it stays in track_id and daughter_ids is empty.
+            out["track_id"] = kids[0]
+            out["daughter_ids"] = ""
+            out["n_daughters"] = 0
+        else:
+            # A split. track_id used to hold whichever daughter's row you happened to
+            # read, which is exactly the ambiguity that made the count wrong -- so it
+            # is cleared and both ids live in daughter_ids.
+            out["track_id"] = ""
+            out["n_daughters"] = len(kids)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cols = [c for c in rows[0] if c not in _CANDIDATE_DROP] + ["n_daughters", "daughter_ids"]
+    with open(out_dir / "candidates.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for out in merged.values():
+            w.writerow(out)
+
+    kinds: dict[str, int] = {}
+    for out in merged.values():
+        kinds[out.get("split_topology", "?")] = kinds.get(out.get("split_topology", "?"), 0) + 1
+    print(f"  candidates.csv: {len(merged):,} events from {len(rows):,} rows "
+          f"-> {out_dir / 'candidates.csv'}")
+    print(f"    by kind: {kinds}")
+    return {"n_events": len(merged), "n_source_rows": len(rows), "by_kind": kinds,
+            "path": str(out_dir / "candidates.csv")}
+
+
 def write_lineage(run_dir: Path, out_run: Path) -> dict:
     """Emit lineage.csv -- who each track's mother was, and which tracks are its
     daughters -- so a track that ends mid-division can be followed into the next one.
@@ -372,6 +477,10 @@ def main() -> None:
     ap.add_argument("run_dir", type=Path, help="a pipeline output run directory")
     ap.add_argument("--nd2", type=Path, required=True, help="source ND2 (read for calibration only)")
     ap.add_argument("--out", type=Path, default=Path("data/bundle"), help="bundle root")
+    ap.add_argument("--candidates", type=Path, default=Path("data/candidates"),
+                    help="where the detector's candidates.csv goes -- deliberately NOT "
+                         "inside the bundle, so machine guesses are never mistaken for "
+                         "findings the way events.csv was")
     ap.add_argument("--cell-line", default=None, help="e.g. RUES2, nTSC, pTSC, WGD, BeWo")
     ap.add_argument("--condition", default=None, help="perturbation/treatment label, if any")
     ap.add_argument("--no-intensity-curve", action="store_true", help="skip per-frame intensity stats")
@@ -421,11 +530,11 @@ def main() -> None:
         m = _FRAME_RE.search(p.name)
         shutil.copy2(p, frames_out / f"frame_{int(m.group(1)):05d}.png")
 
-    for name in ("events.csv", "summary.json"):
-        src = run_dir / name
-        if src.is_file():
-            shutil.copy2(src, out_run / name)
+    src = run_dir / "summary.json"
+    if src.is_file():
+        shutil.copy2(src, out_run / "summary.json")
 
+    candidates_info = write_candidates(run_dir, args.candidates / run_dir.name)
     lineage_info = write_lineage(run_dir, out_run)
 
     # Ship the schema doc INSIDE the bundle -- it is routinely handed to someone

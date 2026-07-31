@@ -13,7 +13,6 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
   labels/frame_00042.png   16-bit PNG; pixel value = track_id of the cell there,
                            0 = background. Lossless.
   tracks.csv               one row per cell shape per frame
-  events.csv               candidate division/death events found by the pipeline
   lineage.csv              mother/daughter links between track_ids
   manifest.json            calibration + acquisition metadata
   summary.json             the original pipeline run's own summary
@@ -23,13 +22,39 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
   browsers/*.html          self-contained HTML galleries written by render_browser()
 ```
 
+## Where the detector's guesses went
+
+There is deliberately **no `events.csv` in the bundle**. The pipeline's candidate
+division/death events now live outside it, at `data/candidates/<well>/candidates.csv`.
+
+The move fixed a category error rather than a data problem: a list of machine
+*candidates* sat beside the frames named and counted as if it were a list of
+*findings*. Everything that went wrong downstream followed from that — `summary.json`
+counted its rows as events, `lineage.csv` was derived from it, and the MCP evaluation
+had to hide the file to stay valid, which is the clearest possible tell that it read
+as an answer key. The bundle now holds **data plus human verdicts**; machine guesses
+live somewhere else, under a name nobody mistakes for a verdict.
+
+`candidates.csv` is one row per **event** (not per daughter — see below),
+`ai_confidence` and `split_type` are dropped, and it is the file `annotations.csv`'s
+`event_id` refers to.
+
+> ⚠️ **If you have older numbers, they are wrong by 2× on divisions.** Splits used to
+> be written one row per daughter while deaths were one row per event, and anything
+> counting rows — including `summary.json`, whose counts are still row counts —
+> doubled the division side only, so the error did not cancel. Across the 21 bundled
+> wells this inflated the corpus from a true 22,585 events to 33,478 rows. **Twelve of
+> the 21 wells flip qualitatively**: M14_WGD read 1.21 divisions per death when the
+> truth is 0.60, so "more divisions than deaths" becomes its opposite. Relative
+> ordering between wells survives (the factor is uniform), but no absolute claim does.
+
 ## annotations.csv columns
 
 Written by `cell_mcp.py`'s `annotate()` tool, one row per call, never overwritten.
-Deliberately a SEPARATE file from `events.csv` (machine-generated, gets replaced on
+Deliberately a SEPARATE file from `candidates.csv` (machine-generated, gets replaced on
 every pipeline re-run, and only has rows for events the detector found in the first
 place — so a human verdict recorded onto it would be capped at the detector's own
-recall). `event_id` links back to `events.csv` when the pipeline also flagged the
+recall). `event_id` links back to `candidates.csv` when the pipeline also flagged the
 same event; empty means the human found it and the pipeline didn't.
 
 | column | meaning |
@@ -37,7 +62,7 @@ same event; empty means the human found it and the pipeline didn't.
 | `timestamp`, `annotator` | when and who |
 | `well`, `cell_line`, `condition` | so a cohort rollup across wells is a query, not a rewrite |
 | `track_id` | the cell |
-| `event_id` | optional link to a row in `events.csv`; empty if human-found only |
+| `event_id` | optional link to a row in `candidates.csv`; empty if human-found only |
 | `outcome_class` | free text, e.g. "divides" / "dies" / "neither" |
 | `condensation_frame`, `metaphase_frame`, `anaphase_frame`, `exit_frame` | the four stage marks; any may be empty |
 | `parent_id`, `daughter_ids` | may override `lineage.csv` if that link was determined to be wrong |
@@ -58,7 +83,7 @@ shapes shared that id in that frame; `manifest.track_multiplicity.suspect_tracks
 lists ids where this happens in more than half the track's frames. Those ids
 should be excluded from any measurement — averaging two cells 18 µm apart
 produces a position where no cell is. Corpus-wide this affects ~1.4% of tracks.
-`events.csv` uses the same ids, so it inherits the same caveat.
+`candidates.csv` uses the same ids, so it inherits the same caveat.
 
 **3. A track usually ends at the moment its cell divides.** The two daughters get
 new `track_id`s, so the division is not contained in any single track — it falls in
