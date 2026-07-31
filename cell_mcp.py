@@ -34,9 +34,12 @@ server = MCPServer(
         "list_wells(), then list_tracks() to find cells. Before spending images on a "
         "track, call get_track_profile() -- it's free (no images) and often shows where "
         "to look: a sparkline of solidity, area, and brightness across the track's "
-        "frames. Solidity (area / convex-hull area) is the strongest single signal -- it "
-        "dips as a mask rounds up during mitosis, even when area barely moves. Then use "
-        "get_filmstrip() to watch "
+        "frames, plus how close the cell gets to the frame edge (a clipped nucleus has "
+        "understated area and brightness, so check that before spending images). "
+        "Solidity (area / convex-hull area) dips as a mask rounds up during mitosis, but "
+        "how much it is worth depends on the cell line -- strong on compact RUES2 nuclei, "
+        "near-useless on the large lobed nuclei of a WGD line, where it has no headroom. "
+        "Then use get_filmstrip() to watch "
         "the flagged frames closely and measure() for real units. Expect a track to END "
         "at the moment its cell divides, with the daughters carrying new track_ids -- so "
         "if a cell's filmstrip stops abruptly, the event you want is just past it: use "
@@ -51,7 +54,11 @@ server = MCPServer(
         "chromatin only (H2B-mCherry), so the shapes are nuclei rather than whole cells. "
         "If a cell looks dim or unusual and you can't tell whether that's the cell itself "
         "or the whole field, call get_neighbourhood_stats() before spending more images on "
-        "it -- it's free and separates a cell-autonomous change from bleaching/defocus."
+        "it -- it's free and separates a cell-autonomous change from bleaching/defocus. "
+        "When the user asks to SEE something rather than be told about it -- 'show me', "
+        "'let me see', 'send me' -- answer with show_cells(), which writes a page of "
+        "labelled filmstrips they can open, rather than describing frames in prose. "
+        "Record human verdicts with annotate(); it is the only file here a human owns."
     ),
 )
 
@@ -100,6 +107,27 @@ def _frame_png(well: str, frame: int) -> np.ndarray:
 def _hours(well: str, frame: int) -> float:
     ts = _manifest(well)["frame_timestamps_ms"]
     return (ts[frame] - ts[0]) / 3.6e6
+
+
+def _edge_um(well: str, cx: float, cy: float) -> float:
+    """Distance from a centroid to the nearest frame edge, in microns.
+
+    Derived at read time from cx/cy rather than stored as a bundle column. A stored
+    column only describes bundles built after it was added -- exactly the trap
+    `solidity` fell into, where its absence means "not yet rebuilt" and not "zero".
+    This is two subtractions, so there is no reason to persist it.
+
+    Worth surfacing before any image is spent: a nucleus near the edge is clipped,
+    so its area and intensity are wrong and it can walk out of frame entirely. On
+    M4_nTSC this was a perfect off-screen detector, and in the M14 session a
+    filmstrip decision was burned on a track at cx=1010 of 1024 that turned out to
+    be unviewable.
+    """
+    m = _manifest(well)
+    w, h = m.get("width_px"), m.get("height_px")
+    if not w or not h:
+        return float("nan")
+    return min(cx, cy, w - cx, h - cy) * m["pixel_size_um"]
 
 
 # ---------------------------------------------------------------------- render
@@ -217,19 +245,30 @@ def list_tracks(
     g = g.sort_values(key, ascending=(sort_by == "start")).head(limit)
 
     suspect = set(_manifest(well).get("track_multiplicity", {}).get("suspect_tracks", []))
-    lines = ["track_id | frames | first | last | mean_area_um2 | xy_at_first | xy_at_last | flags"]
+    lines = ["track_id | frames | first | last | mean_area_um2 | xy_at_first | xy_at_last | "
+             "edge_um | flags"]
     for r in g.itertuples():
         flags = []
         if r.track_id in suspect:
             flags.append("UNRELIABLE-merged-cells")
         elif r.max_masks > 1:
             flags.append("sometimes-2-masks")
+        # Closest approach to the edge over the track's life, not its mean: a cell
+        # that spends one frame clipped has a clipped measurement in that frame.
+        edge = min(_edge_um(well, r.first_x, r.first_y), _edge_um(well, r.last_x, r.last_y))
+        if edge == edge and edge < 15:
+            flags.append("NEAR-EDGE")
         lines.append(f"{r.track_id} | {r.n_frames} | {r.first_frame} | {r.last_frame} | "
                      f"{r.mean_area_um2:.0f} | {r.first_x:.0f},{r.first_y:.0f} | "
-                     f"{r.last_x:.0f},{r.last_y:.0f} | {','.join(flags) or '-'}")
+                     f"{r.last_x:.0f},{r.last_y:.0f} | "
+                     f"{'?' if edge != edge else f'{edge:.0f}'} | {','.join(flags) or '-'}")
     lines.append(
         "\nUNRELIABLE-merged-cells: the tracker merged two different cells under one id; "
         "do not measure these. sometimes-2-masks: occasionally covers 2 shapes -- check visually."
+        "\nedge_um: how close the cell gets to the frame boundary (nearest of its first and "
+        "last position). NEAR-EDGE marks under 15 um, where a nucleus is likely clipped -- "
+        "its area and brightness are then understated, and it may simply leave the field. "
+        "Check this BEFORE spending a filmstrip on a track."
     )
     return "\n".join(lines)
 
@@ -259,15 +298,25 @@ def get_track_profile(well: str, track_id: int) -> str:
 
     Free to call -- reads numbers already measured from the video, not pixels --
     so use this BEFORE get_filmstrip to decide which frames are worth spending
-    images on. `solidity` (area / convex-hull area) is the strongest single
-    signal: it dips when a mask rounds up or briefly fragments during mitosis,
-    even in cases where area barely moves, and recovers over a few frames once
-    the division resolves -- a dip-then-recover shape is a better division tell
-    than either channel's raw min/max. Area's own useful shape is different:
-    a division HALVES it and it stays down (the tracker follows one daughter),
-    while a transient area dip that fully bounces back is more often noise than
-    a real event. None of this is certain from numbers alone -- it narrows
-    where to look, it doesn't replace looking.
+    images on.
+
+    `solidity` (area / convex-hull area) dips when a mask rounds up or briefly
+    fragments during mitosis, even where area barely moves, and recovers over a
+    few frames once the division resolves. **How much it is worth depends on the
+    cell line.** It was measured as the strongest single shape signal on RUES2,
+    whose nuclei are compact; on a genome-doubled (WGD) line it was the WEAKEST
+    thing available, because those nuclei are large and lobed at baseline so the
+    statistic has no headroom -- a real division there reached only 0.918 while
+    noise on a non-dividing cell dipped to 0.937. Check the well's cell_line in
+    list_wells() before leaning on it, and read the dip RELATIVE to this track's
+    own range rather than against an absolute cutoff.
+
+    Area's useful shape is different: a division HALVES it and it stays down (the
+    tracker follows one daughter), while a transient dip that fully bounces back
+    is more often noise than a real event.
+
+    None of this is certain from numbers alone -- it narrows where to look, it
+    doesn't replace looking.
 
     Args:
         well: well name from list_wells().
@@ -324,6 +373,35 @@ def get_track_profile(well: str, track_id: int) -> str:
     lines = [
         f"{well} track {track_id}: frames {frames[0]}-{frames[-1]} ({len(frames)} points)" + warn,
     ]
+    edge = min(_edge_um(well, t.cx.iloc[0], t.cy.iloc[0]),
+               _edge_um(well, t.cx.iloc[-1], t.cy.iloc[-1]))
+    if edge == edge:
+        lines.append(f"  closest to frame edge  {edge:.0f} um"
+                     + ("   <-- NEAR EDGE: likely clipped, so area and brightness are "
+                        "understated and the cell may leave the field" if edge < 15 else ""))
+
+    # What happens at the track's boundary is usually the question being asked, and
+    # it lives in a different file -- so surface it here rather than making the
+    # reader call get_lineage to find out whether this track ends in a division.
+    rec = _lineage(well).get(track_id, {})
+    if rec.get("daughters") or rec.get("parent") is not None:
+        bits = []
+        if rec.get("parent") is not None:
+            bits.append(f"born from {rec['parent']}")
+        if rec.get("daughters"):
+            bits.append(f"ends in a recorded split into {' + '.join(str(d) for d in rec['daughters'])}")
+        line = "  lineage   " + "; ".join(bits)
+        # DNA conservation across the boundary: the free check that told a real
+        # division from a segmentation artifact on track 919. Paired with size,
+        # because DNA alone passes a micronucleus -- 6425 reads DNA 0.94 and size
+        # 0.10, and only the second number gives it away.
+        kid = (rec.get("daughters") or [None])[0]
+        kr = _lineage(well).get(kid, {}) if kid is not None else {}
+        if kr.get("dna_ratio") is not None:
+            line += (f"  [DNA {kr['dna_ratio']:.2f}, size {kr['size_ratio']:.2f}"
+                     f"{' -- low size ratio means one is a fragment, not a daughter' if (kr.get('size_ratio') or 1) < 0.25 else ''}]")
+        lines.append(line)
+        lines.append("  (get_lineage has the link scores and any contested alternatives)")
     if has_solidity:
         lines.append(f"  solidity   {_sparkline(solidity)}  (min {min(solidity):.3f}, max {max(solidity):.3f})")
     lines.append(f"  area_um2   {_sparkline(area)}  (min {min(area):.0f}, max {max(area):.0f})")
@@ -475,7 +553,7 @@ def _filmstrip_frames(
     max_images: int, crop_um: float,
     color: bool, scale_bar: bool, marker: bool,
 ) -> tuple[str, list[np.ndarray]]:
-    """Shared by get_filmstrip (MCP images) and render_browser (HTML gallery).
+    """Shared by get_filmstrip (MCP images) and show_cells (HTML page).
 
     Returns (header text, rendered crop images) -- see get_filmstrip's docstring
     for the semantics; this is that function's body with the ImageContent
@@ -993,15 +1071,24 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
 
 
 @server.tool()
-def render_browser(well: str, events: list[dict]) -> str:
-    """Write a self-contained HTML gallery of specific cells, to hand to a person.
+def show_cells(well: str, events: list[dict]) -> str:
+    """Show the user cells -- writes a page of labelled filmstrips they can open.
 
-    Use this once you've already worked out what's interesting via get_track_profile /
-    get_filmstrip / get_lineage / get_neighbourhood_stats, and want to show it rather
-    than describe it -- e.g. after answering "what happens to these 12 tracks", write
-    one browser covering all of them instead of pasting filmstrips into chat one at a
-    time. Renders each event with the exact same crop logic as get_filmstrip (colour
-    LUT, scale bar, OFF-TRACK handling), so it looks like what you already reviewed.
+    CALL THIS WHENEVER THE USER SAYS "show me", "let me see", "send me", "put
+    together", "can I look at" -- anything meaning they want to LOOK at cells rather
+    than read a description of them. Describing twelve frames in prose when the
+    person asked to see them is the wrong answer, and it is the most common way to
+    get this wrong: the words "show me" should end in this call.
+
+    Also the right tool when you have finished an investigation and want to hand over
+    the evidence -- after answering "what happens to these 12 tracks", write one page
+    covering all of them instead of pasting filmstrips into chat one at a time. Each
+    cell renders with the exact same crop logic as get_filmstrip (colour LUT, scale
+    bar, OFF-TRACK handling), so the page matches what you already reviewed.
+
+    Pair each entry with a `label` that says what you concluded and why -- the page
+    outlives the conversation, and a bare track id tells the reader nothing about
+    what they are looking for.
 
     Args:
         well: well name from list_wells().

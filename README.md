@@ -25,7 +25,7 @@ to put her measurements, not in trying to automate her out of the loop. See
    calibration) into a ~0.2GB-per-well bundle, then serves it to a researcher's own
    Claude Code session over a local stdio MCP: `list_wells`, `list_tracks`,
    `get_track_profile`, `get_frame`, `get_filmstrip`, `get_lineage`, `measure`,
-   `get_neighbourhood_stats`, `render_browser`. She clones the repo, points
+   `get_neighbourhood_stats`, `show_cells`. She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
 
@@ -87,7 +87,7 @@ see the file itself for full argument docs):
 - `get_neighbourhood_stats(well, track_id, frame)` — compares one cell against its
   nearest neighbours and the whole field at a single frame, as a z-score — separates
   "this cell is dim" from "the whole field is dim right now."
-- `render_browser(well, events)` — writes a self-contained HTML gallery (images
+- `show_cells(well, events)` — writes a self-contained HTML page (images
   embedded as base64) of specific cells/frame-ranges, to hand off rather than
   describe in chat.
 - `annotate(well, track_id, outcome_class, ...)` — appends stage marks

@@ -19,7 +19,7 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
   annotations.csv          human-verified verdicts -- NOT written by build_bundle.py,
                            only exists once someone calls the MCP server's annotate()
                            tool. Append-only; a row is never edited or removed.
-  browsers/*.html          self-contained HTML galleries written by render_browser()
+  browsers/*.html          self-contained HTML pages written by show_cells()
 ```
 
 ## Where the detector's guesses went
