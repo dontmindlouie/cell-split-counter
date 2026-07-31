@@ -50,7 +50,24 @@ def test_early_frame_events_exist():
 
 
 def test_per_frame_centroids_matches_events_csv_in_first_200_frames():
+    """Geometry must match for every track id that still resolves.
+
+    Deliberately NOT "every row resolves". events.csv is detector-era and was written
+    under the pre-03df4b4 canonicalization, and that fix intentionally moves some
+    canonical ids -- so a handful of its track_ids no longer name anything, which is
+    the fix working rather than a regression. What must not change is where a cell
+    WAS: any id that still resolves has to land on the same pixel.
+
+    This distinction was invisible until 2026-07-31, because the canonical-label cache
+    was keyed on tracked_masks.dat's file size alone and a re-track leaves that size
+    identical. The stale cache pinned pre-fix ids, so this test kept passing against
+    superseded tracking and would have gone on doing so indefinitely.
+
+    The floor on resolvable rows is what stops the relaxation from hollowing the test
+    out: if a future change strands most ids, that is a regression, not a fix.
+    """
     rows = _load_early_rows()
+    unresolved = []
     mismatches = []
     for r in rows:
         track_id = int(r["track_id"])
@@ -63,11 +80,17 @@ def test_per_frame_centroids_matches_events_csv_in_first_200_frames():
 
         traj = per_frame_centroids(_M4_RUN_DIR, lookup_track_id, frame_lo=lookup_frame, frame_hi=lookup_frame)
         if lookup_frame not in traj:
-            mismatches.append((track_id, lookup_frame, "empty"))
+            unresolved.append((track_id, lookup_frame))
             continue
         got_cx, got_cy = traj[lookup_frame]
         dist = ((got_cx - stored_cx) ** 2 + (got_cy - stored_cy) ** 2) ** 0.5
         if dist >= 1.0:
             mismatches.append((track_id, lookup_frame, f"dist={dist:.2f}"))
 
-    assert not mismatches, f"{len(mismatches)}/{len(rows)} centroid mismatches: {mismatches[:10]}"
+    resolved = len(rows) - len(unresolved)
+    assert not mismatches, (
+        f"{len(mismatches)}/{resolved} resolvable rows moved: {mismatches[:10]}")
+    assert resolved >= 0.95 * len(rows), (
+        f"only {resolved}/{len(rows)} of events.csv's track ids still resolve. A few "
+        f"retired ids are expected after a canonicalization change; most of them "
+        f"vanishing means the mapping broke. Unresolved: {unresolved[:10]}")

@@ -61,6 +61,12 @@ def _open_tracked_masks(run_dir: Path) -> np.memmap:
     return np.memmap(path, dtype=_DTYPE, mode="r", shape=(T, H, W))
 
 
+# Bump when _bridge_track_gaps changes behaviour, so cached canonical mappings built
+# by the old rule are rejected. 2 = 03df4b4, the co-existence + distance guards that
+# stopped two distinct cells being blended onto one track_id.
+_BRIDGE_VERSION = 2
+
+
 def _tracking_index_cache_path(run_dir: Path) -> Path:
     return run_dir / "frames" / "_memmap" / "canonical_labels.json"
 
@@ -76,17 +82,36 @@ def _build_tracking_index(
 
     Cached to disk since building it requires one full pass over every frame
     (np.unique per frame) -- cheap relative to a pipeline rerun, but not free on a
-    long video. Cache keyed on tracked_masks.dat's file size so a stale cache from
-    a different run/regeneration doesn't silently get reused.
+    long video.
+
+    The cache key is (size, mtime, bridge version), and every part of that is load
+    bearing. It used to be size ALONE, which is the one property re-tracking cannot
+    change: tracked_masks.dat is a fixed-shape T x H x W memmap, so a re-track
+    overwrites it byte-for-byte in place at an identical size. A cache written before
+    the re-track therefore still "matched", and the stale canonical mapping was reused
+    silently -- producing a bundle whose tracks.csv and labels/ carried the OLD
+    canonicalization while lineage.csv carried the new one. Caught on M12 (2026-07-31)
+    only because the rebuilt tracks.csv came out byte-identical to the pre-rebuild
+    file and its lineage referenced 389 ids that tracks.csv did not have.
+
+    _BRIDGE_VERSION covers the other direction: changing the bridging RULE without
+    re-tracking leaves both size and mtime untouched. It was 03df4b4 (the over-merge
+    fix) that made this concrete -- every existing run had a pre-fix cache that no
+    file-stat key could have invalidated, so the fix would never have reached a bundle.
+    Bump it whenever _bridge_track_gaps changes behaviour.
     """
     import pandas as pd
 
     cache_path = _tracking_index_cache_path(run_dir)
     masks_path = run_dir / "frames" / "_memmap" / "tracked_masks.dat"
-    masks_size = masks_path.stat().st_size
+    st = masks_path.stat()
+    masks_size, masks_mtime = st.st_size, int(st.st_mtime_ns)
     if cache_path.exists():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        if cached.get("_tracked_masks_size") == masks_size and "canonical_of" in cached:
+        if (cached.get("_tracked_masks_size") == masks_size
+                and cached.get("_tracked_masks_mtime_ns") == masks_mtime
+                and cached.get("_bridge_version") == _BRIDGE_VERSION
+                and "canonical_of" in cached):
             return (
                 {int(k): v for k, v in cached["canonical_of"].items()},
                 {int(k): v for k, v in cached["begin_of"].items()},
@@ -115,6 +140,8 @@ def _build_tracking_index(
     cache_path.write_text(
         json.dumps({
             "_tracked_masks_size": masks_size,
+            "_tracked_masks_mtime_ns": masks_mtime,
+            "_bridge_version": _BRIDGE_VERSION,
             "canonical_of": {str(k): v for k, v in canonical_of.items()},
             "begin_of": {str(k): v for k, v in begin_of.items()},
             "end_of": {str(k): v for k, v in end_of.items()},

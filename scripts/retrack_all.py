@@ -44,6 +44,7 @@ hours of GPU time.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -132,6 +133,17 @@ def main() -> None:
         print("\n(dry run -- nothing executed)")
         return
 
+    # The children print real units -- "0.5765 um/px", the micro sign, the lambda in
+    # the ND2's emission metadata. text=True decodes with the console's ANSI codepage
+    # on Windows (cp1252 here), which has no mapping for some of those bytes, so the
+    # stdout reader THREAD dies with UnicodeDecodeError. The child survives and its
+    # exit code is still correct, so this presents as a hung-looking run that prints a
+    # traceback and loses the child's output -- exactly the sort of failure that is
+    # hard to read at hour three of a 21-well pass. Decode explicitly, and never let a
+    # character in a log line be fatal.
+    io = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+    child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
     ok = failed = 0
     t_start = time.time()
     for i, r in enumerate(runs, 1):
@@ -141,7 +153,7 @@ def main() -> None:
         if not args.skip_retrack:
             p = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/retrack_only.py"), str(r["run"])],
-                cwd=ROOT, capture_output=True, text=True)
+                cwd=ROOT, env=child_env, **io)
             if p.returncode != 0:
                 print(f"  RETRACK FAILED (exit {p.returncode})\n"
                       f"{p.stdout[-2000:]}\n{p.stderr[-2000:]}", flush=True)
@@ -156,7 +168,7 @@ def main() -> None:
             cmd += ["--cell-line", r["cell_line"]]
         if r["condition"]:
             cmd += ["--condition", r["condition"]]
-        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        p = subprocess.run(cmd, cwd=ROOT, env=child_env, **io)
         if p.returncode != 0:
             print(f"  BUILD FAILED (exit {p.returncode})\n"
                   f"{p.stdout[-2000:]}\n{p.stderr[-2000:]}", flush=True)
