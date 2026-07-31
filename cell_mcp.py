@@ -31,7 +31,11 @@ server = MCPServer(
     version="0.1.0",
     instructions=(
         "Read-only access to time-lapse microscopy of dividing cells. Start with "
-        "list_wells(), then list_tracks() to find cells. Before spending images on a "
+        "list_wells(). To find cells worth looking at in a well of thousands, call "
+        "find_candidates() -- it is free, scans the whole well, and ranks what the "
+        "data already records (recorded splits by how fragment-like they look, tracks "
+        "that stop early). list_tracks() is the raw listing when you already know what "
+        "you want. Before spending images on a "
         "track, call get_track_profile() -- it's free (no images) and often shows where "
         "to look: a sparkline of solidity, area, and brightness across the track's "
         "frames, plus how close the cell gets to the frame edge (a clipped nucleus has "
@@ -695,6 +699,168 @@ def _filmstrip_frames(
             img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
         images.append(img)
     return header, images
+
+
+@server.tool()
+def find_candidates(
+    well: str,
+    pool: str = "division",
+    sort_by: str = "fragment_like",
+    limit: int = 20,
+    exclude_near_edge: bool = True,
+) -> str:
+    """Scan a WHOLE WELL and rank what is worth looking at. Free -- no images.
+
+    Every other tool here answers a question about one track you already picked.
+    This is the one that answers "where do I even start" on a well with thousands
+    of cells, which is the first question anyone actually has.
+
+    It reports what the data ALREADY RECORDS, ranked -- it is not a detector and
+    infers nothing new. A row here means "the tracker linked these ids" or "this
+    track stops early", not "a division happened" or "this cell died".
+
+    Pools:
+      division   mothers with 2+ recorded daughters. The link scores come from
+                 lineage.csv: dna_ratio ~1.0 when DNA is conserved across the
+                 split, size_ratio ~1.0 when the daughters are comparable objects.
+      track_end  tracks that stop before the recording does WITHOUT recorded
+                 daughters. Deliberately one pool, not "deaths": a real death and
+                 a division whose daughters were never linked look identical from
+                 topology, and calling it either would be inventing a verdict.
+      contested  links where another mother was equally close, so parent_id was a
+                 tie-break. Only exists on geometry-sourced lineage.
+
+    Sorts:
+      fragment_like  lowest size_ratio first -- one "daughter" much smaller than
+                     the other is the micronucleus/fragment signature, not a
+                     division. This is the ranking that finds real problems.
+      dna_anomaly    furthest from DNA conservation in EITHER direction; below 1
+                     means signal went missing, above means the pair carries more
+                     DNA than the mother had.
+      duration       longest-lived first (division pool: the mother's lifetime).
+      frame          earliest first.
+
+    Args:
+        well: well name from list_wells().
+        pool: "division", "track_end", or "contested".
+        sort_by: "fragment_like", "dna_anomaly", "duration", or "frame".
+        limit: max rows. Keep small; this is for triage, not export.
+        exclude_near_edge: drop cells within 15 um of the frame boundary, whose
+            area and brightness are understated because the nucleus is clipped.
+    """
+    import pandas as pd
+
+    p = BUNDLE / well / "lineage.csv"
+    if not p.is_file():
+        return f"No lineage.csv for {well}, so there is nothing to rank."
+    lin = pd.read_csv(p)
+    m = _manifest(well)
+    n_frames = int(m["n_frames"])
+    tracks = _tracks(well)
+
+    pos = tracks.sort_values("frame").groupby("track_id")[["cx", "cy"]].last()
+
+    def _edge(tid: int) -> float:
+        if tid not in pos.index:
+            return float("nan")
+        return _edge_um(well, float(pos.loc[tid, "cx"]), float(pos.loc[tid, "cy"]))
+
+    if pool == "division":
+        rows = lin[lin.n_daughters.fillna(0) >= 2].copy()
+        # Scores live on the DAUGHTER rows; lift the first daughter's onto the mother.
+        by_id = lin.set_index("track_id")
+        first_kid = rows.daughter_ids.astype(str).str.split().str[0]
+        for col in ("dna_ratio", "size_ratio", "link_distance_px"):
+            rows[col] = [
+                by_id[col].get(int(k)) if str(k).strip().lstrip("-").isdigit() else None
+                for k in first_kid
+            ]
+    elif pool == "track_end":
+        rows = lin[(lin.last_frame < n_frames - 1) & (lin.n_daughters.fillna(0) == 0)].copy()
+    elif pool == "contested":
+        if "alt_parents" not in lin.columns:
+            return (f"{well}'s lineage came from {m.get('lineage', {}).get('source', '?')}, "
+                    f"which records no alternatives, so there is no contested pool. "
+                    f"alt_parents only exists on geometry-sourced lineage.")
+        rows = lin[lin.alt_parents.astype(str).str.strip().replace("nan", "") != ""].copy()
+    else:
+        raise ValueError(f"unknown pool {pool!r}; use division, track_end, or contested.")
+
+    if rows.empty:
+        return f"{well}: nothing in the {pool} pool."
+
+    rows["edge_um"] = [_edge(int(t)) for t in rows.track_id]
+    n_before = len(rows)
+    if exclude_near_edge:
+        rows = rows[~(rows.edge_um < 15)]
+    rows["duration_f"] = rows.last_frame - rows.first_frame
+
+    # A score-based sort on a pool that carries no scores would silently return the
+    # rows in file order while the header claimed otherwise, so fall back explicitly
+    # and say so. track_end rows have no link scores by definition -- they have no link.
+    def _has(col: str) -> bool:
+        return col in rows.columns and bool(rows[col].notna().any())
+
+    applied = sort_by
+    if sort_by == "fragment_like" and _has("size_ratio"):
+        rows = rows.sort_values("size_ratio", na_position="last")
+    elif sort_by == "dna_anomaly" and _has("dna_ratio"):
+        rows = rows.reindex((rows.dna_ratio - 1.0).abs().sort_values(ascending=False).index)
+    elif sort_by == "duration":
+        rows = rows.sort_values("duration_f", ascending=False)
+    elif sort_by == "frame":
+        rows = rows.sort_values("first_frame")
+    else:
+        applied = "duration" if pool == "track_end" else "frame"
+        rows = (rows.sort_values("duration_f", ascending=False) if applied == "duration"
+                else rows.sort_values("first_frame"))
+
+    shown = rows.head(limit)
+    note = "" if applied == sort_by else (
+        f" (asked for {sort_by}, but this pool carries no link scores -- "
+        f"sorted by {applied} instead)")
+    out = [f"{well}: {pool} pool, {n_before} total"
+           + (f" ({n_before - len(rows)} dropped as near-edge)" if exclude_near_edge else "")
+           + f", showing {len(shown)} sorted by {applied}.{note}"]
+    if pool == "division":
+        out.append("track_id | frames | daughters | dna | size | link_px | edge_um")
+        for r in shown.itertuples():
+            f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
+            out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
+                       f"{r.daughter_ids} | {f(r.dna_ratio)} | {f(r.size_ratio)} | "
+                       f"{'-' if r.link_distance_px != r.link_distance_px else f'{r.link_distance_px:.0f}'} | "
+                       f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'}")
+        out.append(
+            "\nA LOW size ratio with a healthy dna ratio is the fragment signature -- the "
+            "big object carries the DNA and the small one is a micronucleus, so the 'split' "
+            "is not a division. Confirm on the pixels before believing either way."
+        )
+    else:
+        # These scores describe the track's OWN BIRTH link, not an ending -- a track
+        # here has no daughters by definition. Shown because the combination is
+        # genuinely informative: something born as a tiny fragment and then vanishing
+        # is a different story from a full-sized nucleus that stops.
+        out.append("track_id | frames | duration | born_dna | born_size | edge_um")
+        for r in shown.itertuples():
+            f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
+            out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
+                       f"{int(r.duration_f)} | {f(getattr(r, 'dna_ratio', None))} | "
+                       f"{f(getattr(r, 'size_ratio', None))} | "
+                       f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'}")
+        if pool == "track_end":
+            out.append(
+                "\nborn_dna/born_size describe how this track was BORN, not how it ends -- "
+                "it has no daughters by definition. A low born_size that then vanishes is "
+                "most likely a fragment appearing and going, not a cell dying."
+            )
+            out.append(
+                "This pool is deliberately NOT called deaths. A cell that died and a "
+                "division whose daughters were never linked both look like a track that "
+                "stops -- topology cannot tell them apart, and 96% of one hand-checked "
+                "sample of 'deaths' in this project turned out to still be alive."
+            )
+    out.append("Next: get_track_profile (free) on anything here, then get_filmstrip to look.")
+    return "\n".join(out)
 
 
 def _nearest_detection(well: str, frame: int, x: float, y: float,

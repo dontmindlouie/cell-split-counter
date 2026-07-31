@@ -26,7 +26,7 @@ to put her measurements, not in trying to automate her out of the loop. See
    calibration) into a ~0.2GB-per-well bundle, then serves it to a researcher's own
    Claude Code session over a local stdio MCP: `list_wells`, `list_tracks`,
    `get_track_profile`, `get_frame`, `get_filmstrip`, `get_lineage`, `measure`,
-   `get_neighbourhood_stats`, `get_filmstrip_at`, `show_cells`. She clones the repo, points
+   `get_neighbourhood_stats`, `get_filmstrip_at`, `find_candidates`, `show_cells`. She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
 
@@ -73,9 +73,15 @@ she copied a bundle, opens Claude Code in the repo root, and approves the MCP se
 once. `UV_PROJECT_ENVIRONMENT=.venv-mcp` is pinned in `.mcp.json` so `uv run` never
 touches a full pipeline `.venv` if one happens to exist on the same machine.
 
-**Tools** (`cell_mcp.py`, 11 total — docstrings are written as the model-facing schema,
+**Tools** (`cell_mcp.py`, 12 total — docstrings are written as the model-facing schema,
 see the file itself for full argument docs):
 - `list_wells()` / `list_tracks(well, filters...)` — orientation, the `ls`.
+- `find_candidates(well, pool, sort_by)` — free whole-well triage: ranks recorded
+  splits by how fragment-like they look (a `size_ratio` far below 1 means one
+  "daughter" is a micronucleus, not a cell), or lists tracks that stop early. The
+  answer to "where do I even start" on a well with thousands of cells — every other
+  tool answers a question about one track you already picked. Reports what the data
+  records, ranked; it is not a detector and infers nothing new.
 - `get_track_profile(well, track_id)` — free (no images) sparkline of a track's own
   area/brightness/solidity over time; decides where a `get_filmstrip` call is worth
   spending.
