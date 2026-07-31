@@ -16,16 +16,17 @@ to put her measurements, not in trying to automate her out of the loop. See
 1. **Preprocessing** (this repo's classical pipeline below, GPU machine) — Cellpose
    segmentation + Trackastra tracking turn a raw ND2 into per-frame masks and
    lineages, and a lightweight vision-review pass filters that down to *candidate*
-   events. This stage's own detector output (`events.csv`) is a starting point to
-   browse, never a verdict to trust on its own — see
-   [`docs/bundle_README.md`](docs/bundle_README.md)'s caveats.
+   events. That detector output ships as `data/candidates/<well>/candidates.csv`,
+   deliberately **outside** the bundle: it is a starting point to browse, never a
+   verdict to trust on its own, and keeping it beside the frames had it read as an
+   answer key. See [`docs/bundle_README.md`](docs/bundle_README.md)'s caveats.
 2. **Bundle export + MCP server** (`scripts/build_bundle.py`, `cell_mcp.py`,
    read-only, pure-python, no GPU/torch/Cellpose) — packages the ~5% of a run that's
    actually needed to navigate it later (indexed frames, track table, lineage,
    calibration) into a ~0.2GB-per-well bundle, then serves it to a researcher's own
    Claude Code session over a local stdio MCP: `list_wells`, `list_tracks`,
    `get_track_profile`, `get_frame`, `get_filmstrip`, `get_lineage`, `measure`,
-   `get_neighbourhood_stats`, `show_cells`. She clones the repo, points
+   `get_neighbourhood_stats`, `get_filmstrip_at`, `show_cells`. She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
 
@@ -59,8 +60,10 @@ python scripts/build_bundle.py data/output/your_run_folder \
     --nd2 "path/to/source.nd2" --out data/bundle --cell-line RUES2
 ```
 Writes `data/bundle/your_run_folder/` — indexed frame PNGs, 16-bit label maps,
-`tracks.csv`, `lineage.csv`, and a `manifest.json` carrying calibration read from the
-ND2 (pixel size, per-frame timestamps, the acquisition's own display color). ~0.2GB
+`tracks.csv`, `lineage.csv` (with per-link DNA/size scores), and a `manifest.json`
+carrying calibration read from the ND2 (pixel size, per-frame timestamps, the
+acquisition's own display color). Machine candidates go to `data/candidates/` instead,
+outside the bundle. ~0.2GB
 per well vs. ~8GB for the source run directory. `docs/bundle_README.md` is copied
 into the bundle root so it travels without this repo.
 
@@ -70,7 +73,7 @@ she copied a bundle, opens Claude Code in the repo root, and approves the MCP se
 once. `UV_PROJECT_ENVIRONMENT=.venv-mcp` is pinned in `.mcp.json` so `uv run` never
 touches a full pipeline `.venv` if one happens to exist on the same machine.
 
-**Tools** (`cell_mcp.py`, 10 total — docstrings are written as the model-facing schema,
+**Tools** (`cell_mcp.py`, 11 total — docstrings are written as the model-facing schema,
 see the file itself for full argument docs):
 - `list_wells()` / `list_tracks(well, filters...)` — orientation, the `ls`.
 - `get_track_profile(well, track_id)` — free (no images) sparkline of a track's own
@@ -82,6 +85,13 @@ see the file itself for full argument docs):
   color and an optional tracking-ring marker. May request frames outside a track's
   own lifetime (a division usually happens in the gap between a track ending and its
   daughters' tracks starting).
+- `get_filmstrip_at(well, start_frame, end_frame, x, y | anchor_track_id, ...)` —
+  the same crops addressed by **position** rather than by mask. Answers "what
+  happened here" instead of "what happened to track N", which matters because every
+  other tool addresses cells by `track_id`: an object the segmenter never caught
+  otherwise cannot be asked about at all. Also the tool for when a mask-following
+  crop keeps losing the cell — segmentation fails hardest exactly during mitosis and
+  death. Reports the nearest tracked cell per frame instead of ringing anything.
 - `get_lineage(well, track_id)` — mother/daughter links.
 - `measure(well, track_id, frame)` — real units (µm², hours), not pixels or frames.
 - `get_neighbourhood_stats(well, track_id, frame)` — compares one cell against its

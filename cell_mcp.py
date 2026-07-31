@@ -48,6 +48,10 @@ server = MCPServer(
         "same thing happens in reverse: a track can just as easily BEGIN mid-division, "
         "so a track that looks already mid-event on its very first frame may need frames "
         "from BEFORE first_frame (via the mother, from get_lineage) to see the lead-up. "
+        "When a mask-following crop keeps losing the cell, or the object you care about "
+        "was never segmented at all and so has no track_id to ask about, switch to "
+        "get_filmstrip_at() -- it watches a POSITION over time instead of a mask, and "
+        "reports the nearest tracked cell per frame so you can tell what you are seeing. "
         "Two more rules that matter: the interval between frames is NOT constant, so "
         "never compute durations from frame counts -- use measure() or time_ms; and some "
         "track_ids are flagged as merged cells, which must not be measured. Images show "
@@ -691,6 +695,170 @@ def _filmstrip_frames(
             img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
         images.append(img)
     return header, images
+
+
+def _nearest_detection(well: str, frame: int, x: float, y: float,
+                       exclude: int | None = None) -> tuple[int, float] | None:
+    """(track_id, distance_um) of the closest tracked cell to a point in one frame.
+
+    `exclude` drops one id from the search -- in anchor mode the anchor is always
+    nearest to itself at 0.0 um, which says nothing; the useful answer is what ELSE
+    is near the place being watched.
+    """
+    df = _tracks(well)
+    f = df[df.frame == frame]
+    if exclude is not None:
+        f = f[f.track_id != exclude]
+    if f.empty:
+        return None
+    d = np.hypot(f.cx.to_numpy() - x, f.cy.to_numpy() - y)
+    i = int(np.argmin(d))
+    return int(f.track_id.iloc[i]), float(d[i]) * _manifest(well)["pixel_size_um"]
+
+
+@server.tool(structured_output=False)
+def get_filmstrip_at(
+    well: str,
+    start_frame: int,
+    end_frame: int,
+    x: float | None = None,
+    y: float | None = None,
+    anchor_track_id: int | None = None,
+    max_images: int = 8,
+    crop_um: float = 45.0,
+    color: bool = True,
+    scale_bar: bool = True,
+) -> list:
+    """Watch a PLACE over time, instead of following a cell's own mask.
+
+    get_filmstrip answers "what happened to track N". This answers "what happened
+    HERE", which is a different question and often the one you actually have.
+
+    Reach for this when:
+
+    - **The thing you care about has no track.** Every other tool addresses cells by
+      track_id, so an object the segmenter never caught is otherwise impossible to
+      ask about at all -- a small bright body beside a nucleus, debris, anything
+      below the detector's threshold. Give its coordinates and look at it.
+    - **You are not sure the track is on the object you mean.** A track and its own
+      OFF-TRACK walk can sit on two different cells in one crop; a fixed position is
+      not confused by that, because it never claims to be following anything.
+    - **The mask breaks exactly when the event happens.** Chromatin rounding during
+      mitosis and death is precisely when segmentation fails, so a mask-following
+      crop tends to lose the cell at the moment of interest. A place does not move.
+    - **You want a stable stage.** Pass anchor_track_id to ride a calm neighbouring
+      cell's position while the cell you are watching does something violent.
+
+    Coordinates are PIXELS in the full frame, matching cx/cy in tracks.csv and the
+    xy columns of list_tracks -- not microns, and not crop-relative.
+
+    Nothing is ringed, because nothing here is claimed to be a detection. Instead
+    every frame reports the nearest tracked cell and how far away it is, so you can
+    tell "this is track 2036" from "there is nothing tracked within 12 um of here".
+
+    Args:
+        well: well name from list_wells().
+        start_frame, end_frame: inclusive frame range.
+        x, y: the position to watch, in full-frame pixels. Required unless
+            anchor_track_id is given.
+        anchor_track_id: instead of a fixed point, follow THIS track's centroid --
+            useful as a stable vantage on a neighbour. Where the anchor is missing
+            from a frame, its closest known position is used.
+        max_images: how many frames to show (hard capped at 12).
+        crop_um: crop width in micrometres.
+        color: apply the microscope's own display colour.
+        scale_bar: burn in a labelled scale bar.
+    """
+    from mcp.types import TextContent
+
+    m = _manifest(well)
+    n_frames = int(m["n_frames"])
+    lo, hi = max(0, int(start_frame)), min(n_frames - 1, int(end_frame))
+    if hi < lo:
+        raise ValueError(f"empty range {start_frame}-{end_frame}; {well} has 0-{n_frames - 1}.")
+
+    anchor_pos: dict[int, tuple[float, float]] = {}
+    if anchor_track_id is not None:
+        t = _tracks(well)
+        t = t[t.track_id == anchor_track_id]
+        if t.empty:
+            raise ValueError(f"anchor track {anchor_track_id} not found in {well}.")
+        anchor_pos = {int(r.frame): (float(r.cx), float(r.cy)) for r in t.itertuples()}
+        known = sorted(anchor_pos)
+    elif x is None or y is None:
+        raise ValueError("give either x and y (full-frame pixels), or anchor_track_id.")
+
+    def _centre(f: int) -> tuple[float, float]:
+        if anchor_track_id is None:
+            return float(x), float(y)
+        if f in anchor_pos:
+            return anchor_pos[f]
+        # Nearest frame the anchor was actually seen in.
+        nf = min(known, key=lambda k: abs(k - f))
+        return anchor_pos[nf]
+
+    avail = list(range(lo, hi + 1))
+    n = min(max_images, MAX_IMAGES, len(avail))
+    picks = [avail[i] for i in np.linspace(0, len(avail) - 1, n).astype(int)]
+
+    um_px = m["pixel_size_um"]
+    half = max(8, int(round(crop_um / um_px / 2)))
+
+    where = (f"anchored on track {anchor_track_id}" if anchor_track_id is not None
+             else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
+    lines = [f"{well}: frames {lo}-{hi}, showing {n} of {len(avail)}, {where}. "
+             f"Crop {crop_um:g} um wide. Nothing is ringed -- this is a PLACE, not a "
+             f"tracked object. Nearest tracked cell per frame:"]
+
+    images: list[np.ndarray] = []
+    for f in picks:
+        ccx, ccy = _centre(int(f))
+        grey = _frame_png(well, int(f))
+        h, w = grey.shape
+        cxi, cyi = int(round(ccx)), int(round(ccy))
+        x0, x1 = max(0, cxi - half), min(w, cxi + half)
+        y0, y1 = max(0, cyi - half), min(h, cyi + half)
+        crop = grey[y0:y1, x0:x1]
+        if crop.size == 0:
+            continue
+        img = _colorize(crop, well, color)
+        cx_crop, cy_crop = cxi - x0, cyi - y0
+        if img.shape[0] < _UPSCALE_TO:
+            s = _UPSCALE_TO / img.shape[0]
+            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
+            cx_crop, cy_crop = cx_crop * s, cy_crop * s
+        # A crosshair, not a ring: it marks where you asked to look, and must not
+        # imply that something was detected there. Gapped in the middle so it never
+        # covers the chromatin being judged.
+        cxp, cyp = int(cx_crop), int(cy_crop)
+        for dx0, dx1 in ((-12, -5), (5, 12)):
+            cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
+
+        near = _nearest_detection(well, int(f), ccx, ccy, exclude=anchor_track_id)
+        if near is None:
+            note = "no tracked cell in this frame"
+        else:
+            tid, dum = near
+            note = f"track {tid}, {dum:.1f} um away"
+        lines.append(f"  f{int(f)} ({_hours(well, int(f)):.2f} h): {note}")
+        cv2.putText(img, f"f{int(f)} t={_hours(well, int(f)):.1f}h", (4, 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        if near is not None and near[1] < crop_um:
+            cv2.putText(img, f"~{near[0]} @{near[1]:.0f}um", (4, img.shape[0] - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1, cv2.LINE_AA)
+        if scale_bar:
+            img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
+        images.append(img)
+
+    lines.append(
+        "\nA nearest cell many microns away means the thing at this position is NOT "
+        "tracked -- which is the usual reason to be here. Distances are centre-to-centre, "
+        "so a large nucleus can read several microns away while still overlapping the point."
+    )
+    out: list = [TextContent(type="text", text="\n".join(lines))]
+    out.extend(_encode(i) for i in images)
+    return out
 
 
 @server.tool()
