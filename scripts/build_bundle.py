@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import csv
+import datetime as dt
 import json
 import re
 import shutil
@@ -274,6 +275,62 @@ def write_candidates(run_dir: Path, out_dir: Path) -> dict:
     print(f"    by kind: {kinds}")
     return {"n_events": len(merged), "n_source_rows": len(rows), "by_kind": kinds,
             "path": str(out_dir / "candidates.csv")}
+
+
+def provenance(run_dir: Path) -> dict:
+    """Record where this bundle came from and when, so a reader can tell whether it
+    is internally consistent without resorting to file mtimes.
+
+    This exists because of a real failure on 2026-07-31: a session read
+    TSC_batch2_M12_RUES2, computed a whole-well triage from it, and reported the
+    numbers -- unaware the bundle predated the _bridge_track_gaps fix (03df4b4) that
+    had already changed the track ids underneath. Nothing inside the bundle said so.
+    The only tell was that labels/ was written Jul 30 and summary.json Jul 13, which
+    you can only see from outside, in a file listing.
+
+    Two timestamps, and the difference between them is the point:
+
+      built_at        when THIS bundle was assembled.
+      source_tracked  when the upstream segmentation/tracking it was assembled FROM
+                      was written. A bundle built today from masks tracked three
+                      weeks ago is a normal thing to do and a dangerous thing to
+                      forget, because build_bundle re-derives everything downstream
+                      of the masks but cannot re-derive the masks.
+
+    git_commit is the code that did the assembling; `dirty` means there were
+    uncommitted changes, so the commit alone does not reproduce it.
+    """
+    import subprocess
+
+    def _git(*a: str) -> str | None:
+        try:
+            r = subprocess.run(["git", *a], cwd=Path(__file__).resolve().parents[1],
+                               capture_output=True, text=True, timeout=15)
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:
+            return None
+
+    # Prefer the lineage table's own mtime; fall back to the masks it was tracked
+    # from. Both live in the run dir, neither is copied into the bundle, so without
+    # this the upstream date is unrecoverable once the run dir is archived.
+    mm = run_dir / "frames" / "_memmap"
+    tracked_at = None
+    for name in ("ctc_lineage.csv", "labels.dat"):
+        p = mm / name
+        if p.is_file():
+            tracked_at = dt.datetime.fromtimestamp(
+                p.stat().st_mtime, dt.timezone.utc).isoformat(timespec="seconds")
+            break
+
+    dirty = _git("status", "--porcelain")
+    return {
+        "built_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "built_by": "scripts/build_bundle.py",
+        "git_commit": _git("rev-parse", "--short", "HEAD"),
+        "git_dirty": bool(dirty) if dirty is not None else None,
+        "source_run_dir": str(run_dir.resolve()),
+        "source_tracked_at": tracked_at,
+    }
 
 
 def write_lineage(run_dir: Path, out_run: Path) -> dict:
@@ -539,10 +596,13 @@ def main() -> None:
         m = _FRAME_RE.search(p.name)
         shutil.copy2(p, frames_out / f"frame_{int(m.group(1)):05d}.png")
 
-    src = run_dir / "summary.json"
-    if src.is_file():
-        shutil.copy2(src, out_run / "summary.json")
-
+    # summary.json is NOT copied (2026-07-31). It was the detector's tally, and it
+    # counted rows rather than events -- split rows are one per daughter, deaths one
+    # per event, so division:death read 2x high in every well. It also went stale the
+    # moment tracking was re-run, while still reading as the bundle's authoritative
+    # answer. Same reasoning that moved events.csv out in 315fdff: a machine guess
+    # sitting inside the bundle gets read as a finding. Counts belong to whoever
+    # computes them, stamped, outside.
     candidates_info = write_candidates(run_dir, args.candidates / run_dir.name)
     lineage_info = write_lineage(run_dir, out_run)
 
@@ -559,6 +619,7 @@ def main() -> None:
         "condition": args.condition,
         "n_frames": len(pairs),
         "n_tracks": n_tracks,
+        "provenance": provenance(run_dir),
         "lineage": lineage_info,
         **cal,
         **extra,

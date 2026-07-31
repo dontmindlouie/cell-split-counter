@@ -14,8 +14,10 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
                            0 = background. Lossless.
   tracks.csv               one row per cell shape per frame
   lineage.csv              mother/daughter links between track_ids
-  manifest.json            calibration + acquisition metadata
-  summary.json             the original pipeline run's own summary
+  manifest.json            calibration + acquisition metadata, plus a `provenance`
+                           block: when the bundle was built, from which run dir, at
+                           which git commit, and -- separately -- when the upstream
+                           segmentation/tracking it was built FROM was written
   annotations.csv          human-verified verdicts -- NOT written by build_bundle.py,
                            only exists once someone calls the MCP server's annotate()
                            tool. Append-only; a row is never edited or removed.
@@ -35,13 +37,19 @@ had to hide the file to stay valid, which is the clearest possible tell that it 
 as an answer key. The bundle now holds **data plus human verdicts**; machine guesses
 live somewhere else, under a name nobody mistakes for a verdict.
 
+`summary.json` is **gone from the bundle too** (2026-07-31), for the same reason and
+one more: it was the detector's tally, so it inherited the row-counting bug below, and
+it went stale the instant tracking was re-run while still reading as the bundle's
+authoritative answer. There is deliberately no replacement inside the bundle. Counts
+belong to whoever computed them, stamped with when — the tools compute them on demand.
+
 `candidates.csv` is one row per **event** (not per daughter — see below),
 `ai_confidence` and `split_type` are dropped, and it is the file `annotations.csv`'s
 `event_id` refers to.
 
 > ⚠️ **If you have older numbers, they are wrong by 2× on divisions.** Splits used to
 > be written one row per daughter while deaths were one row per event, and anything
-> counting rows — including `summary.json`, whose counts are still row counts —
+> counting rows — including the retired `summary.json`, whose counts were row counts —
 > doubled the division side only, so the error did not cancel. Across the 21 bundled
 > wells this inflated the corpus from a true 22,585 events to 33,478 rows. **Twelve of
 > the 21 wells flip qualitatively**: M14_WGD read 1.21 divisions per death when the
