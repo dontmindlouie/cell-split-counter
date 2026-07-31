@@ -308,3 +308,61 @@ def test_geometric_lineage_leaves_alt_parents_empty_when_unambiguous():
     ])
     assert out.loc[2, "alt_parents"] == ""
     assert out.loc[3, "alt_parents"] == ""
+
+
+# ------------------------------------------------------- score_lineage_links
+
+def test_score_lineage_links_scores_a_graph_it_did_not_build():
+    """Trackastra's CTC graph is topology with no scores, and it makes the same
+    micronucleus mistake geometry does -- so scoring has to work on any source."""
+    import pandas as pd
+
+    from src.lineage import score_lineage_links
+    tracks = _tracks_frame([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (1, 1, 100.0, 100.0, 200.0, 1000.0),
+        (2, 2, 100.0, 100.0, 190.0, 960.0),
+        (3, 2, 112.0, 100.0, 10.0, 40.0),
+    ])
+    ctc = pd.DataFrame([
+        {"track_id": 1, "parent_id": "", "daughter_ids": "2 3"},
+        {"track_id": 2, "parent_id": 1, "daughter_ids": ""},
+        {"track_id": 3, "parent_id": 1, "daughter_ids": ""},
+    ])
+    out = score_lineage_links(ctc, tracks).set_index("track_id")
+    assert out.loc[3, "size_ratio"] < 0.25, "fragment must be flagged whatever built the graph"
+    assert out.loc[3, "dna_ratio"] > 0.9
+    assert out.loc[1, "size_ratio"] == "", "a mother carries no link score of its own"
+
+
+def test_score_lineage_links_survives_a_multi_frame_gap():
+    """Unlike the geometric builder, this must not assume the daughter starts at
+    the mother's last frame + 1 -- CTC links across gaps that geometry cannot."""
+    import pandas as pd
+
+    from src.lineage import score_lineage_links
+    tracks = _tracks_frame([
+        (1, 0, 100.0, 100.0, 200.0, 1000.0),
+        (2, 5, 98.0, 100.0, 100.0, 500.0),   # four-frame gap
+        (3, 5, 102.0, 100.0, 100.0, 500.0),
+    ])
+    ctc = pd.DataFrame([{"track_id": 1, "parent_id": "", "daughter_ids": "2 3"},
+                        {"track_id": 2, "parent_id": 1, "daughter_ids": ""},
+                        {"track_id": 3, "parent_id": 1, "daughter_ids": ""}])
+    out = score_lineage_links(ctc, tracks).set_index("track_id")
+    assert out.loc[2, "dna_ratio"] == 1.0
+    assert out.loc[2, "size_ratio"] == 1.0
+
+
+def test_score_lineage_links_normalises_float_parent_ids():
+    """pandas reads an int column with blanks as float, so parent_id round-trips as
+    '127.0' and every downstream int() raises."""
+    import pandas as pd
+
+    from src.lineage import score_lineage_links
+    tracks = _tracks_frame([(1, 0, 10.0, 10.0, 5.0, 5.0), (2, 1, 10.0, 10.0, 5.0, 5.0)])
+    ctc = pd.DataFrame([{"track_id": 1, "parent_id": float("nan"), "daughter_ids": ""},
+                        {"track_id": 2, "parent_id": 1.0, "daughter_ids": ""}])
+    out = score_lineage_links(ctc, tracks).set_index("track_id")
+    assert out.loc[2, "parent_id"] == "1"
+    assert out.loc[1, "parent_id"] == ""

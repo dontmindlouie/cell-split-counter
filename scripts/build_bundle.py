@@ -298,23 +298,32 @@ def write_lineage(run_dir: Path, out_run: Path) -> dict:
     Both replacements are strictly better and neither depends on events.csv, which
     is what lets that file leave the bundle entirely.
     """
-    full = run_dir / "frames" / "_memmap" / "ctc_lineage.csv"
-    if full.is_file():
-        shutil.copy2(full, out_run / "lineage.csv")
-        n = sum(1 for _ in open(full, encoding="utf-8")) - 1
-        print(f"  lineage.csv: {n:,} tracks (complete, from Trackastra CTC)")
-        return {"coverage": "complete", "source": "ctc", "n_tracks": n}
-
     tracks_csv = out_run / "tracks.csv"
     if not tracks_csv.is_file():
-        print("  lineage.csv: skipped (no ctc_lineage.csv and no tracks.csv)")
+        print("  lineage.csv: skipped (no tracks.csv to build or score against)")
         return {"coverage": "none"}
 
     import pandas as pd
 
-    from src.lineage import build_lineage_from_tracks
+    from src.lineage import build_lineage_from_tracks, score_lineage_links
 
-    lin = build_lineage_from_tracks(pd.read_csv(tracks_csv))
+    tracks_df = pd.read_csv(tracks_csv)
+
+    full = run_dir / "frames" / "_memmap" / "ctc_lineage.csv"
+    if full.is_file():
+        # CTC topology, then the same link scores the geometric builder produces.
+        # Measured on M12_RUES2: CTC agrees with geometry on 100% of the 2,074 links
+        # both assign and adds 350 more, but makes the identical mistake on track
+        # 6425's micronucleus -- so a better linker replaces the topology, not the
+        # need to flag weak links.
+        lin = score_lineage_links(pd.read_csv(full), tracks_df)
+        lin.to_csv(out_run / "lineage.csv", index=False)
+        n = len(lin)
+        n_linked = int((lin.parent_id.astype(str) != "").sum() - (lin.parent_id.isna()).sum())
+        print(f"  lineage.csv: {n:,} tracks (complete, from Trackastra CTC + link scores)")
+        return {"coverage": "complete", "source": "ctc", "n_tracks": n}
+
+    lin = build_lineage_from_tracks(tracks_df)
     lin.to_csv(out_run / "lineage.csv", index=False)
     n = len(lin)
     n_linked = int((lin.parent_id != "").sum())

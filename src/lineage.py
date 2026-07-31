@@ -197,6 +197,72 @@ def per_frame_centroids(
 _MAX_LINK_PX = 40.0
 
 
+def score_lineage_links(lineage: "pd.DataFrame", tracks: "pd.DataFrame") -> "pd.DataFrame":
+    """Add link_distance_px / dna_ratio / size_ratio to a lineage from ANY source.
+
+    Trackastra's own CTC graph is topology with no scores, and a re-track on
+    M12_RUES2 (2026-07-30) showed it is strictly the better topology: 100% agreement
+    with the geometric graph on the 2,074 links both assign, plus 350 links geometry
+    missed because it only spans a one-frame gap. It also recovers track 3908's real
+    mother 3288, which geometry could not see.
+
+    But it makes the SAME mistake on track 6425 -- both call the neighbouring cell
+    4866 its mother when 6425 is a micronucleus. So a better linker does not remove
+    the need to score links; no linking model can separate a fragment budding off
+    from a division on topology alone. Scoring is orthogonal to the source, which is
+    why it lives in its own function and gets applied to whichever graph is used.
+
+    Unlike the geometric builder, this does not assume a one-frame gap: it measures
+    between the mother's last frame and each daughter's first, whatever the spacing.
+    """
+    import pandas as pd
+
+    t = tracks.drop_duplicates(["track_id", "frame"]).sort_values("frame")
+    last = t.groupby("track_id").tail(1).set_index("track_id")
+    first = t.groupby("track_id").head(1).set_index("track_id")
+
+    dist: dict[int, float] = {}
+    dna: dict[int, float] = {}
+    size: dict[int, float] = {}
+    for row in lineage.itertuples():
+        # Empty daughter_ids reads back from CSV as float nan, not "".
+        raw = getattr(row, "daughter_ids", "")
+        raw = "" if raw is None or (isinstance(raw, float) and raw != raw) else str(raw)
+        kids = [int(k) for k in raw.split() if k.strip().lstrip("-").isdigit()]
+        m = int(row.track_id)
+        if len(kids) != 2 or m not in last.index:
+            continue
+        if any(k not in first.index for k in kids):
+            continue
+        areas = [float(first.loc[k, "area_um2"]) for k in kids]
+        mother_dna = float(last.loc[m, "intensity_integrated"])
+        kid_dna = sum(float(first.loc[k, "intensity_integrated"]) for k in kids)
+        r_dna = kid_dna / mother_dna if mother_dna > 0 else float("nan")
+        r_size = min(areas) / max(areas) if max(areas) > 0 else float("nan")
+        for k in kids:
+            dist[k] = float(np.hypot(first.loc[k, "cx"] - last.loc[m, "cx"],
+                                     first.loc[k, "cy"] - last.loc[m, "cy"]))
+            dna[k] = r_dna
+            size[k] = r_size
+
+    out = lineage.copy()
+    # pandas reads an int column with blanks as float, so parent_id round-trips as
+    # "127.0" and every downstream int() blows up. Normalise on the way out.
+    if "parent_id" in out.columns:
+        out["parent_id"] = [
+            "" if p is None or (isinstance(p, float) and p != p) or str(p).strip() == ""
+            else str(int(float(p)))
+            for p in out["parent_id"]
+        ]
+    out["link_distance_px"] = [round(dist[t_], 1) if t_ in dist else ""
+                               for t_ in out.track_id.astype(int)]
+    out["dna_ratio"] = [round(dna[t_], 3) if t_ in dna else ""
+                        for t_ in out.track_id.astype(int)]
+    out["size_ratio"] = [round(size[t_], 3) if t_ in size else ""
+                         for t_ in out.track_id.astype(int)]
+    return out
+
+
 def build_lineage_from_tracks(tracks: "pd.DataFrame") -> "pd.DataFrame":
     """Derive the mother/daughter graph from tracks.csv geometry alone.
 

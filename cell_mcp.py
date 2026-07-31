@@ -763,7 +763,10 @@ def _lineage(well: str) -> dict[int, dict]:
                 return None
 
         out[int(r["track_id"])] = {
-            "parent": int(r["parent_id"]) if r.get("parent_id") not in (None, "") else None,
+            # float() first: an int column with blanks round-trips through pandas as
+            # "127.0", and a bare int() on that raises.
+            "parent": (int(float(r["parent_id"]))
+                       if str(r.get("parent_id") or "").strip() not in ("", "nan") else None),
             "daughters": [int(x) for x in (r.get("daughter_ids") or "").split() if x],
             # Only present on geometry-sourced lineage; None on CTC-sourced.
             "dna_ratio": _f("dna_ratio"),
