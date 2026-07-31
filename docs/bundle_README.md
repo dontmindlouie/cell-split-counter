@@ -92,6 +92,18 @@ across a division, not that the division was real or normal. Check
 was recovered from `events.csv` and therefore only covers tracks the pipeline
 flagged, so a missing parent there means **unknown**, not orphan.
 
+**Links are unreliable in both directions, not just by omission.** Absence being
+"unknown" is the familiar half; the other half is that **presence is not evidence
+either**. Verified cases in `TSC_batch2_M12_RUES2` alone: three textbook anaphases
+(2036, 4714, 5286) with *no* daughters recorded; a recorded daughter of 3908 (4170)
+that is a ~6 µm² micronucleus budding off rather than a second nucleus; and 6425's
+recorded mother 4866 being a healthy neighbouring cell a few microns away rather
+than its parent. Two cheap checks before trusting a link: a real division roughly
+**halves the mother's area and it stays halved**, and the daughters' areas should
+**sum to about the mother's** — a "daughter" far smaller than half is a fragment or
+micronucleus, not a cell. Compare the frame spans too: a "daughter" starting long
+after the mother ends, or overlapping it heavily, is an id-linking artifact.
+
 **Bundles built before 2026-07-30 have no `solidity` column** — it was added to
 `scripts/build_bundle.py` on that date. Absence means "not yet rebuilt," not
 "solidity is zero here."

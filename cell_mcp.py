@@ -284,8 +284,24 @@ def get_track_profile(well: str, track_id: int) -> str:
     frames = t.frame.tolist()
     area = t.area_um2.tolist()
     inten = t.intensity_integrated.tolist()
+    mean_int = t.intensity_mean.tolist()
     has_solidity = "solidity" in t.columns
     solidity = t.solidity.tolist() if has_solidity else []
+
+    # Mean brightness relative to every other cell in the same frame. Integrated
+    # brightness alone hid a real death in eval v2 run 3 (track 849): its total
+    # looked unremarkable while its mean sat ~4x below its neighbours for the
+    # track's whole life. Per-frame z against the field separates "this cell is
+    # going dark" from "the whole frame is going dark" without spending an image.
+    fstats = (df.drop_duplicates(["frame", "track_id"])
+                .groupby("frame")["intensity_mean"].agg(["mean", "std"]))
+    zs: list[float] = []
+    for f_i, v in zip(frames, mean_int):
+        if f_i in fstats.index:
+            mu, sd = fstats.loc[f_i, "mean"], fstats.loc[f_i, "std"]
+            zs.append((v - mu) / sd if sd and sd > 1e-9 else 0.0)
+        else:
+            zs.append(0.0)
 
     def _biggest_jump(vals: list[float]) -> str:
         if len(vals) < 2:
@@ -311,19 +327,41 @@ def get_track_profile(well: str, track_id: int) -> str:
     if has_solidity:
         lines.append(f"  solidity   {_sparkline(solidity)}  (min {min(solidity):.3f}, max {max(solidity):.3f})")
     lines.append(f"  area_um2   {_sparkline(area)}  (min {min(area):.0f}, max {max(area):.0f})")
-    lines.append(f"  brightness {_sparkline(inten)}  (min {min(inten):.0f}, max {max(inten):.0f})")
+    lines.append(f"  total bri. {_sparkline(inten)}  (min {min(inten):.0f}, max {max(inten):.0f})")
+    lines.append(f"  mean bri.  {_sparkline(mean_int)}  (min {min(mean_int):.0f}, max {max(mean_int):.0f})")
+    lines.append(f"  mean bri. z vs field  {_sparkline(zs)}  "
+                 f"(min {min(zs):+.2f}, max {max(zs):+.2f}, median {sorted(zs)[len(zs) // 2]:+.2f})")
     if has_solidity:
         lines.append(f"  lowest solidity (best mitosis candidate)  {_lowest_point(solidity)}")
     else:
         lines.append("  (no solidity column -- this bundle predates 2026-07-30; rebuild to get it)")
     lines.append(f"  biggest area jump        {_biggest_jump(area)}")
-    lines.append(f"  biggest brightness jump  {_biggest_jump(inten)}")
+    lines.append(f"  biggest total-bri. jump  {_biggest_jump(inten)}")
+    lines.append(f"  biggest mean-bri. jump   {_biggest_jump(mean_int)}")
     lines.append(
         "\nEach sparkline is scaled to this track's own min/max, so shape (a dip, a "
-        "spike, a plateau) is meaningful but the two bars are not on the same scale as "
-        "each other or as another track's. These are candidate frames to spend a "
-        "get_filmstrip call on -- not a verdict; none of these numbers alone can tell "
-        "a division from a death from a tracking artifact."
+        "spike, a plateau) is meaningful but the bars are not on the same scale as "
+        "each other or as another track's. The one exception is the z row, which is "
+        "already an absolute cross-cell number: read its printed min/max/median, not "
+        "just its shape."
+    )
+    lines.append(
+        "total vs mean brightness are different measurements and answer different "
+        "questions. TOTAL (integrated) tracks DNA content, so it roughly doubles "
+        "before a division and halves across one. MEAN (per-pixel) tracks how bright "
+        "the chromatin is, so it is the one that falls when a nucleus dies or drifts "
+        "out of focus -- a dying cell can hold its total while its mean collapses. "
+        "The z row puts mean brightness on an absolute scale against every other cell "
+        "in the same frame: persistently around -2 or lower is a cell that is dark "
+        "relative to its peers throughout (suspect death or out-of-plane), while a z "
+        "that stays near 0 as the raw mean falls means the whole frame is dimming "
+        "(bleaching or defocus), not this cell. Use get_neighbourhood_stats to "
+        "separate a dim local patch from a dim field."
+    )
+    lines.append(
+        "These are candidate frames to spend a get_filmstrip call on -- not a verdict; "
+        "none of these numbers alone can tell a division from a death from a tracking "
+        "artifact."
     )
     return "\n".join(lines)
 
@@ -700,6 +738,20 @@ def get_lineage(well: str, track_id: int) -> str:
             "that the cell did not divide."
         )
     lines.append(
+        "\nAnd the converse, which matters just as much: PRESENCE IS NOT EVIDENCE "
+        "EITHER. A recorded link means the tracker joined two ids, not that a division "
+        "happened. Both failure directions are real in this data -- verified cases "
+        "include three textbook anaphases with NO daughters recorded, a 'daughter' that "
+        "was a ~6 um^2 micronucleus budding off rather than a second nucleus, and a "
+        "recorded 'mother' that was simply a healthy neighbour a few microns away. "
+        "Two cheap sanity checks before you trust a link: a real division roughly "
+        "halves the mother's area and it STAYS halved, and the two daughters' areas "
+        "should sum to about the mother's; a 'daughter' far smaller than half is a "
+        "fragment or micronucleus. Check the frame spans printed above too -- a "
+        "'daughter' that starts long after the mother ends, or overlaps it heavily, is "
+        "an id-linking artifact rather than a division."
+    )
+    lines.append(
         "\nTo see the division itself, ask get_filmstrip for a range spanning the "
         "mother's last frames and the daughters' first frames -- it renders frames "
         "outside a track's own lifetime rather than truncating to it."
@@ -759,7 +811,8 @@ def measure(well: str, track_id: int, frame: int | None = None) -> str:
 
 
 @server.tool()
-def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: int = 5) -> str:
+def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: int = 5,
+                            region_um: float = 40.0) -> str:
     """Compare one cell against its nearest neighbours at a single frame, in real units.
 
     Free to call -- no images. Use this whenever you're guessing at *why* a cell
@@ -776,6 +829,7 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
         track_id: the cell to evaluate, from list_tracks().
         frame: the frame to compare at. Must be a frame where this track is present.
         n_neighbours: how many nearest other cells to compare against. Default 5.
+        region_um: radius of the fixed-radius local patch, in microns. Default 40.
     """
     df = _tracks(well)
     f = df[df.frame == frame].drop_duplicates("track_id", keep="first")
@@ -792,10 +846,25 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
         return f"{well} frame {frame}: track {track_id} is the only tracked cell -- no neighbours to compare."
     others["dist_um"] = np.hypot(others.cx - mine.cx, others.cy - mine.cy) * _manifest(well)["pixel_size_um"]
     nearest = others.sort_values("dist_um").head(n_neighbours)
+    # A fixed-radius patch, distinct from the k-NN pool above. k-NN always returns
+    # N cells however far away they are, so in a sparse or locally-dark region it
+    # silently reaches across the field and the comparison stops being local. The
+    # radius pool can legitimately come back empty, which is itself informative.
+    region = others[others.dist_um <= region_um]
 
     def _z(value: float, pool: pd.Series) -> float:
         std = pool.std()
         return (value - pool.mean()) / std if std > 1e-9 else 0.0
+
+    # Is the PATCH dim, or is the CELL dim? This is the comparison that was missing:
+    # eval v2 run 3 read z=+1.15 vs neighbours on track 5432 as "this cell is fine"
+    # when the cell and all five neighbours had gone dark together.
+    field_med = f.intensity_mean.median()
+    pool_for_patch = region if not region.empty else nearest
+    patch_label = (f"{region_um:.0f} um patch" if not region.empty
+                   else f"nearest {len(nearest)} (no cell within {region_um:.0f} um)")
+    patch_med = pool_for_patch.intensity_mean.median()
+    patch_delta = ((patch_med - field_med) / field_med * 100) if field_med else 0.0
 
     lines = [
         f"{well} frame {frame} ({_hours(well, frame):.2f} h), track {track_id} vs its "
@@ -803,10 +872,22 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
         f"  this cell      area {mine.area_um2:.0f} um^2, mean brightness {mine.intensity_mean:.0f}",
         f"  nearest {len(nearest)}   area median {nearest.area_um2.median():.0f} um^2, "
         f"mean brightness median {nearest.intensity_mean.median():.0f}",
+        f"  {region_um:.0f}um patch ({len(region)})  " + (
+            f"area median {region.area_um2.median():.0f} um^2, "
+            f"mean brightness median {region.intensity_mean.median():.0f}"
+            if not region.empty else "no other cell within this radius"),
         f"  field ({len(others) + 1})  area median {f.area_um2.median():.0f} um^2, "
-        f"mean brightness median {f.intensity_mean.median():.0f}",
+        f"mean brightness median {field_med:.0f}",
+        "",
+        f"  IS THE PATCH ITSELF DIM?  {patch_label} median brightness {patch_med:.0f} "
+        f"vs field {field_med:.0f} ({patch_delta:+.0f}%)",
+        "",
         f"  z-score vs nearest neighbours   area {_z(mine.area_um2, nearest.area_um2):+.2f}, "
         f"brightness {_z(mine.intensity_mean, nearest.intensity_mean):+.2f}",
+        (f"  z-score vs {region_um:.0f}um patch          area {_z(mine.area_um2, region.area_um2):+.2f}, "
+         f"brightness {_z(mine.intensity_mean, region.intensity_mean):+.2f}"
+         if len(region) > 1 else
+         f"  z-score vs {region_um:.0f}um patch          n/a (fewer than 2 cells in radius)"),
         f"  z-score vs whole field          area {_z(mine.area_um2, f.area_um2):+.2f}, "
         f"brightness {_z(mine.intensity_mean, f.intensity_mean):+.2f}",
         "",
@@ -815,10 +896,22 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
     for r in nearest.itertuples():
         lines.append(f"    {r.track_id} | {r.dist_um:.1f} | {r.area_um2:.0f} | {r.intensity_mean:.0f}")
     lines.append(
-        "\nReading it: a negative brightness z-score against neighbours but ~0 against the "
-        "field means this cell alone is dim (cell-autonomous). A negative z-score against "
-        "BOTH means the whole neighbourhood/field is dim (bleaching or defocus, not this "
-        "cell's own state)."
+        "\nReading it -- check the PATCH line FIRST, then the z-scores. A z-score is "
+        "relative to whatever pool it names, so a high z against a pool that has itself "
+        "gone dark does NOT mean the cell is healthy:\n"
+        "  patch ~= field, cell z negative     -> this cell alone is dim (cell-autonomous: "
+        "death, or this one nucleus out of plane). The interesting case.\n"
+        "  patch << field, cell z >= 0         -> the local patch is dark and this cell is "
+        "merely typical FOR that dark patch. Regional defocus or shading, not a verdict "
+        "about this cell -- and its own raw brightness may still have collapsed. Compare "
+        "the cell's mean against its OWN earlier frames (get_track_profile) before "
+        "concluding nothing is happening.\n"
+        "  patch ~= field, cell z >= 0         -> nothing anomalous about this cell here.\n"
+        "  patch << field and cell z negative  -> dim patch AND dim within it; strongest "
+        "case for something happening to this cell, but confirm with images.\n"
+        "A cell can be small-but-bright (area z very negative, brightness z positive) -- "
+        "that is the signature of condensed mitotic chromatin or a micronucleus, not of a "
+        "dying cell, which is usually the opposite."
     )
     return "\n".join(lines)
 
