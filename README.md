@@ -26,7 +26,8 @@ to put her measurements, not in trying to automate her out of the loop. See
    calibration) into a ~0.2GB-per-well bundle, then serves it to a researcher's own
    Claude Code session over a local stdio MCP: `list_wells`, `list_tracks`,
    `get_track_profile`, `get_frame`, `get_filmstrip`, `get_lineage`, `measure`,
-   `get_neighbourhood_stats`, `get_filmstrip_at`, `find_candidates`, `show_cells`. She clones the repo, points
+   `get_neighbourhood_stats`, `get_filmstrip_at`, `get_filmstrip_family`,
+   `find_candidates`, `show_cells`. She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
 
@@ -62,8 +63,15 @@ python scripts/build_bundle.py data/output/your_run_folder \
 Writes `data/bundle/your_run_folder/` — indexed frame PNGs, 16-bit label maps,
 `tracks.csv`, `lineage.csv` (with per-link DNA/size scores), and a `manifest.json`
 carrying calibration read from the ND2 (pixel size, per-frame timestamps, the
-acquisition's own display color). Machine candidates go to `data/candidates/` instead,
-outside the bundle. ~0.2GB
+acquisition's own display color) plus a `provenance` block — when the bundle was built,
+from which run dir, at which git commit, and *separately* when the upstream
+segmentation/tracking it was built from was written. Those two dates differ whenever a
+bundle is assembled from older masks, and nothing else in the bundle records it:
+on 2026-07-31 a session computed and reported a whole-well triage from a bundle that
+predated the `_bridge_track_gaps` fix, because the only tell was file mtimes.
+`list_wells()` now flags any bundle without the block. Machine candidates go to
+`data/candidates/` instead, outside the bundle. There is no `summary.json` —
+see `docs/bundle_README.md`. ~0.2GB
 per well vs. ~8GB for the source run directory. `docs/bundle_README.md` is copied
 into the bundle root so it travels without this repo.
 
@@ -73,15 +81,23 @@ she copied a bundle, opens Claude Code in the repo root, and approves the MCP se
 once. `UV_PROJECT_ENVIRONMENT=.venv-mcp` is pinned in `.mcp.json` so `uv run` never
 touches a full pipeline `.venv` if one happens to exist on the same machine.
 
-**Tools** (`cell_mcp.py`, 12 total — docstrings are written as the model-facing schema,
+**Tools** (`cell_mcp.py`, 13 total — docstrings are written as the model-facing schema,
 see the file itself for full argument docs):
 - `list_wells()` / `list_tracks(well, filters...)` — orientation, the `ls`.
-- `find_candidates(well, pool, sort_by)` — free whole-well triage: ranks recorded
-  splits by how fragment-like they look (a `size_ratio` far below 1 means one
+- `find_candidates(well, pool, sort_by, stratum, limit)` — free whole-well triage: ranks
+  recorded splits by how fragment-like they look (a `size_ratio` far below 1 means one
   "daughter" is a micronucleus, not a cell), or lists tracks that stop early. The
   answer to "where do I even start" on a well with thousands of cells — every other
   tool answers a question about one track you already picked. Reports what the data
   records, ranked; it is not a detector and infers nothing new.
+  `limit=0` returns just the **census**: every recorded division labelled with the
+  first artifact class it trips (merged id, edge-clipped, touching, far link,
+  fragment-like, vanishing daughter, dim daughter, clean), counts partitioning the
+  pool. That is the sampling frame — review ~20 from a stratum, learn how often that
+  class is real, and the well gets a corrected count with an error bar off ~150
+  reviewed events rather than 1,400. It classifies and never discards, because the
+  reject rate per stratum *is* the finding. Thresholds are explicitly unvalidated and
+  say so at every call; they are near-certainly wrong per cell line.
 - `get_track_profile(well, track_id)` — free (no images) sparkline of a track's own
   area/brightness/solidity over time; decides where a `get_filmstrip` call is worth
   spending.
@@ -98,6 +114,18 @@ see the file itself for full argument docs):
   otherwise cannot be asked about at all. Also the tool for when a mask-following
   crop keeps losing the cell — segmentation fails hardest exactly during mitosis and
   death. Reports the nearest tracked cell per frame instead of ringing anything.
+- `get_filmstrip_family(well, track_ids, ...)` — before/during/after a division in one
+  strip. The crop centres on the **mean position of whichever members are present in
+  each frame**, so it follows the mother up to the handoff and the daughters' midpoint
+  after it, with no mode switch — membership does the switching. Pass just the mother
+  and her recorded daughters are added. The window defaults to the membership
+  transition (± `before`/`after`), and the crop width auto-fits **once** for the whole
+  strip, wide enough to hold every member: sizing per frame would make the nuclei
+  appear to breathe, and hand-guessing it is how a sibling drifts out of frame halfway
+  along. Frames with no member present hold the last centre and are labelled `HELD`,
+  never interpolated. Members are capped (6) and chosen once by median area, so a cell
+  fragmenting during necrosis keeps the crop on the debris field instead of chasing
+  one shard.
 - `get_lineage(well, track_id)` — mother/daughter links.
 - `measure(well, track_id, frame)` — real units (µm², hours), not pixels or frames.
 - `get_neighbourhood_stats(well, track_id, frame)` — compares one cell against its

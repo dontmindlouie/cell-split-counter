@@ -89,11 +89,40 @@ def test_contested_pool_says_so_when_the_source_cannot_supply_it(well, monkeypat
     assert "ctc" in out and "no contested pool" in out
 
 
-def test_near_edge_rows_are_dropped_by_default(well, monkeypatch):
+def test_near_edge_rows_are_counted_even_though_they_are_not_shown(well, monkeypatch):
+    """Dropping is fine; dropping SILENTLY is not.
+
+    The rows stay out of the listing -- a clipped nucleus has understated area and
+    brightness, so it is a bad cell to study -- but they have to remain visible as a
+    number, because an invisible count is what made events.csv dangerous.
+    """
     monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(
         [{"track_id": t, "frame": 0, "cx": 2.0, "cy": 2.0} for t in range(1, 7)]))
     out = cell_mcp.find_candidates(well, pool="division")
-    assert "dropped as near-edge" in out
+    assert "edge_clipped | 2 |" in out
+    assert not [l for l in out.splitlines() if l and l[0].isdigit()]
+
+
+def test_asking_for_the_edge_stratum_turns_the_edge_filter_off(well, monkeypatch):
+    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(
+        [{"track_id": t, "frame": 0, "cx": 2.0, "cy": 2.0} for t in range(1, 7)]))
+    out = cell_mcp.find_candidates(well, pool="division", stratum="edge_clipped")
+    assert [l for l in out.splitlines() if l and l[0].isdigit()]
+
+
+def test_census_partitions_the_pool(well):
+    out = cell_mcp.find_candidates(well, pool="division", limit=0)
+    total = int(out.split("division pool, ")[1].split(" total")[0])
+    counts = {l.split(" | ")[0]: int(l.split(" | ")[1])
+              for l in out.splitlines() if " | " in l and l.split(" | ")[0] in
+              {n for n, _ in cell_mcp._STRATA}}
+    assert sum(counts.values()) == total
+    assert "THE THRESHOLDS ARE UNVALIDATED" in out
+
+
+def test_census_only_shows_no_rows(well):
+    out = cell_mcp.find_candidates(well, pool="division", limit=0)
+    assert "census only" in out
     assert not [l for l in out.splitlines() if l and l[0].isdigit()]
 
 

@@ -188,20 +188,34 @@ def list_wells() -> str:
     """
     if not BUNDLE.is_dir():
         return f"No bundle at {BUNDLE}. Set CELL_BUNDLE_DIR to a built bundle directory."
-    out = ["well | cell_line | frames | hours | tracks | um/px | interval_min"]
+    out = ["well | cell_line | frames | hours | tracks | um/px | interval_min | built"]
+    unstamped = []
     for d in sorted(BUNDLE.iterdir()):
         if not (d / "manifest.json").is_file():
             continue
         m = _manifest(d.name)
+        prov = m.get("provenance") or {}
+        built = (prov.get("built_at") or "")[:10] or "UNSTAMPED"
+        if built == "UNSTAMPED":
+            unstamped.append(d.name)
         out.append(
             f"{d.name} | {m.get('cell_line') or '?'} | {m['n_frames']} | "
             f"{m['duration_hours']:.1f} | {m['n_tracks']} | {m['pixel_size_um']:.4f} | "
-            f"{m['interval_ms']['median'] / 60000:.1f}"
+            f"{m['interval_ms']['median'] / 60000:.1f} | {built}"
         )
     out.append(
         "\nNote: the time between frames is NOT constant. Never assume a fixed interval -- "
         "use measure() or the per-frame timestamps, which are exact."
     )
+    if unstamped:
+        out.append(
+            f"\nWARNING -- {len(unstamped)} well(s) carry no provenance block, so there is "
+            f"no way to tell what code built them or how old the tracking underneath is: "
+            f"{', '.join(unstamped[:6])}{' ...' if len(unstamped) > 6 else ''}. "
+            "Track ids are not stable across re-tracks, so numbers computed from an "
+            "unstamped bundle cannot be compared with anything, including themselves at "
+            "a later date. Rebuild before quoting counts from these."
+        )
     return "\n".join(out)
 
 
@@ -701,6 +715,262 @@ def _filmstrip_frames(
     return header, images
 
 
+_FAMILY_MAX_MEMBERS = 6
+
+
+def _family_filmstrip_frames(
+    well: str, track_ids: list[int],
+    start_frame: int | None, end_frame: int | None,
+    max_images: int, crop_um: float | None,
+    color: bool, scale_bar: bool, marker: bool,
+    before: int, after: int,
+) -> tuple[str, list[np.ndarray]]:
+    """Crop centred on a SET of tracks, resolved per frame from whoever is present.
+
+    This is the "before, during, after" strip. Give it a mother and her daughters and
+    the crop follows the mother while only she exists, then the daughters' midpoint
+    once they appear -- with no mode switch, because the centre is just the mean of
+    the members present in that frame and membership does the switching.
+
+    Why a member set rather than a fixed (x, y): a static point only works when the
+    subject happens not to migrate. On one M12 division it would have been fine (the
+    midpoint sat within ~5 px for 30 frames); in general cells move, and you would be
+    back to hand-computing a position per frame. Members are already measured every
+    frame in tracks.csv, so the set costs nothing and cannot drift off its subject.
+
+    Four calls worth knowing about, each of which could reasonably have gone the
+    other way:
+
+    1. PLAIN MEAN, not area-weighted. Weighting drags the centre onto the big object,
+       which is exactly wrong in the case you most need to see -- a micronucleus
+       logged as a daughter is tiny, and weighting pushes it toward the crop edge or
+       out of frame. The fragment is the evidence.
+    2. ONE crop size for the whole strip, auto-fitted (crop_um=None). Sizing per
+       frame would rescale every image, the nuclei would appear to breathe, and a
+       rendering artifact would read as biology.
+    3. Gaps are HELD, never interpolated. A frame where no member is present reuses
+       the last resolved centre and says so in the label. Interpolating would invent
+       a position and render it identically to a measured one.
+    4. Members are capped (default 6), chosen ONCE by median area over the window.
+       A cell undergoing necrosis can shatter into many ids; re-picking per frame
+       would make the centre lurch as membership churned. The strip stays jagged --
+       that is honest -- but it stays on the same objects.
+    """
+    df = _tracks(well)
+    m = _manifest(well)
+    n_frames = int(m["n_frames"])
+    um_px = m["pixel_size_um"]
+
+    ids = [int(t) for t in dict.fromkeys(track_ids)]
+    sub = df[df.track_id.isin(ids)]
+    missing = [t for t in ids if t not in set(sub.track_id.unique().tolist())]
+    if sub.empty:
+        raise ValueError(f"none of {ids} are tracks in {well}. Use list_tracks().")
+
+    spans = {int(t): (int(g.frame.min()), int(g.frame.max()))
+             for t, g in sub.groupby("track_id")}
+
+    # Auto-window on the MEMBERSHIP TRANSITION -- the frame where a member other than
+    # the earliest-starting one first appears. For a division that is the handoff
+    # frame, so before/after land either side of it. Using the members' full span
+    # instead would open the mother's entire lifetime, hundreds of frames of nothing.
+    starts = sorted(spans.items(), key=lambda kv: kv[1][0])
+    transition = starts[1][1][0] if len(starts) > 1 else starts[0][1][0]
+    lo = max(0, (transition - before) if start_frame is None else int(start_frame))
+    hi = min(n_frames - 1, (transition + after) if end_frame is None else int(end_frame))
+    if hi < lo:
+        raise ValueError(f"empty range: resolves to {lo}-{hi}; {well} has 0-{n_frames - 1}.")
+
+    avail = list(range(lo, hi + 1))
+    n = min(max_images, MAX_IMAGES, len(avail))
+    picks = [avail[i] for i in np.linspace(0, len(avail) - 1, n).astype(int)]
+
+    win = sub[(sub.frame >= lo) & (sub.frame <= hi)]
+    kept = ids
+    dropped: list[int] = []
+    if len(ids) > _FAMILY_MAX_MEMBERS:
+        rank = win.groupby("track_id")["area_px"].median().sort_values(ascending=False)
+        kept = [int(t) for t in rank.index[:_FAMILY_MAX_MEMBERS]]
+        dropped = [t for t in ids if t not in kept]
+        win = win[win.track_id.isin(kept)]
+
+    pos: dict[int, list] = {}
+    for r in win.itertuples():
+        pos.setdefault(int(r.frame), []).append(r)
+
+    # Resolve a centre per sampled frame; hold the last one across gaps.
+    centres: dict[int, tuple[float, float, int]] = {}
+    held: set[int] = set()
+    last: tuple[float, float] | None = None
+    for f in picks:
+        rows_f = pos.get(f, [])
+        if rows_f:
+            cx = float(np.mean([r.cx for r in rows_f]))
+            cy = float(np.mean([r.cy for r in rows_f]))
+            last = (cx, cy)
+            centres[f] = (cx, cy, len(rows_f))
+        elif last is not None:
+            centres[f] = (*last, 0)
+            held.add(f)
+        else:
+            # No member present yet and nothing to hold -- fall back to the earliest
+            # member's first known position rather than guessing.
+            first_row = win.sort_values("frame").iloc[0]
+            centres[f] = (float(first_row.cx), float(first_row.cy), 0)
+            held.add(f)
+
+    # Auto-fit ONE crop width: the 90th percentile over sampled frames of the radius
+    # needed to contain every present member (centroid distance plus that member's own
+    # radius). A percentile, not the max, because one fragment drifting away would
+    # otherwise zoom the whole strip out to the size of the field.
+    auto = crop_um is None
+    if auto:
+        radii = []
+        for f in picks:
+            rows_f = pos.get(f, [])
+            if not rows_f:
+                continue
+            cx, cy, _ = centres[f]
+            radii.append(max(
+                float(np.hypot(r.cx - cx, r.cy - cy))
+                + float(np.sqrt(max(float(r.area_px), 1.0) / np.pi))
+                for r in rows_f))
+        r_px = float(np.percentile(radii, 90)) if radii else 20.0
+        crop_um = float(np.clip(2 * r_px * um_px * 1.15, 25.0, 120.0))
+
+    half = max(8, int(round(crop_um / um_px / 2)))
+
+    who = ", ".join(str(t) for t in kept)
+    header = (
+        f"{well} tracks [{who}]: frames {lo}-{hi}, showing {n} of {len(avail)}. "
+        f"Crop {crop_um:g} um wide{' (auto-fitted to hold every member)' if auto else ''}, "
+        f"one size for the whole strip so nothing rescales between frames. Each frame is "
+        f"centred on the MEAN position of the members present in it -- so the crop "
+        f"follows whoever exists: the mother alone before the handoff, the daughters' "
+        f"midpoint after. Time is elapsed hours from the start of the recording."
+    )
+    if start_frame is None and end_frame is None:
+        header += (f" Window was chosen automatically around the membership transition "
+                   f"at f{transition} ({before} before, {after} after).")
+    header += " Member spans: " + "; ".join(
+        f"{t}:f{spans[t][0]}-{spans[t][1]}" for t in kept if t in spans) + "."
+    if held:
+        header += (f" {len(held)} frame(s) have NO member present; those hold the last "
+                   f"resolved centre and are labelled HELD. The position there is not "
+                   f"measured -- it is the previous frame's, reused, never interpolated.")
+    if dropped:
+        header += (f" {len(dropped)} further member(s) were dropped to keep the centre "
+                   f"stable ({', '.join(str(t) for t in dropped)}); the {len(kept)} kept "
+                   f"are the largest by median area over this window.")
+    if missing:
+        header += f" NOT FOUND in {well} and ignored: {', '.join(str(t) for t in missing)}."
+    if not marker:
+        header += (" Nothing is ringed: with several members in frame, one ring would be "
+                   "ambiguous about what it is claiming. Pass marker=true to ring them all.")
+
+    images: list[np.ndarray] = []
+    for f in picks:
+        cx_f, cy_f, n_present = centres[f]
+        grey = _frame_png(well, int(f))
+        h, w = grey.shape
+        cx, cy = int(round(cx_f)), int(round(cy_f))
+        x0, x1 = max(0, cx - half), min(w, cx + half)
+        y0, y1 = max(0, cy - half), min(h, cy + half)
+        crop = grey[y0:y1, x0:x1]
+        if crop.size == 0:
+            continue
+        img = _colorize(crop, well, color)
+        s = 1.0
+        if img.shape[0] < _UPSCALE_TO:
+            s = _UPSCALE_TO / img.shape[0]
+            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
+        if marker:
+            # Ring ALL present members or none. One ring among several says nothing
+            # about which cell the claim is about.
+            for r in pos.get(f, []):
+                rx, ry = (r.cx - x0) * s, (r.cy - y0) * s
+                rad = float(np.sqrt(max(float(r.area_px), 1.0) / np.pi)) * 1.9 * s
+                rad = float(np.clip(rad, 8, min(img.shape[:2]) / 2 - 2))
+                cv2.circle(img, (int(rx), int(ry)), int(rad), (255, 255, 255), 1, cv2.LINE_AA)
+        label = f"f{int(f)} t={_hours(well, int(f)):.1f}h"
+        label += " HELD" if f in held else f" [{n_present} member{'s' if n_present != 1 else ''}]"
+        cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                    (255, 255, 255), 1, cv2.LINE_AA)
+        if scale_bar:
+            img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
+        images.append(img)
+    return header, images
+
+
+_STRATA = [
+    # (name, blurb) in PRIORITY order -- first match wins, so the counts partition the
+    # pool and sum to its total. Measurement defects are tested before biological
+    # ambiguity, on the grounds that a clipped or merged mask makes every other number
+    # on the row untrustworthy, so it is the more informative label to carry.
+    ("merged_id", "mother or a daughter is a track the manifest flags as multiplexed"),
+    ("edge_clipped", "mother within 15 um of the frame boundary; area and brightness understated"),
+    ("touching", "mother or a daughter shares a mask with another cell in some frame"),
+    ("far_link", "daughter linked from >25 px away; most likely an id swap"),
+    ("fragment_like", "one daughter tiny while DNA is conserved: micronucleus signature"),
+    ("vanishing_daughter", "a daughter lasts <5 frames"),
+    ("dim_daughter", "a daughter averages <60% of the well's median brightness"),
+    ("clean", "trips none of the above"),
+]
+
+
+def _division_strata(rows, lin, tracks, m) -> list:
+    """Label each recorded division with the FIRST artifact class it trips.
+
+    Classifies; never discards. The reject rate per stratum is itself the finding,
+    and a filter that silently drops rows is the exact failure that made events.csv
+    unusable. Every signal here comes from tracks.csv + lineage.csv + manifest.json --
+    no images, no model, seconds to run.
+
+    The thresholds are UNVALIDATED. They were written from one session's look at one
+    RUES2 well; treat each stratum as a hypothesis with a count attached, not as a
+    verdict. In particular they are almost certainly wrong per cell line: a
+    fragment/micronucleus is segmentation garbage on RUES2 and plausibly the real
+    phenotype on a genome-doubled WGD line, so the same bucket can be noise in one
+    well and the result in another.
+    """
+    suspect = {int(t) for t in (m.get("track_multiplicity", {}) or {}).get("suspect_tracks", [])}
+    lin_by_id = lin.set_index("track_id")
+
+    dur = (lin_by_id.last_frame - lin_by_id.first_frame).to_dict()
+    touching = set(tracks.loc[tracks.get("n_masks_in_frame", 0) > 1, "track_id"].unique().tolist()) \
+        if "n_masks_in_frame" in tracks.columns else set()
+    bright = tracks.groupby("track_id")["intensity_mean"].mean() \
+        if "intensity_mean" in tracks.columns else None
+    dim_cut = float(bright.median()) * 0.6 if bright is not None and len(bright) else None
+
+    def _kids(s) -> list[int]:
+        return [int(k) for k in str(s).split() if k.strip().lstrip("-").isdigit()]
+
+    labels = []
+    for r in rows.itertuples():
+        kids = _kids(r.daughter_ids)
+        fam = [int(r.track_id), *kids]
+        if suspect & set(fam):
+            labels.append("merged_id")
+        elif r.edge_um == r.edge_um and r.edge_um < 15:
+            labels.append("edge_clipped")
+        elif touching & set(fam):
+            labels.append("touching")
+        elif r.link_distance_px == r.link_distance_px and r.link_distance_px > 25:
+            labels.append("far_link")
+        elif (r.size_ratio == r.size_ratio and r.size_ratio < 0.25
+              and r.dna_ratio == r.dna_ratio and r.dna_ratio > 0.8):
+            labels.append("fragment_like")
+        elif kids and min((dur.get(k, np.nan) for k in kids), default=np.nan) < 5:
+            labels.append("vanishing_daughter")
+        elif (dim_cut is not None
+              and any(k in bright.index and bright[k] < dim_cut for k in kids)):
+            labels.append("dim_daughter")
+        else:
+            labels.append("clean")
+    return labels
+
+
 @server.tool()
 def find_candidates(
     well: str,
@@ -708,6 +978,7 @@ def find_candidates(
     sort_by: str = "fragment_like",
     limit: int = 20,
     exclude_near_edge: bool = True,
+    stratum: str | None = None,
 ) -> str:
     """Scan a WHOLE WELL and rank what is worth looking at. Free -- no images.
 
@@ -740,13 +1011,28 @@ def find_candidates(
       duration       longest-lived first (division pool: the mother's lifetime).
       frame          earliest first.
 
+    The division pool also comes with a CENSUS: every recorded division is labelled
+    with the first artifact class it trips, and the counts partition the pool. That
+    is what turns a well into a sampling frame -- review ~20 from a stratum, learn
+    how often that class is real, and the whole pool gets a corrected count with an
+    error bar for ~150 reviewed events instead of 1,400. Reviewing every division is
+    not affordable and never will be; the estimate with a stated uncertainty is the
+    better number anyway.
+
+    Use `limit=0` for the census with no rows -- it is a few hundred tokens and is
+    usually the right first call on a well. Then `stratum="fragment_like"` (etc.) to
+    draw the sample from one class.
+
     Args:
         well: well name from list_wells().
         pool: "division", "track_end", or "contested".
         sort_by: "fragment_like", "dna_anomaly", "duration", or "frame".
-        limit: max rows. Keep small; this is for triage, not export.
+        limit: max rows. Keep small; this is for triage, not export. 0 = census only.
         exclude_near_edge: drop cells within 15 um of the frame boundary, whose
-            area and brightness are understated because the nucleus is clipped.
+            area and brightness are understated because the nucleus is clipped. They
+            are still COUNTED in the census, and asking for stratum="edge_clipped"
+            turns this off automatically.
+        stratum: restrict rows to one census class (division pool only).
     """
     import pandas as pd
 
@@ -791,8 +1077,34 @@ def find_candidates(
 
     rows["edge_um"] = [_edge(int(t)) for t in rows.track_id]
     n_before = len(rows)
+
+    # Strata are computed on the WHOLE pool, before any dropping, so that what
+    # exclude_near_edge removes still appears as a counted class rather than
+    # vanishing. A number you cannot see is the thing that made events.csv dangerous.
+    census = []
+    if pool == "division":
+        rows["stratum"] = _division_strata(rows, lin, tracks, m)
+        counts = rows.stratum.value_counts()
+        census = [f"{name} | {int(counts.get(name, 0))} | "
+                  f"{100 * int(counts.get(name, 0)) / max(n_before, 1):.1f}% | {blurb}"
+                  for name, blurb in _STRATA]
+        if stratum:
+            if stratum not in {n for n, _ in _STRATA}:
+                raise ValueError(f"unknown stratum {stratum!r}; one of "
+                                 f"{', '.join(n for n, _ in _STRATA)}")
+            rows = rows[rows.stratum == stratum]
+            # Asking for the edge stratum while the edge filter is on returns nothing
+            # and looks like "there are none". Honour the explicit request instead.
+            if stratum == "edge_clipped":
+                exclude_near_edge = False
+    elif stratum:
+        return (f"stratum= only applies to the division pool; the {pool} pool has no "
+                f"strata defined. Call again without it.")
+
+    n_pool = len(rows)
     if exclude_near_edge:
         rows = rows[~(rows.edge_um < 15)]
+    n_edge_dropped = n_pool - len(rows)
     rows["duration_f"] = rows.last_frame - rows.first_frame
 
     # A score-based sort on a pool that carries no scores would silently return the
@@ -815,13 +1127,39 @@ def find_candidates(
         rows = (rows.sort_values("duration_f", ascending=False) if applied == "duration"
                 else rows.sort_values("first_frame"))
 
-    shown = rows.head(limit)
+    shown = rows.head(limit) if limit > 0 else rows.iloc[:0]
     note = "" if applied == sort_by else (
         f" (asked for {sort_by}, but this pool carries no link scores -- "
         f"sorted by {applied} instead)")
     out = [f"{well}: {pool} pool, {n_before} total"
-           + (f" ({n_before - len(rows)} dropped as near-edge)" if exclude_near_edge else "")
-           + f", showing {len(shown)} sorted by {applied}.{note}"]
+           + (f", stratum={stratum}" if stratum else "")
+           + (f", showing {len(shown)} sorted by {applied}.{note}" if limit > 0
+              else ", census only (limit=0).")]
+    if n_edge_dropped and not census:
+        out.append(f"({n_edge_dropped} near-edge rows not shown; "
+                   f"exclude_near_edge=False to include them.)")
+
+    if census:
+        out.append("\nWhat the pool is made of -- stratum | n | share | why")
+        out += census
+        out.append(
+            "First match wins, so these partition the pool and sum to its total. "
+            "Priority order is a judgement call and the marginal counts move if you "
+            "change it. THE THRESHOLDS ARE UNVALIDATED -- each row is a hypothesis "
+            "with a count, not a verdict, and they are very likely wrong per cell "
+            "line (a micronucleus is garbage on RUES2 and may be the phenotype on WGD). "
+            "Nothing here is discarded: pass stratum= to pull rows from one class, "
+            "which is how you sample a class to measure how often it is real."
+        )
+
+    if limit <= 0:
+        return "\n".join(out)
+
+    if rows.empty:
+        out.append("\nNo rows left after filtering. Widen the stratum or set "
+                   "exclude_near_edge=False.")
+        return "\n".join(out)
+
     if pool == "division":
         out.append("track_id | frames | daughters | dna | size | link_px | edge_um")
         for r in shown.itertuples():
@@ -1074,6 +1412,83 @@ def get_filmstrip(
     """
     header, images = _filmstrip_frames(
         well, track_id, start_frame, end_frame, max_images, crop_um, color, scale_bar, marker
+    )
+    from mcp.types import TextContent
+    out: list = [TextContent(type="text", text=header)]
+    out.extend(_encode(img) for img in images)
+    return out
+
+
+def _resolve_family(well: str, track_ids: list[int]) -> list[int]:
+    """Add a track's recorded daughters when only the mother was named.
+
+    Convenience with a warning attached: the daughters come from lineage.csv, which
+    records what the TRACKER linked, not what happened. Pass the ids explicitly when
+    you already doubt the link -- and remember get_lineage's rule, that presence in
+    the table is not evidence the division was real.
+    """
+    if len(track_ids) != 1:
+        return [int(t) for t in track_ids]
+    lin = _lineage(well)
+    kids = (lin.get(int(track_ids[0])) or {}).get("daughters") or []
+    return [int(track_ids[0]), *[int(k) for k in kids]]
+
+
+@server.tool()
+def get_filmstrip_family(
+    well: str,
+    track_ids: list[int],
+    start_frame: int | None = None, end_frame: int | None = None,
+    before: int = 6, after: int = 10,
+    max_images: int = 10, crop_um: float | None = None,
+    color: bool = True, scale_bar: bool = True, marker: bool = False,
+) -> list:
+    """Before, during and after a division -- one strip that follows mother THEN
+    daughters, without losing either.
+
+    This is the strip to reach for on any event where the cell of interest stops
+    being one object. get_filmstrip follows a single mask, so it goes OFF-TRACK at
+    exactly the moment the division happens; get_filmstrip_at watches a fixed point,
+    which only holds still if the cells happen not to migrate. Here the crop is
+    centred on the mean position of whichever members are present in each frame, so
+    it rides the mother up to the handoff and the daughters' midpoint after it. No
+    mode switch, because membership does the switching.
+
+    Pass just the mother and the daughters recorded in lineage.csv are added for you.
+    Pass every id yourself when you do not trust that link, or for anything that is
+    not a division -- a cell fragmenting during necrosis is a member set too, and the
+    strip will stay on the debris field rather than chase one shard.
+
+    By default the WINDOW is chosen for you, around the frame where membership
+    changes: `before` frames ahead of it and `after` frames past it. That is the
+    handoff for a division. Give start_frame/end_frame to override.
+
+    By default the CROP is auto-fitted once for the whole strip, wide enough to hold
+    every member across the sampled frames. Do not set crop_um by hand unless you
+    want a particular zoom -- guessing it is how you end up with a sibling drifting
+    out of frame halfway along, since separation grows as the daughters move apart.
+
+    What it will not do: interpolate. A frame where no member is present holds the
+    previous centre and is labelled HELD, because a made-up position rendered like a
+    measured one is the failure this whole tool set exists to avoid.
+
+    Args:
+        well: well name from list_wells().
+        track_ids: the members. One id = that track plus its recorded daughters.
+        start_frame, end_frame: inclusive override of the automatic window.
+        before, after: frames either side of the membership transition, when the
+            window is automatic.
+        max_images: how many frames to show (hard capped at 12).
+        crop_um: width in micrometres. None (recommended) = auto-fit.
+        color: apply the microscope's own display colour.
+        scale_bar: burn in a labelled scale bar.
+        marker: ring EVERY member present in each frame, or none at all.
+    """
+    if not track_ids:
+        raise ValueError("track_ids is empty; give at least one track.")
+    header, images = _family_filmstrip_frames(
+        well, _resolve_family(well, track_ids), start_frame, end_frame,
+        max_images, crop_um, color, scale_bar, marker, before, after,
     )
     from mcp.types import TextContent
     out: list = [TextContent(type="text", text=header)]
@@ -1429,15 +1844,22 @@ def show_cells(well: str, events: list[dict]) -> str:
 
     Args:
         well: well name from list_wells().
-        events: one dict per cell to show, each with:
-            track_id (required): the cell, from list_tracks().
+        events: one dict per cell to show, each with EITHER
+            track_id: one cell, rendered as get_filmstrip does it, OR
+            track_ids: a member set, rendered as get_filmstrip_family does it -- use
+                this for divisions, so the strip follows the mother and then the
+                daughters' midpoint in one row instead of losing them at the handoff.
+                A single id here expands to that track plus its recorded daughters,
+                the window defaults to the membership transition (`before`/`after`
+                keys), and crop_um defaults to auto-fit rather than 60.
             start_frame, end_frame (optional): as in get_filmstrip -- may fall outside
                 the track's own lifetime, e.g. to show a division just past its end.
             label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
                 309/319/321". Defaults to "track <track_id>".
             max_images (optional, default 6): frames to render for this event.
             crop_um (optional, default 60.0): crop width in micrometres.
-            marker (optional, default False): ring the tracked cell.
+            marker (optional, default False): ring the tracked cell -- with
+                track_ids, rings every member present or none.
 
     Returns the path to the written .html file. Images are embedded as base64, so the
     file is portable on its own -- open it directly, or serve it
@@ -1449,16 +1871,29 @@ def show_cells(well: str, events: list[dict]) -> str:
     sections = []
     lb_data = []
     for i, ev in enumerate(events):
-        if "track_id" not in ev:
-            raise ValueError(f"events[{i}] is missing required key 'track_id': {ev!r}")
-        track_id = int(ev["track_id"])
-        header, images = _filmstrip_frames(
-            well, track_id,
-            ev.get("start_frame"), ev.get("end_frame"),
-            int(ev.get("max_images", 6)), float(ev.get("crop_um", 60.0)),
-            True, True, bool(ev.get("marker", False)),
-        )
-        label = ev.get("label") or f"track {track_id}"
+        if "track_id" not in ev and "track_ids" not in ev:
+            raise ValueError(f"events[{i}] needs 'track_id' or 'track_ids': {ev!r}")
+        if "track_ids" in ev:
+            members = _resolve_family(well, [int(t) for t in ev["track_ids"]])
+            crop = ev.get("crop_um")
+            header, images = _family_filmstrip_frames(
+                well, members,
+                ev.get("start_frame"), ev.get("end_frame"),
+                int(ev.get("max_images", 8)),
+                None if crop is None else float(crop),
+                True, True, bool(ev.get("marker", False)),
+                int(ev.get("before", 6)), int(ev.get("after", 10)),
+            )
+            label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
+        else:
+            track_id = int(ev["track_id"])
+            header, images = _filmstrip_frames(
+                well, track_id,
+                ev.get("start_frame"), ev.get("end_frame"),
+                int(ev.get("max_images", 6)), float(ev.get("crop_um", 60.0)),
+                True, True, bool(ev.get("marker", False)),
+            )
+            label = ev.get("label") or f"track {track_id}"
         b64_list = []
         for img in images:
             ok, buf = cv2.imencode(".png", img)
