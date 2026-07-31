@@ -14,6 +14,7 @@ someone who has never used a microscope.
 
 import base64
 import io
+import json
 import os
 import sys
 from functools import lru_cache
@@ -853,6 +854,7 @@ def render_browser(well: str, events: list[dict]) -> str:
         raise ValueError("events is empty -- nothing to render.")
 
     sections = []
+    lb_data = []
     for i, ev in enumerate(events):
         if "track_id" not in ev:
             raise ValueError(f"events[{i}] is missing required key 'track_id': {ev!r}")
@@ -864,18 +866,25 @@ def render_browser(well: str, events: list[dict]) -> str:
             True, True, bool(ev.get("marker", False)),
         )
         label = ev.get("label") or f"track {track_id}"
-        tiles = []
+        b64_list = []
         for img in images:
             ok, buf = cv2.imencode(".png", img)
             if not ok:
                 continue
-            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-            tiles.append(f'<img src="data:image/png;base64,{b64}" loading="lazy">')
+            b64_list.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+        tiles = [
+            f'<img src="data:image/png;base64,{b64}" loading="lazy" '
+            f'onclick="openLightbox({i},{j})">'
+            for j, b64 in enumerate(b64_list)
+        ]
         sections.append(
             f"<section><h2>{i + 1}. {label}</h2>"
             f"<p class=hdr>{header}</p>"
             f"<div class=filmstrip>{''.join(tiles)}</div></section>"
         )
+        lb_data.append({"label": label, "images": b64_list})
+
+    lb_json = json.dumps(lb_data)
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>{well} browser</title>
@@ -886,10 +895,61 @@ section {{ margin-bottom: 2.5rem; border-top: 1px solid #333; padding-top: 1rem;
 h2 {{ font-size: 1.1rem; font-weight: 600; }}
 p.hdr {{ color: #999; font-size: 0.85rem; max-width: 60rem; }}
 div.filmstrip {{ display: flex; flex-wrap: wrap; gap: 4px; }}
-div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px solid #333; }}
+div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+.lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 20; }}
+.lightbox.open {{ display: flex; }}
+.lightbox img {{ max-width: 92vw; max-height: 88vh; }}
+.lightbox-caption {{ position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); color: #ccc; font-size: 12.5px; }}
+.lightbox-close {{ position: absolute; top: 14px; right: 20px; color: #fff; font-size: 28px; line-height: 1; cursor: pointer; background: none; border: none; padding: 6px 10px; }}
+.lightbox-nav {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,0.12); color: #fff; border: none; font-size: 28px; line-height: 1; width: 52px; height: 64px; cursor: pointer; border-radius: 8px; }}
+.lightbox-nav:hover {{ background: rgba(255,255,255,0.24); }}
+.lightbox-nav:disabled {{ opacity: 0.25; cursor: default; }}
+.lightbox-nav.prev {{ left: 16px; }}
+.lightbox-nav.next {{ right: 16px; }}
 </style></head><body>
 <h1>{well}</h1>
 {''.join(sections)}
+<div class="lightbox" id="lightbox">
+  <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+  <button class="lightbox-nav prev" id="lb-prev" onclick="stepLightbox(-1)">&lsaquo;</button>
+  <img id="lb-img" alt="">
+  <div class="lightbox-caption" id="lb-caption"></div>
+  <button class="lightbox-nav next" id="lb-next" onclick="stepLightbox(1)">&rsaquo;</button>
+</div>
+<script>
+var LB_DATA = {lb_json};
+var lbSection = 0, lbIdx = 0;
+function showLbFrame() {{
+  var imgs = LB_DATA[lbSection].images;
+  document.getElementById('lb-img').src = 'data:image/png;base64,' + imgs[lbIdx];
+  document.getElementById('lb-caption').textContent =
+    LB_DATA[lbSection].label + ' -- frame ' + (lbIdx + 1) + ' / ' + imgs.length;
+  document.getElementById('lb-prev').disabled = lbIdx === 0;
+  document.getElementById('lb-next').disabled = lbIdx === imgs.length - 1;
+}}
+function openLightbox(section, idx) {{
+  lbSection = section; lbIdx = idx;
+  showLbFrame();
+  document.getElementById('lightbox').classList.add('open');
+}}
+function closeLightbox() {{ document.getElementById('lightbox').classList.remove('open'); }}
+function stepLightbox(delta) {{
+  var imgs = LB_DATA[lbSection].images;
+  var next = lbIdx + delta;
+  if (next < 0 || next >= imgs.length) return;
+  lbIdx = next;
+  showLbFrame();
+}}
+document.getElementById('lightbox').addEventListener('click', function(e) {{
+  if (e.target.id === 'lightbox') closeLightbox();
+}});
+document.addEventListener('keydown', function(e) {{
+  if (!document.getElementById('lightbox').classList.contains('open')) return;
+  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowLeft') stepLightbox(-1);
+  if (e.key === 'ArrowRight') stepLightbox(1);
+}});
+</script>
 </body></html>"""
 
     out_dir = BUNDLE / well / "browsers"
