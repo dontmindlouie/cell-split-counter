@@ -87,7 +87,8 @@ request past the track's own start) before concluding the lead-up can't be seen.
 | `n_daughters`, `daughter_ids` | space-separated track_ids born from this one |
 | `link_distance_px` | mother's last centroid to this daughter's first (geometry source only) |
 | `dna_ratio` | both daughters' `intensity_integrated` at f+1 over the mother's at f. ~1.0 when DNA is conserved, i.e. a real division (geometry source only) |
-| `size_ratio` | smaller daughter's area over larger's. Near 1 for a symmetric division; **under ~0.25 is the micronucleus/fragment signature** (geometry source only) |
+| `size_ratio` | smaller daughter's area over larger's. Near 1 for a symmetric division; a low value is the micronucleus/fragment signature (geometry source only) |
+| `alt_parents` | other mothers that were also in range, as `id:px`. Non-empty means `parent_id` was a nearest-wins tie-break, not an unambiguous fact (geometry source only) |
 
 `manifest.lineage.source` says where the graph came from. **`ctc`** is Trackastra's
 own table, written at tracking time — complete, unscored. **`geometry`** is rebuilt
@@ -105,6 +106,20 @@ nucleus rather than a daughter (confirmed by eye 2026-07-30). A low size ratio w
 healthy DNA ratio is the fragment signature: the large object carries the DNA and the
 small one is debris. Geometry cannot tell those apart, and neither could the events
 graph — the difference is that this one shows you the numbers.
+
+**No absolute cutoff is applied, deliberately.** `get_lineage` reports each score's
+percentile against *this well's own* links rather than a fixed threshold, because a
+cutoff tuned on one cell line does not transfer — WGD nuclei are large and lobed
+where RUES2 are compact. Which tail is suspicious differs by measure: a low
+`size_ratio` means a fragment, while a high one is just a symmetric division, so only
+the low tail is called out. `dna_ratio` is flagged at **both** ends — far below 1
+means signal went missing, far above means the pair carries more DNA than the mother
+had, so something else was included in the mask (track 189 on M12_RUES2 reads 2.16).
+
+`alt_parents` exists for the same reason. Where two mothers end in the same frame
+near each other, both reach the same births and the nearest one wins — 224 of 2,110
+links on M12_RUES2 are contested that way. The winner is a tie-break, so the
+runners-up ship next to it rather than being silently dropped.
 
 Topology only, no verdicts: a daughter link means two ids were connected across a
 division, not that the division was real or normal.
