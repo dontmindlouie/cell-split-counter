@@ -140,3 +140,83 @@ def test_a_lone_mother_expands_to_her_recorded_daughters(fake, monkeypatch):
     assert cell_mcp._resolve_family(fake, [1]) == [1, 2, 3]
     # Explicit sets are left exactly as given -- the caller may be disputing the link.
     assert cell_mcp._resolve_family(fake, [1, 2]) == [1, 2]
+
+
+# --------------------------------------------------------------------- dropouts
+#
+# The case these pin is the one that actually went wrong on M12: daughter 2362 was not
+# segmented at f353 while plainly visible in the pixels. The crop re-centred on her
+# sister alone, the whole field shifted, and the shifted view was read first as the
+# cells having moved and then as a lagging chromosome. Nothing in the image said the
+# camera had panned -- which is the point: a reader cannot see a centring change.
+
+
+@pytest.fixture
+def dropout(monkeypatch, fake):
+    """Same family as `fake`, but daughter 2 is not segmented at f14 -- a one-frame
+    segmentation dropout in the middle of her span, with her sister still present."""
+    rows = [r for r in cell_mcp._tracks(fake).to_dict("records")
+            if not (r["track_id"] == 2 and r["frame"] == 14)]
+    monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
+    return fake
+
+
+def _centres(fake, ids, lo, hi):
+    tracks = cell_mcp._tracks(fake)
+    win = tracks[(tracks.track_id.isin(ids)) & (tracks.frame >= lo) & (tracks.frame <= hi)]
+    pos = {}
+    for r in win.itertuples():
+        pos.setdefault(int(r.frame), []).append(r)
+    return cell_mcp._resolve_family_centres(win, pos, list(range(lo, hi + 1)))
+
+
+def test_a_dropout_does_not_swing_the_centre_onto_the_remaining_member(dropout):
+    """The trade this makes, in numbers, on a family migrating 4 px/frame.
+
+    Re-centring on the sister alone moves the crop 12 px in one frame -- a visible pan
+    with nothing in the image to explain it. Holding the missing member's last measured
+    position instead costs a 2 px lag, because a held position is one frame stale and
+    there are two members sharing the mean. Six times smaller, and in the direction
+    that keeps both cells in frame. The lag is real and bounded by the member's own
+    drift; it is not a measured position and the label says so.
+    """
+    centres, _, _ = _centres(dropout, [1, 2, 3], 10, 19)
+    x13, x14, x15 = centres[13][0], centres[14][0], centres[15][0]
+    expected = (x13 + x15) / 2
+    assert abs(x14 - expected) < 3.0, "held position lags by at most the member's drift"
+
+    sister_only = float(
+        cell_mcp._tracks(dropout).query("track_id == 3 and frame == 14").cx.iloc[0])
+    assert abs(sister_only - expected) > 4 * abs(x14 - expected), "the swing it replaces"
+
+
+def test_the_dropout_frame_names_the_missing_member(dropout):
+    """'1 seen' alone reads as a cell having gone. The id is what tells a reader the
+    difference between a segmentation failure and a biological event."""
+    _, _, gapped = _centres(dropout, [1, 2, 3], 10, 19)
+    assert gapped == {14: [2]}
+
+
+def test_the_header_explains_that_a_gap_member_is_unringed(dropout):
+    header, _ = _strip(dropout, [1, 2, 3], start_frame=10, end_frame=19, max_images=10)
+    assert "segmentation dropout, not a departure" in header
+    assert "NOT" in header and "ringed" in header
+    assert "2" in header.split("a member (")[1].split(")")[0]
+
+
+def test_a_member_is_never_held_outside_its_own_span(fake):
+    """The mother must leave the mean after the handoff, or the crop never follows the
+    daughters and the whole point of a member set is lost."""
+    centres, _, gapped = _centres(fake, [1, 2, 3], 0, 19)
+    assert gapped == {}, "no interior gaps in this fixture"
+    assert centres[14][0] == pytest.approx(116.0), "daughters' midpoint, mother gone"
+    assert centres[14][2] == 2 and centres[14][3] == 0
+
+
+def test_a_frame_with_nothing_present_is_held_not_gap_filled(fake):
+    """HELD and 'gap' are different claims: gap means a known member was missed here,
+    HELD means the centre is simply the previous frame's, reused."""
+    centres, held, gapped = _centres(fake, [1, 2, 3], 0, 25)
+    assert set(range(20, 26)) <= held
+    assert all(f not in gapped for f in range(20, 26))
+    assert centres[25][:2] == centres[19][:2]

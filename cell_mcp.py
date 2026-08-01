@@ -722,6 +722,67 @@ def _filmstrip_frames(
 _FAMILY_MAX_MEMBERS = 6
 
 
+def _resolve_family_centres(
+    win, pos: dict[int, list], picks: list[int],
+) -> tuple[dict[int, tuple[float, float, int, int]], set[int], dict[int, list[int]]]:
+    """One crop centre per sampled frame, plus which frames are gap-filled or held.
+
+    Returns {frame: (cx, cy, n_seen, n_gap)}, the HELD frames, and {frame: [gap ids]}.
+
+    A member missing for a frame or two in the MIDDLE of its own span is a
+    segmentation dropout, not a departure. Dropping it from the mean swings the centre
+    onto whoever is left, and the crop pans with nothing in the image saying so -- on
+    M12 that shift was read as a cell having moved, and then as evidence of a lagging
+    chromosome. So a member inside its span keeps contributing its last measured
+    position while it is missing; only a member whose span has genuinely ended (the
+    mother, after the handoff) leaves the mean, which is what keeps the handoff
+    working with no mode switch.
+
+    Strictly inside its span: a member never contributes before its first appearance
+    or after its last, because there is nothing measured to hold there.
+    """
+    mspan = {int(t): (int(g.frame.min()), int(g.frame.max()))
+             for t, g in win.groupby("track_id")}
+    seen_at: dict[int, dict[int, tuple[float, float]]] = {}
+    for r in win.itertuples():
+        seen_at.setdefault(int(r.track_id), {})[int(r.frame)] = (float(r.cx), float(r.cy))
+
+    centres: dict[int, tuple[float, float, int, int]] = {}
+    held: set[int] = set()
+    gapped: dict[int, list[int]] = {}
+    last: tuple[float, float] | None = None
+    for f in picks:
+        rows_f = pos.get(f, [])
+        present = [(float(r.cx), float(r.cy)) for r in rows_f]
+        here = {int(r.track_id) for r in rows_f}
+        gap_ids, gap_pts = [], []
+        for t, (a, b) in sorted(mspan.items()):
+            if t in here or not (a < f < b):
+                continue
+            earlier = [g for g in seen_at[t] if g < f]
+            if earlier:
+                gap_ids.append(t)
+                gap_pts.append(seen_at[t][max(earlier)])
+        pts = present + gap_pts
+        if pts:
+            cx = float(np.mean([p[0] for p in pts]))
+            cy = float(np.mean([p[1] for p in pts]))
+            last = (cx, cy)
+            centres[f] = (cx, cy, len(present), len(gap_pts))
+            if gap_ids:
+                gapped[f] = gap_ids
+        elif last is not None:
+            centres[f] = (*last, 0, 0)
+            held.add(f)
+        else:
+            # No member present yet and nothing to hold -- fall back to the earliest
+            # member's first known position rather than guessing.
+            first_row = win.sort_values("frame").iloc[0]
+            centres[f] = (float(first_row.cx), float(first_row.cy), 0, 0)
+            held.add(f)
+    return centres, held, gapped
+
+
 def _family_filmstrip_frames(
     well: str, track_ids: list[int],
     start_frame: int | None, end_frame: int | None,
@@ -752,9 +813,13 @@ def _family_filmstrip_frames(
     2. ONE crop size for the whole strip, auto-fitted (crop_um=None). Sizing per
        frame would rescale every image, the nuclei would appear to breathe, and a
        rendering artifact would read as biology.
-    3. Gaps are HELD, never interpolated. A frame where no member is present reuses
-       the last resolved centre and says so in the label. Interpolating would invent
-       a position and render it identically to a measured one.
+    3. Gaps are HELD, never interpolated -- at two levels. A member missing inside its
+       own span is a segmentation dropout, so it keeps contributing its last measured
+       position and the frame is labelled 'gap'; without that the mean swings onto
+       whoever remains and the crop pans with nothing in the image to explain it (on
+       M12 that shift was read as a cell moving, then as a lagging chromosome). A frame
+       where NO member is present reuses the whole last centre and is labelled HELD.
+       Neither invents a position: interpolating would render as a measured one.
     4. Members are capped (default 6), chosen ONCE by median area over the window.
        A cell undergoing necrosis can shatter into many ids; re-picking per frame
        would make the centre lurch as membership churned. The strip stays jagged --
@@ -802,26 +867,7 @@ def _family_filmstrip_frames(
     for r in win.itertuples():
         pos.setdefault(int(r.frame), []).append(r)
 
-    # Resolve a centre per sampled frame; hold the last one across gaps.
-    centres: dict[int, tuple[float, float, int]] = {}
-    held: set[int] = set()
-    last: tuple[float, float] | None = None
-    for f in picks:
-        rows_f = pos.get(f, [])
-        if rows_f:
-            cx = float(np.mean([r.cx for r in rows_f]))
-            cy = float(np.mean([r.cy for r in rows_f]))
-            last = (cx, cy)
-            centres[f] = (cx, cy, len(rows_f))
-        elif last is not None:
-            centres[f] = (*last, 0)
-            held.add(f)
-        else:
-            # No member present yet and nothing to hold -- fall back to the earliest
-            # member's first known position rather than guessing.
-            first_row = win.sort_values("frame").iloc[0]
-            centres[f] = (float(first_row.cx), float(first_row.cy), 0)
-            held.add(f)
+    centres, held, gapped = _resolve_family_centres(win, pos, picks)
 
     # Auto-fit ONE crop width: the 90th percentile over sampled frames of the radius
     # needed to contain every present member (centroid distance plus that member's own
@@ -834,7 +880,7 @@ def _family_filmstrip_frames(
             rows_f = pos.get(f, [])
             if not rows_f:
                 continue
-            cx, cy, _ = centres[f]
+            cx, cy = centres[f][0], centres[f][1]
             radii.append(max(
                 float(np.hypot(r.cx - cx, r.cy - cy))
                 + float(np.sqrt(max(float(r.area_px), 1.0) / np.pi))
@@ -851,13 +897,27 @@ def _family_filmstrip_frames(
         f"one size for the whole strip so nothing rescales between frames. Each frame is "
         f"centred on the MEAN position of the members present in it -- so the crop "
         f"follows whoever exists: the mother alone before the handoff, the daughters' "
-        f"midpoint after. Time is elapsed hours from the start of the recording."
+        f"midpoint after. Time is elapsed hours from the start of the recording. "
+        f"The centre moves with membership, so the field CAN pan between frames without "
+        f"anything in the image having moved -- read the per-frame label before reading "
+        f"the scene as a change."
     )
     if start_frame is None and end_frame is None:
         header += (f" Window was chosen automatically around the membership transition "
                    f"at f{transition} ({before} before, {after} after).")
     header += " Member spans: " + "; ".join(
         f"{t}:f{spans[t][0]}-{spans[t][1]}" for t in kept if t in spans) + "."
+    if gapped:
+        ids_g = sorted({t for v in gapped.values() for t in v})
+        header += (
+            f" {len(gapped)} frame(s) are labelled 'gap': a member "
+            f"({', '.join(str(t) for t in ids_g)}) was not segmented there but is "
+            f"present on BOTH sides, so it is a segmentation dropout, not a departure. "
+            f"It keeps contributing its last measured position to the centre, which is "
+            f"what stops the crop from swinging onto whoever is left -- the field would "
+            f"otherwise jump and look like the cell had moved. A gap member is NOT "
+            f"ringed, since nothing was segmented for it; its pixels are usually still "
+            f"visible in the image.")
     if held:
         header += (f" {len(held)} frame(s) have NO member present; those hold the last "
                    f"resolved centre and are labelled HELD. The position there is not "
@@ -874,7 +934,7 @@ def _family_filmstrip_frames(
 
     images: list[np.ndarray] = []
     for f in picks:
-        cx_f, cy_f, n_present = centres[f]
+        cx_f, cy_f, n_present, n_gap = centres[f]
         grey = _frame_png(well, int(f))
         h, w = grey.shape
         cx, cy = int(round(cx_f)), int(round(cy_f))
@@ -897,7 +957,14 @@ def _family_filmstrip_frames(
                 rad = float(np.clip(rad, 8, min(img.shape[:2]) / 2 - 2))
                 cv2.circle(img, (int(rx), int(ry)), int(rad), (255, 255, 255), 1, cv2.LINE_AA)
         label = f"f{int(f)} t={_hours(well, int(f)):.1f}h"
-        label += " HELD" if f in held else f" [{n_present} member{'s' if n_present != 1 else ''}]"
+        if f in held:
+            label += " HELD"
+        elif n_gap:
+            # Name the missing ones: "1 seen" alone would read as a cell having gone,
+            # which is the misreading this whole mechanism exists to prevent.
+            label += (f" [{n_present} seen, gap {','.join(str(t) for t in gapped[f])}]")
+        else:
+            label += f" [{n_present} member{'s' if n_present != 1 else ''}]"
         cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
                     (255, 255, 255), 1, cv2.LINE_AA)
         if scale_bar:
