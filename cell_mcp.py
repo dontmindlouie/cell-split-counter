@@ -1194,6 +1194,216 @@ def _family_filmstrip_frames(
     return header, images
 
 
+# How far either side of the mother's last frame to look for the mitotic figure.
+# Forward-heavy for the same reason the filmstrip window is: the link is where the
+# tracker gave up, and the figure can be ~20 min past it.
+_COND_BEFORE_MIN = 20.0
+_COND_AFTER_MIN = 60.0
+
+# The conservation gate: a frame only counts as a condensation candidate if the family
+# still holds roughly the DNA the mother had. Asymmetric because the two ends fail
+# differently -- below the floor, signal has genuinely gone missing and whatever is
+# left is a fragment, not a compacted nucleus; above the ceiling, a neighbour has been
+# swept into the family. The ceiling is loose on purpose: once both daughters are
+# segmented the family legitimately reads more signal than the mother alone did.
+# Margin added to the mother's own radius to make the measuring disc.
+_COND_MARGIN_UM = 8.0
+
+# How much of the mother's own recent history forms the baseline. An hour, not her
+# whole track: raw signal bleaches over 72 h, so a lifetime median makes a late
+# division look like it lost DNA it never lost.
+_COND_BASE_MIN = 60.0
+_COND_DNA_MIN = 0.75
+_COND_DNA_MAX = 2.5
+
+
+def _condensation(well: str, rows, lin, tracks, um_px: float) -> tuple[list, list, list, list]:
+    """Score how strongly each recorded division shows CONDENSING CHROMATIN.
+
+    Every other signal in this file is topological -- who the tracker linked to whom,
+    whether a daughter persisted. That is what the 2026-07-31 blind scoring showed to
+    be the wrong question on BeWo: where the tracker fails THROUGH the division, the
+    recorded daughters are pre-mitotic debris and "daughter persists" is anti-correlated
+    with a division having happened. A human scored the same events on morphology --
+    is there a metaphase plate -- and disagreed with topology on 7 of 11 BeWo cases.
+    This is that morphology question, asked of numbers the bundle already has.
+
+    Mitosis packs the same DNA into a smaller object. So across the transition:
+
+        area          FALLS      chromatin compacts
+        mean intensity RISES     same signal, fewer pixels
+        integrated     ~FLAT     no DNA was created or destroyed
+
+    The SCORE is the brightness rise, and the conservation is a GATE on it. That
+    split is the whole design, and the obvious alternative is wrong: scoring
+    (brightness up) x (area down) ranked M12's fragments first, at cond 93 with only
+    65% of the DNA still present. Both fragmentation and condensation shrink the
+    area, so any factor of a0/area rewards a mask falling apart -- and a fragment
+    shrinks the total signal in step with the area, leaving brightness per pixel
+    FLAT. That is precisely what tells the two apart:
+
+        condensation  area down, brightness UP, total conserved
+        fragment      area down, brightness flat, total DOWN
+        death/bleach  brightness DOWN
+
+    So: look only at frames where the family still holds its DNA, and among those
+    take the brightest. Area is reported, never multiplied in.
+
+    Brightness is measured RELATIVE TO THE FIELD in the same frame, because the
+    signal bleaches over 72 h -- an absolute rise late in a recording is a bigger
+    deal than the same rise early, and a mother whose baseline spans hours would
+    otherwise be compared against her own brighter past.
+
+    Scored against the mother's OWN history, never an absolute cutoff -- the lesson
+    from `solidity`, which is the strongest shape signal on compact RUES2 nuclei and
+    the weakest on lobed WGD ones. A ratio to her own median says the same thing on
+    both.
+
+    Measured over a NEIGHBOURHOOD, not over the recorded family. That is the second
+    thing this got wrong and the more important one. Summing the mother and her
+    recorded daughters cannot see the figure at all in the cases that matter: on BeWo
+    track 802 the family has rows in only 10 of the 28 window frames, because the
+    tracker lost the cell at the link and the condensed object at f778 carries a track
+    id nobody linked to anybody. Scoring the family returned NaN there -- on the exact
+    event a human called an unmistakable prometaphase figure.
+
+    So the window is a disc around the mother's last known position, and everything
+    segmented inside it is summed. That is what makes the score independent of the
+    tracking, which is the entire reason to want a morphology signal: if it needed the
+    link to be right, it would fail wherever topology already fails, and those are the
+    same events. The cost is neighbours drifting into the disc, so the count of objects
+    summed is reported rather than hidden.
+
+    Returns three parallel lists (peak score, the frame it peaked at, DNA conservation
+    at that frame). NaN where the mother has too little history to have a baseline --
+    a one-frame mother has no "normal" to be compared against, and inventing one would
+    manufacture the signal this is supposed to measure.
+
+    HOW WELL IT ACTUALLY WORKS, measured against the only human labels this project
+    has (the maintainer, 2026-07-31, 26 blind-scored divisions across two lines):
+
+        RUES2 M12   AUC 0.63   (3 real / 9 not)
+        BeWo M2     AUC 0.75   (4 real / 10 not)
+        combined    AUC 0.68
+
+    That is a weak ranking, and it is stated rather than hidden because the number
+    is the point: on BeWo, topology scored BELOW 0.5 on the same events -- the
+    `clean` stratum held 0/4 real divisions and `vanishing_daughter` held 4/5. A 0.75
+    that is independent of the tracker beats a ranking that is confidently backwards.
+    It changes where a reviewer spends images; it does not decide anything.
+
+    n=26 is far too small to tune against, so it has NOT been tuned against them --
+    the thresholds are the first physically-argued values. Fitting them to 26 points
+    would produce a better-looking number and a worse tool.
+
+    It is a ranking, not a verdict: a condensed-looking object can be a dying cell
+    whose chromatin clumped, which is a real and known confusion this cannot resolve.
+    Confirm on the pixels.
+    """
+    need = {"area_um2", "area_px", "intensity_mean", "intensity_integrated"}
+    if not need.issubset(tracks.columns):
+        n = len(rows)
+        return ([float("nan")] * n, [-1] * n, [float("nan")] * n,
+                [float("nan")] * n)
+
+    cols = ["track_id", "frame", "cx", "cy", "area_um2", "area_px",
+            "intensity_mean", "intensity_integrated"]
+    sub = tracks[cols].copy()
+    # Bleach correction: every cell's brightness is expressed against the median cell
+    # in ITS OWN frame, so a 72 h decay in the illumination or the dye cancels out.
+    field = sub.groupby("frame").intensity_mean.median().replace(0, np.nan)
+    sub["rel"] = sub.intensity_mean / sub.frame.map(field)
+    by_track = {int(t): g for t, g in sub.groupby("track_id")}
+
+    # Per-frame arrays, built once. The inner loop asks "what is near (x, y) in frame
+    # f" ~30 times per division across ~1,300 divisions, and a pandas filter per
+    # question turns seconds into minutes.
+    per_frame: dict[int, tuple] = {}
+    for f, g in sub.groupby("frame"):
+        per_frame[int(f)] = (
+            g.cx.to_numpy(), g.cy.to_numpy(), g.area_um2.to_numpy(),
+            g.area_px.to_numpy(), g.rel.to_numpy(),
+            g.intensity_integrated.to_numpy(),
+        )
+
+    scores, peaks, dnas, areas = [], [], [], []
+
+    def _blank():
+        scores.append(float("nan")); peaks.append(-1)
+        dnas.append(float("nan")); areas.append(float("nan"))
+
+    for r in rows.itertuples():
+        mid = int(r.track_id)
+        mrows = by_track.get(mid)
+        # Fewer than 5 frames of mother is not a baseline, it is a guess.
+        if mrows is None or len(mrows) < 5:
+            _blank(); continue
+        mrows = mrows.sort_values("frame")
+        last = int(mrows.frame.iloc[-1])
+        x0, y0 = float(mrows.cx.iloc[-1]), float(mrows.cy.iloc[-1])
+        lo = _frame_at_offset_min(well, last, -_COND_BEFORE_MIN)
+        hi = _frame_at_offset_min(well, last, _COND_AFTER_MIN)
+
+        # Baseline is LOCAL -- the hour of this mother's own life immediately before
+        # the window, not her whole track. It must be, because `intensity_integrated`
+        # is raw and the signal bleaches: on BeWo track 793 the whole-track median put
+        # every window frame at 0.60 of "baseline", the conservation gate rejected all
+        # 28 of them, and a case a human read as prophase scored NaN. A cell is not
+        # losing DNA because the recording started brighter than it ended. It also
+        # excludes the tail, which is the very thing being measured against it.
+        base = mrows[(mrows.frame < lo)
+                     & (mrows.frame >= _frame_at_offset_min(well, lo, -_COND_BASE_MIN))]
+        if len(base) < 3:
+            base = mrows[mrows.frame < lo].tail(10)
+        if len(base) < 3:
+            base = mrows.iloc[:-3]
+        a0 = float(base.area_um2.median())
+        i0 = float(base.rel.median())
+        s0 = float(base.intensity_integrated.median())
+        if not (a0 > 0 and i0 > 0 and s0 > 0):
+            _blank(); continue
+
+        # Disc radius: the mother's own equivalent radius plus a fixed margin, so it
+        # scales with the cell line. A BeWo nucleus is 2-3x a RUES2 one, and a fixed
+        # radius would either clip the daughters apart on one line or sweep in the
+        # neighbours on the other.
+        r_um = float(np.sqrt(a0 / np.pi)) + _COND_MARGIN_UM
+        r_px = r_um / um_px
+
+        best = (float("-inf"), -1, float("nan"), float("nan"))
+        for f in range(lo, hi + 1):
+            pf = per_frame.get(f)
+            if pf is None:
+                continue
+            cx, cy, a_um, a_px, rel, integ = pf
+            near = ((cx - x0) ** 2 + (cy - y0) ** 2) <= r_px * r_px
+            if not near.any():
+                continue
+            area_f = float(a_um[near].sum())
+            sig_f = float(integ[near].sum())
+            wpx = float(a_px[near].sum())
+            if area_f <= 0 or wpx <= 0:
+                continue
+            # Area-weighted: an unweighted mean would let a 10 px fragment count as
+            # much as the nucleus it broke off.
+            imean_f = float((rel[near] * a_px[near]).sum()) / wpx
+            dna = sig_f / s0
+            # The gate. Outside this band the disc no longer holds the same DNA, so
+            # whatever its brightness does is not condensation.
+            if not (_COND_DNA_MIN <= dna <= _COND_DNA_MAX):
+                continue
+            val = imean_f / i0
+            if val > best[0]:
+                best = (val, f, dna, area_f / a0)
+
+        if best[1] < 0:
+            _blank(); continue
+        scores.append(best[0]); peaks.append(best[1])
+        dnas.append(best[2]); areas.append(best[3])
+
+    return scores, peaks, dnas, areas
+
+
 _STRATA = [
     # (name, blurb) in PRIORITY order -- first match wins, so the counts partition the
     # pool and sum to its total. Measurement defects are tested before biological
@@ -1301,6 +1511,14 @@ def find_candidates(
       dna_anomaly    furthest from DNA conservation in EITHER direction; below 1
                      means signal went missing, above means the pair carries more
                      DNA than the mother had.
+      condensation   strongest chromatin compaction first -- smaller AND brighter
+                     while total signal is conserved, which is what mitosis looks
+                     like and what fragmentation, death and bleaching do not. The
+                     ONLY morphology-based sort here; every other one ranks on
+                     topology, which is what a human reading metaphase plates
+                     disagreed with on 7 of 11 BeWo cases. Reach for it when the
+                     question is "did this cell divide" rather than "is this row
+                     trustworthy".
       duration       longest-lived first (division pool: the mother's lifetime).
       frame          earliest first.
       random         a seeded shuffle -- THE ONLY SORT THAT MAY BE USED TO ESTIMATE
@@ -1329,7 +1547,8 @@ def find_candidates(
     Args:
         well: well name from list_wells().
         pool: "division", "track_end", or "contested".
-        sort_by: "fragment_like", "dna_anomaly", "duration", "frame", or "random".
+        sort_by: "fragment_like", "dna_anomaly", "condensation", "duration",
+            "frame", or "random".
             Use "random" with a seed for any sample you intend to draw a number
             from; the ranked sorts are for finding problems, not for measuring.
         limit: max rows. Keep small; this is for triage, not export. 0 = census only.
@@ -1392,6 +1611,9 @@ def find_candidates(
     census = []
     if pool == "division":
         rows["stratum"] = _division_strata(rows, lin, tracks, m)
+        cs, cf, cd, ca = _condensation(well, rows, lin, tracks, m["pixel_size_um"])
+        rows["cond"], rows["cond_frame"] = cs, cf
+        rows["cond_dna"], rows["cond_area"] = cd, ca
         counts = rows.stratum.value_counts()
         census = [f"{name} | {int(counts.get(name, 0))} | "
                   f"{100 * int(counts.get(name, 0)) / max(n_before, 1):.1f}% | {blurb}"
@@ -1430,6 +1652,8 @@ def find_candidates(
         rows = rows.sort_values("duration_f", ascending=False)
     elif sort_by == "frame":
         rows = rows.sort_values("first_frame")
+    elif sort_by == "condensation" and _has("cond"):
+        rows = rows.sort_values("cond", ascending=False, na_position="last")
     elif sort_by == "random":
         # Shuffle the WHOLE surviving pool and let limit take the head, so the sample
         # is drawn from every row that qualifies rather than from the top of some
@@ -1479,17 +1703,40 @@ def find_candidates(
         return "\n".join(out)
 
     if pool == "division":
-        out.append("track_id | frames | daughters | dna | size | link_px | edge_um")
+        out.append("track_id | frames | daughters | dna | size | link_px | edge_um | "
+                   "cond | cond_f | cond_dna | cond_area")
         for r in shown.itertuples():
             f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
             out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
                        f"{r.daughter_ids} | {f(r.dna_ratio)} | {f(r.size_ratio)} | "
                        f"{'-' if r.link_distance_px != r.link_distance_px else f'{r.link_distance_px:.0f}'} | "
-                       f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'}")
+                       f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'} | "
+                       f"{f(getattr(r, 'cond', None))} | "
+                       f"{'-' if int(getattr(r, 'cond_frame', -1)) < 0 else int(r.cond_frame)} | "
+                       f"{f(getattr(r, 'cond_dna', None))} | "
+                       f"{f(getattr(r, 'cond_area', None))}")
         out.append(
             "\nA LOW size ratio with a healthy dna ratio is the fragment signature -- the "
             "big object carries the DNA and the small one is a micronucleus, so the 'split' "
             "is not a division. Confirm on the pixels before believing either way."
+        )
+        out.append(
+            f"cond is the CONDENSATION peak -- brightness per pixel at its highest, "
+            f"relative to this mother's own median and to the other cells in the same "
+            f"frame (so bleaching cancels). 1.0 is her normal interphase state; mitosis "
+            f"packs the same DNA into fewer pixels, so it reads above 1. cond_f is the "
+            f"frame it peaked at, and it is usually LATER than last_frame -- the link "
+            f"ends where the tracker loses the cell, not where the cell divides. "
+            f"cond_area is the family's area there over her baseline (below 1 = compacted) "
+            f"and cond_dna is total signal over her baseline. "
+            f"Only frames holding {_COND_DNA_MIN}-{_COND_DNA_MAX}x the baseline signal "
+            f"were eligible: below that the DNA has genuinely gone and the object is a "
+            f"fragment, whatever its brightness does. '-' means no eligible frame, or too "
+            f"short a mother to have a baseline. "
+            f"This is the only MORPHOLOGY column here -- every other one describes who the "
+            f"tracker linked to whom, and on BeWo that topology scored close to "
+            f"anti-correlated with a human reading metaphase plates. Unvalidated, and it "
+            f"cannot tell condensed chromatin from the clumped chromatin of a dying cell."
         )
     else:
         # These scores describe the track's OWN BIRTH link, not an ending -- a track
