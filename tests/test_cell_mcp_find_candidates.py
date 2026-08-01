@@ -129,3 +129,43 @@ def test_census_only_shows_no_rows(well):
 def test_unknown_pool_is_rejected(well):
     with pytest.raises(ValueError, match="unknown pool"):
         cell_mcp.find_candidates(well, pool="deaths")
+
+
+# --- sort_by="random": the only sort a number may be computed from ------------
+#
+# Added after a 2026-07-31 blind-scoring session drew its BeWo sample with
+# sort_by="duration" and then computed per-stratum true-positive rates from it.
+# duration is measured in FRAMES, so it is not neutral across wells with different
+# cadence, and on a 5-case draw it plausibly oversampled long-lived non-dividers.
+
+
+def test_random_sort_is_reproducible_under_a_seed(well):
+    a = cell_mcp.find_candidates(well, pool="division", sort_by="random", seed=7)
+    b = cell_mcp.find_candidates(well, pool="division", sort_by="random", seed=7)
+    assert a == b, "a seeded draw someone cannot repeat cannot back a published number"
+
+
+def test_random_sort_states_the_seed_and_warns_when_there_is_none(well):
+    seeded = cell_mcp.find_candidates(well, pool="division", sort_by="random", seed=7)
+    assert "seed=7" in seeded and "re-callable" in seeded
+    loose = cell_mcp.find_candidates(well, pool="division", sort_by="random")
+    assert "UNSEEDED" in loose
+
+
+def test_random_sort_is_not_silently_downgraded(well):
+    """The fallback path rewrites sort_by when a pool carries no scores; random
+    carries none by definition and must survive that."""
+    out = cell_mcp.find_candidates(well, pool="division", sort_by="random", seed=1)
+    assert "sorted by random" in out
+    assert "asked for random" not in out
+
+
+def test_random_draw_covers_the_whole_pool_not_the_head_of_another_order(well):
+    """Shuffle first, limit second. Drawing from the top of a ranked list is the
+    exact bias this sort exists to remove."""
+    seen = set()
+    for s in range(40):
+        out = cell_mcp.find_candidates(well, pool="division", sort_by="random",
+                                       seed=s, limit=1)
+        seen.update(l.split(" |")[0] for l in out.splitlines() if l and l[0].isdigit())
+    assert seen == {"1", "4"}, f"only ever drew {seen}"

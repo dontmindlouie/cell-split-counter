@@ -76,6 +76,35 @@ BUNDLE = Path(os.environ.get("CELL_BUNDLE_DIR", "data/bundle")).expanduser()
 # context, and a filmstrip of 40 frames reliably exhausts it mid-task.
 MAX_IMAGES = 12
 
+# The same cap for an HTML page, where the images land on disk and in a human's
+# browser instead of in the model's context. Nothing is spent per frame there, and
+# the thing a researcher asks for over and over is EVERY frame around the event --
+# so the token budget has no business shrinking a page it never pays for.
+MAX_IMAGES_PAGE = 60
+
+# Auto-window around a membership transition, in MINUTES of real time.
+#
+# It used to be +/- a fixed number of FRAMES, and that was wrong in a way that
+# inverted a whole census. On BeWo M2 the mitotic figure appears up to ~7 frames
+# AFTER the frame where lineage.csv records the mother->daughter link (verified on
+# track 802: link ends f771, prometaphase f778, two objects by f782) -- so a window
+# that stops near the link renders the lead-up and hides the outcome, and every real
+# division scored off it reads as an artifact. Blind scoring on 2026-07-31 put 4/5
+# `vanishing_daughter` cases as real mitoses and 0/4 `clean` ones.
+#
+# Frames made it worse: +10 frames is 49 min on RUES2 (4.9 min/frame) and only 30 min
+# on BeWo (3.0 min/frame), so the line whose tracker fails hardest got the SHORTEST
+# real-time look. Minutes are the units the biology is in -- mitosis runs ~30-60 min
+# start to finish -- so the window is stated in minutes and converted per well from
+# its own timestamps. Asymmetric on purpose: the interesting half is after.
+_WINDOW_BEFORE_MIN = 30.0
+_WINDOW_AFTER_MIN = 90.0
+
+# Frames are sampled at this spacing when the caller does not pin max_images, so a
+# strip's time resolution stays the same whether the well runs at 3.0 or 4.9 min per
+# frame. Roughly anaphase-scale; below this the extra frames mostly repeat.
+_STRIDE_MIN = 6.0
+
 # Filmstrip crops are tiny in absolute pixels -- a 60 um crop is 104 px here, and a
 # nucleus inside it is about 21 px across. That 21 px is the microscope's limit, not
 # ours (the ND2 is natively 1024x1024, and nothing upstream downsamples), so upscaling
@@ -178,6 +207,75 @@ def _frame_png(well: str, frame: int) -> np.ndarray:
 def _hours(well: str, frame: int) -> float:
     ts = _manifest(well)["frame_timestamps_ms"]
     return (ts[frame] - ts[0]) / 3.6e6
+
+
+def _frame_at_offset_min(well: str, frame: int, minutes: float) -> int:
+    """The frame `minutes` of REAL TIME away from `frame` (negative = earlier).
+
+    Walks the recorded timestamps rather than dividing by a nominal interval,
+    because the interval is not constant: M12's median is 4.9 min but it ranges
+    2.9 -> 14.4, so "10 frames" is anywhere from 29 to 144 minutes depending on
+    where in the recording you stand. Converting through the median would put the
+    window in the right place on average and the wrong place exactly where the
+    acquisition hiccupped.
+
+    Rounds outward -- the returned frame is at least `minutes` away, never less --
+    so a window asked for in minutes is never quietly shorter than requested.
+    """
+    ts = _manifest(well)["frame_timestamps_ms"]
+    target = ts[max(0, min(frame, len(ts) - 1))] + minutes * 60_000.0
+    if minutes >= 0:
+        for f in range(frame, len(ts)):
+            if ts[f] >= target:
+                return f
+        return len(ts) - 1
+    for f in range(frame, -1, -1):
+        if ts[f] <= target:
+            return f
+    return 0
+
+
+def _minutes_between(well: str, a: int, b: int) -> float:
+    ts = _manifest(well)["frame_timestamps_ms"]
+    n = len(ts)
+    return abs(ts[max(0, min(b, n - 1))] - ts[max(0, min(a, n - 1))]) / 60_000.0
+
+
+def _pick_frames(well: str, avail: list[int], max_images: int | None,
+                 cap: int, stride_min: float) -> tuple[list[int], str]:
+    """Choose which frames of `avail` to render, and say how the choice was made.
+
+    Three cases, and the default one is the point:
+
+    - `max_images=None` (the default) means "sample by TIME": take frames about
+      `stride_min` apart. If the whole range fits under the cap it is rendered
+      GAP-FREE, because a researcher who names a frame range wants that range, not
+      a sample of it -- their cost is eyes on images, and the gap is where the
+      evidence hides. This is the behaviour that a fixed max_images=6 kept
+      overriding: 6 images across a 17-frame window is a 3-frame stride, and
+      anaphase is 1-2 frames long.
+    - `max_images=N` pins the count, evenly spaced, for a caller who is budgeting.
+    - Either way `cap` is the hard ceiling -- MAX_IMAGES for images that land in
+      the model's context, MAX_IMAGES_PAGE for an HTML page that costs nothing.
+    """
+    n_avail = len(avail)
+    if max_images is not None:
+        n = max(1, min(int(max_images), cap, n_avail))
+        picks = [avail[i] for i in np.linspace(0, n_avail - 1, n).astype(int)]
+        return picks, f"showing {n} of {n_avail} frames, evenly spaced (max_images={max_images})"
+
+    if n_avail <= cap:
+        return avail, f"showing all {n_avail} frames, no sampling gaps"
+
+    span_min = _minutes_between(well, avail[0], avail[-1])
+    want = int(round(span_min / stride_min)) + 1
+    n = max(2, min(want, cap, n_avail))
+    picks = [avail[i] for i in np.linspace(0, n_avail - 1, n).astype(int)]
+    got = span_min / max(n - 1, 1)
+    note = (f"showing {n} of {n_avail} frames, ~{got:.1f} min apart"
+            + (f" (asked for ~{stride_min:g} min, capped at {cap} images)"
+               if want > n else ""))
+    return picks, note
 
 
 def _edge_um(well: str, cx: float, cy: float) -> float:
@@ -678,8 +776,9 @@ def _walk_positions(
 def _filmstrip_frames(
     well: str, track_id: int,
     start_frame: int | None, end_frame: int | None,
-    max_images: int, crop_um: float,
+    max_images: int | None, crop_um: float,
     color: bool, scale_bar: bool, marker: bool,
+    stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
 ) -> tuple[str, list[np.ndarray]]:
     """Shared by get_filmstrip (MCP images) and show_cells (HTML page).
 
@@ -711,8 +810,8 @@ def _filmstrip_frames(
         )
 
     avail = list(range(lo, hi + 1))
-    n = min(max_images, MAX_IMAGES, len(avail))
-    picks = [avail[i] for i in np.linspace(0, len(avail) - 1, n).astype(int)]
+    picks, pick_note = _pick_frames(well, avail, max_images, cap, stride_min)
+    n = len(picks)
 
     # Anchor for frames outside the track's lifetime: its first or last known position.
     by_frame = {int(r.frame): r for r in t.itertuples()}
@@ -740,7 +839,8 @@ def _filmstrip_frames(
     # The ring is drawn clear of the nucleus, never over it: the chromatin's shape is
     # the evidence being judged, so an overlay across it would destroy the thing the
     # image exists to show.
-    header = (f"{well} track {track_id}: frames {lo}-{hi}, showing {n} of {len(avail)}. "
+    header = (f"{well} track {track_id}: frames {lo}-{hi} "
+              f"({_minutes_between(well, lo, hi):.0f} min), {pick_note}. "
               f"Crop {crop_um:g} um wide, re-centred on the tracked cell each frame -- "
               f"the cell of interest is the one at the CENTRE of every image; others are "
               f"neighbours. Time is elapsed hours from the start of the recording."
@@ -889,9 +989,10 @@ def _resolve_family_centres(
 def _family_filmstrip_frames(
     well: str, track_ids: list[int],
     start_frame: int | None, end_frame: int | None,
-    max_images: int, crop_um: float | None,
+    max_images: int | None, crop_um: float | None,
     color: bool, scale_bar: bool, marker: bool,
-    before: int, after: int,
+    before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
+    stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
 ) -> tuple[str, list[np.ndarray]]:
     """Crop centred on a SET of tracks, resolved per frame from whoever is present.
 
@@ -944,18 +1045,26 @@ def _family_filmstrip_frames(
 
     # Auto-window on the MEMBERSHIP TRANSITION -- the frame where a member other than
     # the earliest-starting one first appears. For a division that is the handoff
-    # frame, so before/after land either side of it. Using the members' full span
+    # frame, so the window lands either side of it. Using the members' full span
     # instead would open the mother's entire lifetime, hundreds of frames of nothing.
+    #
+    # The window is measured in MINUTES, and it reaches much further forward than
+    # back, because the transition is where the TRACKER gave up and not where the
+    # cell divided -- the mitotic figure can be ~20 min past it. See the comment on
+    # _WINDOW_AFTER_MIN: rendering to the transition is what made real divisions
+    # look like artifacts.
     starts = sorted(spans.items(), key=lambda kv: kv[1][0])
     transition = starts[1][1][0] if len(starts) > 1 else starts[0][1][0]
-    lo = max(0, (transition - before) if start_frame is None else int(start_frame))
-    hi = min(n_frames - 1, (transition + after) if end_frame is None else int(end_frame))
+    lo = (_frame_at_offset_min(well, transition, -before_min)
+          if start_frame is None else max(0, int(start_frame)))
+    hi = (_frame_at_offset_min(well, transition, after_min)
+          if end_frame is None else min(n_frames - 1, int(end_frame)))
     if hi < lo:
         raise ValueError(f"empty range: resolves to {lo}-{hi}; {well} has 0-{n_frames - 1}.")
 
     avail = list(range(lo, hi + 1))
-    n = min(max_images, MAX_IMAGES, len(avail))
-    picks = [avail[i] for i in np.linspace(0, len(avail) - 1, n).astype(int)]
+    picks, pick_note = _pick_frames(well, avail, max_images, cap, stride_min)
+    n = len(picks)
 
     win = sub[(sub.frame >= lo) & (sub.frame <= hi)]
     kept = ids
@@ -995,7 +1104,8 @@ def _family_filmstrip_frames(
 
     who = ", ".join(str(t) for t in kept)
     header = (
-        f"{well} tracks [{who}]: frames {lo}-{hi}, showing {n} of {len(avail)}. "
+        f"{well} tracks [{who}]: frames {lo}-{hi} "
+        f"({_minutes_between(well, lo, hi):.0f} min), {pick_note}. "
         f"Crop {crop_um:g} um wide{' (auto-fitted to hold every member)' if auto else ''}, "
         f"one size for the whole strip so nothing rescales between frames. Each frame is "
         f"centred on the MEAN position of the members present in it -- so the crop "
@@ -1007,8 +1117,15 @@ def _family_filmstrip_frames(
         + _display_note(well)
     )
     if start_frame is None and end_frame is None:
-        header += (f" Window was chosen automatically around the membership transition "
-                   f"at f{transition} ({before} before, {after} after).")
+        header += (
+            f" Window was chosen automatically around the membership transition at "
+            f"f{transition} ({before_min:g} min before, {after_min:g} min after -- "
+            f"minutes, not frames, so it means the same thing on a well shot every "
+            f"3.0 min as on one shot every 4.9). It reaches much further FORWARD on "
+            f"purpose: f{transition} is where the tracker's link ends, which is not "
+            f"where the cell divides. On BeWo the mitotic figure has been seen ~20 min "
+            f"later, so judging a division on the frames up to the transition "
+            f"systematically calls real mitoses artifacts.")
     header += " Member spans: " + "; ".join(
         f"{t}:f{spans[t][0]}-{spans[t][1]}" for t in kept if t in spans) + "."
     if gapped:
@@ -1154,6 +1271,7 @@ def find_candidates(
     limit: int = 20,
     exclude_near_edge: bool = True,
     stratum: str | None = None,
+    seed: int | None = None,
 ) -> str:
     """Scan a WHOLE WELL and rank what is worth looking at. Free -- no images.
 
@@ -1185,6 +1303,16 @@ def find_candidates(
                      DNA than the mother had.
       duration       longest-lived first (division pool: the mother's lifetime).
       frame          earliest first.
+      random         a seeded shuffle -- THE ONLY SORT THAT MAY BE USED TO ESTIMATE
+                     ANYTHING. Every other sort answers "show me the worst", which
+                     is triage; a rate, a share, or a per-stratum true-positive rate
+                     needs a sample that represents its stratum. `duration` in
+                     particular is not neutral: it is measured in FRAMES, so it
+                     favours faster-sampled wells, and on a BeWo draw of 5
+                     `vanishing_daughter` cases it plausibly oversampled long-lived
+                     cells that never divided. Pass `seed` to make the draw
+                     reproducible and quotable; without one it is still random but
+                     nobody can redraw it.
 
     The division pool also comes with a CENSUS: every recorded division is labelled
     with the first artifact class it trips, and the counts partition the pool. That
@@ -1201,13 +1329,18 @@ def find_candidates(
     Args:
         well: well name from list_wells().
         pool: "division", "track_end", or "contested".
-        sort_by: "fragment_like", "dna_anomaly", "duration", or "frame".
+        sort_by: "fragment_like", "dna_anomaly", "duration", "frame", or "random".
+            Use "random" with a seed for any sample you intend to draw a number
+            from; the ranked sorts are for finding problems, not for measuring.
         limit: max rows. Keep small; this is for triage, not export. 0 = census only.
         exclude_near_edge: drop cells within 15 um of the frame boundary, whose
             area and brightness are understated because the nucleus is clipped. They
             are still COUNTED in the census, and asking for stratum="edge_clipped"
             turns this off automatically.
         stratum: restrict rows to one census class (division pool only).
+        seed: fixes the shuffle for sort_by="random", so the same call returns the
+            same sample and a result can be checked by someone else. Recorded in
+            the header for exactly that reason.
     """
     import pandas as pd
 
@@ -1297,6 +1430,12 @@ def find_candidates(
         rows = rows.sort_values("duration_f", ascending=False)
     elif sort_by == "frame":
         rows = rows.sort_values("first_frame")
+    elif sort_by == "random":
+        # Shuffle the WHOLE surviving pool and let limit take the head, so the sample
+        # is drawn from every row that qualifies rather than from the top of some
+        # other ordering. Sorting by first_frame first makes the draw independent of
+        # the row order lineage.csv happened to be written in.
+        rows = rows.sort_values("first_frame").sample(frac=1.0, random_state=seed)
     else:
         applied = "duration" if pool == "track_end" else "frame"
         rows = (rows.sort_values("duration_f", ascending=False) if applied == "duration"
@@ -1306,9 +1445,13 @@ def find_candidates(
     note = "" if applied == sort_by else (
         f" (asked for {sort_by}, but this pool carries no link scores -- "
         f"sorted by {applied} instead)")
+    draw = (f" Random draw of {len(shown)} from the {len(rows)} rows in this pool"
+            + (f", seed={seed} (re-callable)." if seed is not None else
+               ", UNSEEDED -- pass seed= if this sample will back a number.")
+            ) if applied == "random" and limit > 0 else ""
     out = [f"{well}: {pool} pool, {n_before} total"
            + (f", stratum={stratum}" if stratum else "")
-           + (f", showing {len(shown)} sorted by {applied}.{note}" if limit > 0
+           + (f", showing {len(shown)} sorted by {applied}.{note}{draw}" if limit > 0
               else ", census only (limit=0).")]
     if n_edge_dropped and not census:
         out.append(f"({n_edge_dropped} near-edge rows not shown; "
@@ -1555,7 +1698,8 @@ def get_filmstrip_at(
 def get_filmstrip(
     well: str, track_id: int,
     start_frame: int | None = None, end_frame: int | None = None,
-    max_images: int = 8, crop_um: float = 60.0,
+    max_images: int | None = None, stride_min: float = _STRIDE_MIN,
+    crop_um: float = 60.0,
     color: bool = True, scale_bar: bool = True, marker: bool = False,
 ) -> list:
     """Follow one cell over time as a series of close-up images.
@@ -1585,7 +1729,13 @@ def get_filmstrip(
         track_id: the cell to follow, from list_tracks().
         start_frame: defaults to when the cell first appears. May precede it.
         end_frame: defaults to when it was last seen. May follow it.
-        max_images: how many frames to show (hard capped at 12).
+        max_images: pin the frame count. None (recommended) samples by TIME: a
+            range that fits under the cap of 12 comes back GAP-FREE, and a longer
+            one is thinned to ~stride_min spacing rather than to a frame count. A
+            fixed count means different time resolution on different wells, and it
+            was silently skipping frames inside ranges that were asked for
+            explicitly -- which is exactly where the evidence is.
+        stride_min: target spacing between rendered frames, in minutes.
         crop_um: width of the crop in micrometres. 60 shows a cell and its
             immediate neighbours; lower it to zoom in.
         color: apply the microscope's own display colour.
@@ -1597,7 +1747,8 @@ def get_filmstrip(
             the ring marks the held position rather than a detected cell.
     """
     header, images = _filmstrip_frames(
-        well, track_id, start_frame, end_frame, max_images, crop_um, color, scale_bar, marker
+        well, track_id, start_frame, end_frame, max_images, crop_um,
+        color, scale_bar, marker, stride_min, MAX_IMAGES,
     )
     from mcp.types import TextContent
     out: list = [TextContent(type="text", text=header)]
@@ -1625,8 +1776,9 @@ def get_filmstrip_family(
     well: str,
     track_ids: list[int],
     start_frame: int | None = None, end_frame: int | None = None,
-    before: int = 6, after: int = 10,
-    max_images: int = 10, crop_um: float | None = None,
+    before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
+    max_images: int | None = None, stride_min: float = _STRIDE_MIN,
+    crop_um: float | None = None,
     color: bool = True, scale_bar: bool = True, marker: bool = False,
 ) -> list:
     """Before, during and after a division -- one strip that follows mother THEN
@@ -1645,9 +1797,19 @@ def get_filmstrip_family(
     not a division -- a cell fragmenting during necrosis is a member set too, and the
     strip will stay on the debris field rather than chase one shard.
 
-    By default the WINDOW is chosen for you, around the frame where membership
-    changes: `before` frames ahead of it and `after` frames past it. That is the
-    handoff for a division. Give start_frame/end_frame to override.
+    By default the WINDOW is chosen for you around the frame where membership
+    changes, and it is measured in MINUTES: 30 min before, 90 min after. It is
+    lopsided on purpose. The transition is the frame where the TRACKER stopped
+    linking, and on BeWo the mitotic figure appears up to ~20 min LATER -- so a
+    window that stops near the transition shows the lead-up and hides the outcome,
+    and every real division scored off it reads as an artifact. Widen `after_min`
+    before concluding a candidate is not a division. Give start_frame/end_frame to
+    override with exact frames.
+
+    Frames are sampled by TIME (~`stride_min` apart), not by a fixed count, so a
+    strip means the same thing on a well shot every 3.0 min as on one shot every
+    4.9. If the whole window fits under the image cap you get EVERY frame -- no
+    gaps. Set max_images only to budget context deliberately.
 
     By default the CROP is auto-fitted once for the whole strip, wide enough to hold
     every member across the sampled frames. Do not set crop_um by hand unless you
@@ -1661,10 +1823,13 @@ def get_filmstrip_family(
     Args:
         well: well name from list_wells().
         track_ids: the members. One id = that track plus its recorded daughters.
-        start_frame, end_frame: inclusive override of the automatic window.
-        before, after: frames either side of the membership transition, when the
-            window is automatic.
-        max_images: how many frames to show (hard capped at 12).
+        start_frame, end_frame: inclusive override of the automatic window. Given
+            both, the range is rendered gap-free up to the image cap.
+        before_min, after_min: MINUTES either side of the membership transition,
+            when the window is automatic. Converted to frames from this well's own
+            timestamps, which are not evenly spaced.
+        max_images: pin the frame count. None (recommended) samples by time.
+        stride_min: target spacing between rendered frames, in minutes.
         crop_um: width in micrometres. None (recommended) = auto-fit.
         color: apply the microscope's own display colour.
         scale_bar: burn in a labelled scale bar.
@@ -1674,7 +1839,8 @@ def get_filmstrip_family(
         raise ValueError("track_ids is empty; give at least one track.")
     header, images = _family_filmstrip_frames(
         well, _resolve_family(well, track_ids), start_frame, end_frame,
-        max_images, crop_um, color, scale_bar, marker, before, after,
+        max_images, crop_um, color, scale_bar, marker,
+        before_min, after_min, stride_min, MAX_IMAGES,
     )
     from mcp.types import TextContent
     out: list = [TextContent(type="text", text=header)]
@@ -2036,13 +2202,20 @@ def show_cells(well: str, events: list[dict]) -> str:
                 this for divisions, so the strip follows the mother and then the
                 daughters' midpoint in one row instead of losing them at the handoff.
                 A single id here expands to that track plus its recorded daughters,
-                the window defaults to the membership transition (`before`/`after`
-                keys), and crop_um defaults to auto-fit rather than 60.
+                the window defaults to 30 min before / 90 min after the membership
+                transition (`before_min`/`after_min` keys), and crop_um defaults to
+                auto-fit rather than 60.
             start_frame, end_frame (optional): as in get_filmstrip -- may fall outside
                 the track's own lifetime, e.g. to show a division just past its end.
             label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
                 309/319/321". Defaults to "track <track_id>".
-            max_images (optional, default 6): frames to render for this event.
+            max_images (optional): pin the frame count. Leave it OFF by default. A
+                page costs no context -- the images go to disk and to a human's
+                browser -- so frames here are sampled by time and a window under 60
+                frames renders GAP-FREE. Capping it is how a researcher ends up
+                looking at every third frame of the event they asked to see.
+            before_min, after_min, stride_min (optional): window and sampling in
+                MINUTES, as in get_filmstrip_family.
             crop_um (optional, default 60.0): crop width in micrometres.
             marker (optional, default False): ring the tracked cell -- with
                 track_ids, rings every member present or none.
@@ -2062,22 +2235,28 @@ def show_cells(well: str, events: list[dict]) -> str:
         if "track_ids" in ev:
             members = _resolve_family(well, [int(t) for t in ev["track_ids"]])
             crop = ev.get("crop_um")
+            mx = ev.get("max_images")
             header, images = _family_filmstrip_frames(
                 well, members,
                 ev.get("start_frame"), ev.get("end_frame"),
-                int(ev.get("max_images", 8)),
+                None if mx is None else int(mx),
                 None if crop is None else float(crop),
                 True, True, bool(ev.get("marker", False)),
-                int(ev.get("before", 6)), int(ev.get("after", 10)),
+                float(ev.get("before_min", _WINDOW_BEFORE_MIN)),
+                float(ev.get("after_min", _WINDOW_AFTER_MIN)),
+                float(ev.get("stride_min", _STRIDE_MIN)),
+                MAX_IMAGES_PAGE,
             )
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:
             track_id = int(ev["track_id"])
+            mx = ev.get("max_images")
             header, images = _filmstrip_frames(
                 well, track_id,
                 ev.get("start_frame"), ev.get("end_frame"),
-                int(ev.get("max_images", 6)), float(ev.get("crop_um", 60.0)),
+                None if mx is None else int(mx), float(ev.get("crop_um", 60.0)),
                 True, True, bool(ev.get("marker", False)),
+                float(ev.get("stride_min", _STRIDE_MIN)), MAX_IMAGES_PAGE,
             )
             label = ev.get("label") or f"track {track_id}"
         b64_list = []

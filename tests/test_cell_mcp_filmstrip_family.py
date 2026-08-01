@@ -43,6 +43,8 @@ def fake(monkeypatch):
     monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
     monkeypatch.setattr(cell_mcp, "_manifest", lambda well: {
         "pixel_size_um": 0.5, "n_frames": 40, "width_px": 512, "height_px": 512,
+        # 5 min per frame, so a window asked for in minutes has an exact frame answer.
+        "frame_timestamps_ms": [f * 300_000 for f in range(40)],
     })
     monkeypatch.setattr(cell_mcp, "_frame_png",
                         lambda well, f: np.full((512, 512), 40, dtype=np.uint8))
@@ -51,12 +53,16 @@ def fake(monkeypatch):
 
 
 def _strip(fake, ids, **kw):
+    # 20 min either side = 4 frames on this fake's 5 min cadence, which is what these
+    # tests asserted back when the window was counted in frames.
     kw = {"start_frame": None, "end_frame": None, "max_images": 12, "crop_um": None,
           "color": False, "scale_bar": False, "marker": False,
-          "before": 4, "after": 4, **kw}
+          "before_min": 20.0, "after_min": 20.0, "stride_min": cell_mcp._STRIDE_MIN,
+          "cap": cell_mcp.MAX_IMAGES, **kw}
     return cell_mcp._family_filmstrip_frames(
         fake, ids, kw["start_frame"], kw["end_frame"], kw["max_images"], kw["crop_um"],
-        kw["color"], kw["scale_bar"], kw["marker"], kw["before"], kw["after"])
+        kw["color"], kw["scale_bar"], kw["marker"],
+        kw["before_min"], kw["after_min"], kw["stride_min"], kw["cap"])
 
 
 def test_window_is_chosen_around_the_membership_transition(fake):
@@ -248,3 +254,83 @@ def test_the_note_says_whether_this_bundle_can_undo_the_stretch(fake, monkeypatc
     note = cell_mcp._display_note(fake)
     assert "reversible" in note and "lo + png/255" in note
     assert "NOT comparable" in note, "still a caveat, just a recoverable one"
+
+
+# --- the window is minutes, and it reaches forward ----------------------------
+#
+# All of the below exist because of one 2026-07-31 finding: on BeWo M2 the mitotic
+# figure appears up to ~7 frames (~20 min) AFTER the frame where lineage.csv records
+# the mother->daughter link (track 802: link ends f771, prometaphase f778, two
+# objects by f782). The old window was +/- a fixed number of FRAMES centred near the
+# link, so it rendered the lead-up and cut off before the outcome -- and a human
+# scoring off it called real mitoses artifacts, inverting the census strata.
+
+
+def test_window_is_measured_in_minutes_not_frames(fake):
+    """20 min on this fake's 5 min cadence is 4 frames. The same 20 min on a well
+    shot every 3 min must be ~7 frames -- that is the whole point, and it is why a
+    frame count gave BeWo the shortest look at the line that needed the longest."""
+    header, _ = _strip(fake, [1, 2, 3], before_min=20.0, after_min=20.0)
+    assert "frames 6-14" in header
+    header2, _ = _strip(fake, [1, 2, 3], before_min=10.0, after_min=40.0)
+    assert "frames 8-18" in header2
+
+
+def test_window_reaches_much_further_forward_by_default(fake):
+    """The transition is where the TRACKER stopped linking, not where the cell
+    divided. Symmetric defaults are what hid the outcome."""
+    assert cell_mcp._WINDOW_AFTER_MIN > cell_mcp._WINDOW_BEFORE_MIN * 2
+    header, _ = _strip(fake, [1, 2, 3],
+                       before_min=cell_mcp._WINDOW_BEFORE_MIN,
+                       after_min=cell_mcp._WINDOW_AFTER_MIN)
+    lo, hi = (int(x) for x in header.split("frames ")[1].split(" (")[0].split("-"))
+    assert hi - 10 > 10 - lo, "must look further past the transition than before it"
+
+
+def test_a_minute_window_is_never_quietly_shorter_than_asked(fake):
+    """Rounding inward would make a 90 min window mean 85 on some wells, silently."""
+    header, _ = _strip(fake, [1, 2, 3], before_min=12.0, after_min=12.0)
+    lo, hi = (int(x) for x in header.split("frames ")[1].split(" (")[0].split("-"))
+    assert cell_mcp._minutes_between(fake, lo, 10) >= 12.0
+    assert cell_mcp._minutes_between(fake, 10, hi) >= 12.0
+
+
+def test_the_header_states_the_window_in_minutes(fake):
+    header, _ = _strip(fake, [1, 2, 3])
+    assert "min)" in header.split("frames ")[1][:40], "frame numbers alone hide cadence"
+
+
+# --- sampling: gap-free when it fits, time-spaced when it does not ------------
+
+
+def test_an_explicit_short_range_is_rendered_gap_free(fake):
+    """A researcher who names a frame range wants that range. Their cost is eyes on
+    images, and the skipped frame is where anaphase was -- it is 1-2 frames long."""
+    header, images = _strip(fake, [1, 2, 3], start_frame=8, end_frame=15,
+                            max_images=None)
+    assert "no sampling gaps" in header
+    assert len(images) == 8
+
+
+def test_a_pinned_max_images_is_still_honoured(fake):
+    header, images = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39,
+                            max_images=5)
+    assert len(images) == 5
+    assert "max_images=5" in header
+
+
+def test_a_long_window_is_thinned_by_time_and_says_the_spacing(fake):
+    """Not by a frame count: a fixed count means different time resolution per well."""
+    header, images = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39,
+                            max_images=None, stride_min=10.0)
+    assert len(images) <= cell_mcp.MAX_IMAGES
+    assert "min apart" in header
+
+
+def test_a_page_may_show_more_frames_than_the_context_cap(fake):
+    """Images on an HTML page cost no context -- they go to disk and to a human's
+    browser -- so the model's token budget has no business shrinking them."""
+    assert cell_mcp.MAX_IMAGES_PAGE > cell_mcp.MAX_IMAGES
+    _, images = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39,
+                       max_images=None, cap=cell_mcp.MAX_IMAGES_PAGE)
+    assert len(images) == 40, "the whole range fits under the page cap"
