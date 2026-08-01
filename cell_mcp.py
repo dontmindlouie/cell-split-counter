@@ -152,6 +152,22 @@ def _colorize(grey: np.ndarray, well: str, color: bool) -> np.ndarray:
                       (grey * r).astype(np.uint8)])
 
 
+# Every displayed frame was contrast-stretched to its OWN 0.5/99.5 percentiles when the
+# ND2 was exported to 8-bit (src/ingest.py::_rescale_to_uint8), field-wide and before any
+# cropping. So the images carry morphology faithfully and brightness only relatively:
+# two frames rendered side by side have had different windows applied, and a real
+# field-wide trend -- photobleaching over 40-70 h is the obvious one -- is flattened
+# frame by frame into looking constant. The numbers do not have this problem;
+# build_bundle measures intensity against the raw 16-bit ND2 for exactly this reason.
+# Nothing in the image can reveal this, so every tool that returns one says it.
+_DISPLAY_NOTE = (
+    " Brightness across frames is NOT comparable: each frame was separately stretched "
+    "to its own 0.5/99.5 percentiles on export, which flattens real trends like "
+    "photobleaching. Judge shape, position and texture from these images; take any "
+    "brightness claim from measure() or get_track_profile, which read the raw ND2."
+)
+
+
 def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0) -> np.ndarray:
     """Burn a labelled scale bar into the bottom-right corner.
 
@@ -641,7 +657,8 @@ def _filmstrip_frames(
     header = (f"{well} track {track_id}: frames {lo}-{hi}, showing {n} of {len(avail)}. "
               f"Crop {crop_um:g} um wide, re-centred on the tracked cell each frame -- "
               f"the cell of interest is the one at the CENTRE of every image; others are "
-              f"neighbours. Time is elapsed hours from the start of the recording.")
+              f"neighbours. Time is elapsed hours from the start of the recording."
+              + _DISPLAY_NOTE)
     if n_off:
         header += (
             f" NOTE: {n_off} of these {n} frames fall outside the track's own lifetime "
@@ -901,6 +918,7 @@ def _family_filmstrip_frames(
         f"The centre moves with membership, so the field CAN pan between frames without "
         f"anything in the image having moved -- read the per-frame label before reading "
         f"the scene as a change."
+        + _DISPLAY_NOTE
     )
     if start_frame is None and end_frame is None:
         header += (f" Window was chosen automatically around the membership transition "
@@ -1430,6 +1448,7 @@ def get_filmstrip_at(
         "\nA nearest cell many microns away means the thing at this position is NOT "
         "tracked -- which is the usual reason to be here. Distances are centre-to-centre, "
         "so a large nucleus can read several microns away while still overlapping the point."
+        + _DISPLAY_NOTE
     )
     out: list = [TextContent(type="text", text="\n".join(lines))]
     out.extend(_encode(i) for i in images)

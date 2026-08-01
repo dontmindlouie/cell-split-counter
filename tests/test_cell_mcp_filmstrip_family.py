@@ -220,3 +220,17 @@ def test_a_frame_with_nothing_present_is_held_not_gap_filled(fake):
     assert set(range(20, 26)) <= held
     assert all(f not in gapped for f in range(20, 26))
     assert centres[25][:2] == centres[19][:2]
+
+
+def test_every_image_tool_discloses_that_brightness_is_not_comparable(fake):
+    """src/ingest.py stretches each frame to its OWN 0.5/99.5 percentiles, so a real
+    field-wide trend -- photobleaching over 40-70 h -- is flattened into looking
+    constant. Nothing in an image can reveal that, and the numbers do not share the
+    problem (build_bundle measures against the raw ND2), so the split has to be stated
+    or a reader will compare brightness across frames and be wrong."""
+    header, _ = _strip(fake, [1, 2, 3])
+    assert "0.5/99.5" in header and "NOT comparable" in header
+    assert "get_track_profile" in header, "must point at where brightness IS reliable"
+
+    solo, _ = cell_mcp._filmstrip_frames(fake, 1, 0, 9, 4, 40.0, False, False, False)
+    assert "0.5/99.5" in solo
