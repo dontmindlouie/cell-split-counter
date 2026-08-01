@@ -92,7 +92,7 @@ def test_crop_is_auto_fitted_and_identical_for_every_frame(fake):
     """One size for the whole strip. Sizing per frame would rescale each image and the
     nuclei would appear to breathe, which reads as biology and is not."""
     header, images = _strip(fake, [1, 2, 3])
-    assert "auto-fitted" in header
+    assert "auto-fit" in header
     assert len({img.shape for img in images}) == 1
 
 
@@ -108,7 +108,7 @@ def test_a_frame_with_no_member_is_held_and_labelled_never_interpolated(fake):
     """An invented position rendered identically to a measured one is the failure this
     whole tool set exists to avoid."""
     header, _ = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39, max_images=12)
-    assert "HELD" in header and "never interpolated" in header
+    assert "HELD" in header and "Neither is interpolated" in header
 
 
 def test_members_are_capped_and_chosen_once_by_size(fake, monkeypatch):
@@ -205,9 +205,9 @@ def test_the_dropout_frame_names_the_missing_member(dropout):
 
 def test_the_header_explains_that_a_gap_member_is_unringed(dropout):
     header, _ = _strip(dropout, [1, 2, 3], start_frame=10, end_frame=19, max_images=10)
-    assert "segmentation dropout, not a departure" in header
+    assert "segmentation dropout" in header
     assert "NOT" in header and "ringed" in header
-    assert "2" in header.split("a member (")[1].split(")")[0]
+    assert "2" in header.split("labelled 'gap' (member ")[1].split(")")[0]
 
 
 def test_a_member_is_never_held_outside_its_own_span(fake):

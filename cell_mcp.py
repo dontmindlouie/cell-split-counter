@@ -115,6 +115,12 @@ _STRIDE_MIN = 6.0
 # Cost is negligible: an image this size is ~130 tokens.
 _UPSCALE_TO = 312
 
+# Splits a filmstrip header into "what is true of this strip" and "how this tool
+# renders". show_cells prints the second half once per PAGE instead of once per
+# case: a reviewer reading 14 identical paragraphs reads none of them, and the
+# caveats live in that half.
+_HDR_SEP = "\n\n"
+
 
 # --------------------------------------------------------------------------- io
 
@@ -1103,55 +1109,60 @@ def _family_filmstrip_frames(
     half = max(8, int(round(crop_um / um_px / 2)))
 
     who = ", ".join(str(t) for t in kept)
-    header = (
+
+    # The header is built in two halves, separated by _HDR_SEP: what is true of THIS
+    # strip, then the standing explanation of how the tool renders. A page of 14 cases
+    # repeated the standing half 14 times, and the reviewer stopped reading it after
+    # the first -- which means the warnings inside it stopped working. show_cells
+    # hoists the second half to the top of the page and prints it once.
+    spec = [
         f"{well} tracks [{who}]: frames {lo}-{hi} "
         f"({_minutes_between(well, lo, hi):.0f} min), {pick_note}. "
-        f"Crop {crop_um:g} um wide{' (auto-fitted to hold every member)' if auto else ''}, "
-        f"one size for the whole strip so nothing rescales between frames. Each frame is "
-        f"centred on the MEAN position of the members present in it -- so the crop "
-        f"follows whoever exists: the mother alone before the handoff, the daughters' "
-        f"midpoint after. Time is elapsed hours from the start of the recording. "
-        f"The centre moves with membership, so the field CAN pan between frames without "
-        f"anything in the image having moved -- read the per-frame label before reading "
-        f"the scene as a change."
-        + _display_note(well)
-    )
+        f"Crop {crop_um:g} um wide{' (auto-fit)' if auto else ''}. "
+        "Member spans: " + "; ".join(
+            f"{t}:f{spans[t][0]}-{spans[t][1]}" for t in kept if t in spans) + "."
+    ]
     if start_frame is None and end_frame is None:
-        header += (
-            f" Window was chosen automatically around the membership transition at "
-            f"f{transition} ({before_min:g} min before, {after_min:g} min after -- "
-            f"minutes, not frames, so it means the same thing on a well shot every "
-            f"3.0 min as on one shot every 4.9). It reaches much further FORWARD on "
-            f"purpose: f{transition} is where the tracker's link ends, which is not "
-            f"where the cell divides. On BeWo the mitotic figure has been seen ~20 min "
-            f"later, so judging a division on the frames up to the transition "
-            f"systematically calls real mitoses artifacts.")
-    header += " Member spans: " + "; ".join(
-        f"{t}:f{spans[t][0]}-{spans[t][1]}" for t in kept if t in spans) + "."
+        spec.append(f"Window auto-chosen around the membership transition at "
+                    f"f{transition}: {before_min:g} min before, {after_min:g} min after.")
     if gapped:
         ids_g = sorted({t for v in gapped.values() for t in v})
-        header += (
-            f" {len(gapped)} frame(s) are labelled 'gap': a member "
-            f"({', '.join(str(t) for t in ids_g)}) was not segmented there but is "
-            f"present on BOTH sides, so it is a segmentation dropout, not a departure. "
-            f"It keeps contributing its last measured position to the centre, which is "
-            f"what stops the crop from swinging onto whoever is left -- the field would "
-            f"otherwise jump and look like the cell had moved. A gap member is NOT "
-            f"ringed, since nothing was segmented for it; its pixels are usually still "
-            f"visible in the image.")
+        spec.append(f"{len(gapped)} frame(s) labelled 'gap' (member "
+                    f"{', '.join(str(t) for t in ids_g)} not segmented there).")
     if held:
-        header += (f" {len(held)} frame(s) have NO member present; those hold the last "
-                   f"resolved centre and are labelled HELD. The position there is not "
-                   f"measured -- it is the previous frame's, reused, never interpolated.")
+        spec.append(f"{len(held)} frame(s) labelled HELD -- no member present.")
     if dropped:
-        header += (f" {len(dropped)} further member(s) were dropped to keep the centre "
-                   f"stable ({', '.join(str(t) for t in dropped)}); the {len(kept)} kept "
-                   f"are the largest by median area over this window.")
+        spec.append(f"{len(dropped)} further member(s) were dropped to keep the centre "
+                    f"stable ({', '.join(str(t) for t in dropped)}); the {len(kept)} "
+                    f"kept are the largest by median area over this window.")
     if missing:
-        header += f" NOT FOUND in {well} and ignored: {', '.join(str(t) for t in missing)}."
+        spec.append(f"NOT FOUND in {well} and ignored: "
+                    f"{', '.join(str(t) for t in missing)}.")
+
+    gen = [
+        "Each frame is centred on the MEAN position of the members present in it, so "
+        "the crop follows whoever exists: the mother alone before the handoff, the "
+        "daughters' midpoint after. The centre moves with membership, so the field CAN "
+        "pan between frames without anything in the image having moved -- read the "
+        "per-frame label before reading the scene as a change. One crop size for the "
+        "whole strip, so nothing rescales between frames. Time is elapsed hours from "
+        "the start of the recording.",
+        "The auto window reaches much further FORWARD than back on purpose: the "
+        "membership transition is where the tracker's link ENDS, which is not where "
+        "the cell divides -- on BeWo the mitotic figure has been seen ~20 min later. "
+        "Judging a division on the frames up to the transition systematically calls "
+        "real mitoses artifacts.",
+        "A 'gap' frame is a segmentation dropout: the member is missing there but "
+        "present on both sides, so it keeps contributing its last measured position "
+        "and is NOT ringed -- its pixels are usually still visible. A HELD frame has "
+        "no member at all and reuses the previous centre. Neither is interpolated.",
+        _display_note(well).strip(),
+    ]
     if not marker:
-        header += (" Nothing is ringed: with several members in frame, one ring would be "
-                   "ambiguous about what it is claiming. Pass marker=true to ring them all.")
+        gen.append("Nothing is ringed: with several members in frame, one ring would "
+                   "be ambiguous about what it is claiming. Pass marker=true to ring "
+                   "them all.")
+    header = " ".join(spec) + _HDR_SEP + " ".join(g for g in gen if g)
 
     images: list[np.ndarray] = []
     for f in picks:
@@ -2422,7 +2433,7 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
 
 
 @server.tool()
-def show_cells(well: str, events: list[dict]) -> str:
+def show_cells(well: str, events: list[dict], note: str = "") -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
 
     CALL THIS WHENEVER THE USER SAYS "show me", "let me see", "send me", "put
@@ -2443,6 +2454,12 @@ def show_cells(well: str, events: list[dict]) -> str:
 
     Args:
         well: well name from list_wells().
+        note: one or two sentences at the top of the page saying WHAT THE READER IS
+            being asked to do -- "score each case Y/N/unsure for a real division",
+            "pick which of these is the metaphase frame". Write it whenever the page
+            is a task rather than a report. A reviewer opening 14 filmstrips a day
+            later has the labels but not the question, and asking again costs them
+            more than writing it costs you.
         events: one dict per cell to show, each with EITHER
             track_id: one cell, rendered as get_filmstrip does it, OR
             track_ids: a member set, rendered as get_filmstrip_family does it -- use
@@ -2475,6 +2492,7 @@ def show_cells(well: str, events: list[dict]) -> str:
         raise ValueError("events is empty -- nothing to render.")
 
     sections = []
+    shared: list[str] = []
     lb_data = []
     for i, ev in enumerate(events):
         if "track_id" not in ev and "track_ids" not in ev:
@@ -2517,14 +2535,26 @@ def show_cells(well: str, events: list[dict]) -> str:
             f'onclick="openLightbox({i},{j})">'
             for j, b64 in enumerate(b64_list)
         ]
+        # Split the per-case facts from the standing how-this-renders text and collect
+        # the latter for ONE printing at the top. Repeating it under every case is what
+        # made a reviewer stop reading it, and the caveats live in that half.
+        spec, _, gen = header.partition(_HDR_SEP)
+        if gen and gen not in shared:
+            shared.append(gen)
         sections.append(
             f"<section><h2>{i + 1}. {label}</h2>"
-            f"<p class=hdr>{header}</p>"
+            f"<p class=hdr>{spec}</p>"
             f"<div class=filmstrip>{''.join(tiles)}</div></section>"
         )
         lb_data.append({"label": label, "images": b64_list})
 
     lb_json = json.dumps(lb_data)
+    # Collapsed by default: it is reference, not the task. Open once, then get out of
+    # the way of the 14 cases the page actually exists for.
+    note_html = f"<p class=task>{note}</p>" if note else ""
+    shared_html = "".join(
+        f"<details class=howto><summary>How to read these strips</summary>"
+        f"<p>{g}</p></details>" for g in shared)
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>{well} browser</title>
@@ -2534,6 +2564,9 @@ h1 {{ font-weight: 400; }}
 section {{ margin-bottom: 2.5rem; border-top: 1px solid #333; padding-top: 1rem; }}
 h2 {{ font-size: 1.1rem; font-weight: 600; }}
 p.hdr {{ color: #999; font-size: 0.85rem; max-width: 60rem; }}
+p.task {{ color: #eee; font-size: 1rem; max-width: 60rem; background: #1d2a35; border-left: 3px solid #7aa7d0; padding: 0.7rem 1rem; }}
+details.howto {{ color: #888; font-size: 0.82rem; max-width: 60rem; margin-bottom: 1rem; }}
+details.howto summary {{ cursor: pointer; color: #7aa7d0; }}
 div.filmstrip {{ display: flex; flex-wrap: wrap; gap: 4px; }}
 div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
 .lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 20; }}
@@ -2548,6 +2581,8 @@ div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px 
 .lightbox-nav.next {{ right: 16px; }}
 </style></head><body>
 <h1>{well}</h1>
+{note_html}
+{shared_html}
 {''.join(sections)}
 <div class="lightbox" id="lightbox">
   <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
