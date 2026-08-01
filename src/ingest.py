@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 _DISPLAY_COLOR_FILENAME = "_display_color.json"
+_DISPLAY_WINDOW_FILENAME = "_display_windows.json"
 
 
 @dataclass
@@ -120,17 +121,25 @@ def _extract_frames_cv2(config: IngestConfig, out_dir: Path) -> list[Path]:
     return paths
 
 
-def _rescale_to_uint8(frame: np.ndarray) -> np.ndarray:
-    """Percentile-rescale a uint16 frame to uint8.
+def _rescale_to_uint8(frame: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
+    """Percentile-rescale a uint16 frame to uint8, returning the window used.
 
     Clips to the 0.5-99.5 percentile range rather than true min/max so a few hot
     pixels don't crush the rest of the frame's contrast to near-black.
+
+    The window is computed per frame, which is what Cellpose wants -- it sees a
+    consistently-contrasted image even as the field bleaches over 40-70 h. The cost is
+    that the 8-bit result is no longer comparable frame to frame: a field-wide decay
+    rescales itself back to full range and renders as no decay at all. So the window is
+    returned and recorded, which makes the stretch REVERSIBLE
+    (raw ~= lo + png/255 * (hi - lo)) without re-exporting anything or changing a single
+    pixel Cellpose reads.
     """
-    lo, hi = np.percentile(frame, [0.5, 99.5])
+    lo, hi = (float(v) for v in np.percentile(frame, [0.5, 99.5]))
     if hi <= lo:
-        return np.zeros_like(frame, dtype=np.uint8)
+        return np.zeros_like(frame, dtype=np.uint8), (lo, hi)
     scaled = np.clip((frame.astype(np.float32) - lo) / (hi - lo), 0, 1) * 255
-    return scaled.astype(np.uint8)
+    return scaled.astype(np.uint8), (lo, hi)
 
 
 def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
@@ -138,6 +147,7 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
+    windows: list[tuple[float, float]] = []
     kept_index = 0
     with nd2.ND2File(config.video_path) as f:
         color = getattr(f.metadata.channels[0].channel, "color", None)
@@ -155,9 +165,15 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
             if config.roi is not None:
                 x, y, w, h = config.roi
                 frame = frame[y : y + h, x : x + w]
-            frame_gray = _rescale_to_uint8(frame)
+            frame_gray, window = _rescale_to_uint8(frame)
+            windows.append(window)
             out_path = out_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
             cv2.imwrite(str(out_path), frame_gray)
             paths.append(out_path)
             kept_index += 1
+    (out_dir / _DISPLAY_WINDOW_FILENAME).write_text(json.dumps(
+        {"note": "per-frame 0.5/99.5 percentile window used to make the 8-bit PNGs; "
+                 "raw ~= lo + png/255 * (hi - lo). Without it, apparent brightness is "
+                 "not comparable between frames.",
+         "windows": [[round(lo, 2), round(hi, 2)] for lo, hi in windows]}))
     return paths

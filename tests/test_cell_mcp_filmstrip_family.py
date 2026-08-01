@@ -234,3 +234,17 @@ def test_every_image_tool_discloses_that_brightness_is_not_comparable(fake):
 
     solo, _ = cell_mcp._filmstrip_frames(fake, 1, 0, 9, 4, 40.0, False, False, False)
     assert "0.5/99.5" in solo
+
+
+def test_the_note_says_whether_this_bundle_can_undo_the_stretch(fake, monkeypatch):
+    """A bundle that recorded the per-frame window can be put on a common scale; one
+    that did not is stuck. Saying only "not comparable" leaves a reader unable to tell
+    which case they are in, and the answer differs per bundle."""
+    base = dict(cell_mcp._manifest(fake))
+    assert "cannot be undone" in cell_mcp._display_note(fake), "no window recorded"
+
+    monkeypatch.setattr(cell_mcp, "_manifest",
+                        lambda w: {**base, "display_window": {"recorded": True}})
+    note = cell_mcp._display_note(fake)
+    assert "reversible" in note and "lo + png/255" in note
+    assert "NOT comparable" in note, "still a caveat, just a recoverable one"

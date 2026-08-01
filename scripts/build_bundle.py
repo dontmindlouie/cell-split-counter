@@ -277,6 +277,33 @@ def write_candidates(run_dir: Path, out_dir: Path) -> dict:
             "path": str(out_dir / "candidates.csv")}
 
 
+def display_windows(run_dir: Path, n_frames: int) -> dict:
+    """The per-frame 0.5/99.5 window ingest used to make the 8-bit PNGs.
+
+    Without it the export is one-way: every frame was stretched to its own percentiles,
+    so a field-wide trend -- photobleaching over 40-70 h is the one that matters --
+    renormalises itself away and the images render as though nothing changed. With it
+    the stretch is reversible, raw ~= lo + png/255 * (hi - lo), and a reader can put
+    two frames on a common scale.
+
+    Recorded at ingest rather than recomputed here, because only ingest knows the exact
+    frames it fed the percentile (ROI crop, frame_step). Recomputing from the ND2 would
+    reproduce the number only as long as those matched, and would fail silently when
+    they did not. Absent for any run ingested before this existed -- reported as absent
+    rather than omitted, so a reader can tell "not recorded" from "no stretch applied".
+    """
+    p = run_dir / "frames" / "_display_windows.json"
+    if not p.is_file():
+        return {"recorded": False,
+                "note": "run predates per-frame window recording; brightness in "
+                        "frames/*.png is NOT comparable between frames and the stretch "
+                        "cannot be undone. Re-ingest to recover it."}
+    d = json.loads(p.read_text(encoding="utf-8"))
+    w = d.get("windows") or []
+    return {"recorded": True, "note": d.get("note", ""),
+            "complete": len(w) == n_frames, "n": len(w), "windows": w}
+
+
 def provenance(run_dir: Path) -> dict:
     """Record where this bundle came from and when, so a reader can tell whether it
     is internally consistent without resorting to file mtimes.
@@ -620,6 +647,7 @@ def main() -> None:
         "n_frames": len(pairs),
         "n_tracks": n_tracks,
         "provenance": provenance(run_dir),
+        "display_window": display_windows(run_dir, len(pairs)),
         "lineage": lineage_info,
         **cal,
         **extra,
