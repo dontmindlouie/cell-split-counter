@@ -17,7 +17,7 @@ import io
 import json
 import os
 import sys
-from functools import lru_cache
+import functools
 from pathlib import Path
 
 import cv2
@@ -89,7 +89,70 @@ _UPSCALE_TO = 312
 
 # --------------------------------------------------------------------------- io
 
-@lru_cache(maxsize=64)
+def _server_stamp() -> str:
+    """What code is answering, and since when.
+
+    A bundle says what built it; nothing said what was READING it. A session on
+    2026-07-31 asked "is the MCP up to date with the repo?" and had to shell out to
+    git status, git log and a process listing to find out -- three escapes from the
+    toolset to answer a question about the toolset. It matters because this server is
+    a long-lived process: the code is whatever was on disk when it started, which can
+    be many commits ago, and an MCP server does not hot-reload.
+    """
+    import datetime as dt
+    import subprocess
+    here = Path(__file__).resolve().parent
+    try:
+        commit = subprocess.run(["git", "-C", str(here), "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        commit, dirty = "", ""
+    started = dt.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M%z")
+    return (f"code {commit or 'unknown'}{' +uncommitted' if dirty else ''}, "
+            f"loaded {started}")
+
+
+_SERVER_STAMP = _server_stamp()
+
+
+def _fresh(path_of, maxsize: int = 8):
+    """Cache a per-well loader, keyed on the source file's mtime.
+
+    These were `lru_cache`d on the well name alone, which meant the cache had no way
+    to notice a rebuild. `list_wells()` loads every manifest on its first call, so one
+    early call pinned all 21 wells for the life of the process. On 2026-07-31 a session
+    quoted BeWo M3 at 11,053 tracks more than an hour after that well had been rebuilt
+    to 11,291 -- and concluded from it that the BeWo bundles still needed rebuilding.
+    Nothing was wrong with the bundle on disk; the server simply never looked again.
+
+    Same failure as the canonical-label cache in src/lineage.py: a key that cannot see
+    the thing that changes. Rebuilds are routine now, so the key has to be the file.
+    """
+    def deco(fn):
+        cache: dict[str, tuple] = {}
+
+        @functools.wraps(fn)
+        def wrapper(well: str):
+            p = path_of(well)
+            stamp = p.stat().st_mtime_ns if p.is_file() else None
+            hit = cache.get(well)
+            if hit is not None and hit[0] == stamp:
+                return hit[1]
+            val = fn(well)
+            cache[well] = (stamp, val)
+            while len(cache) > maxsize:           # insertion-ordered: drop the oldest
+                cache.pop(next(iter(cache)))
+            return val
+
+        wrapper.cache_clear = cache.clear
+        wrapper.cache_size = lambda: len(cache)
+        return wrapper
+    return deco
+
+
+@_fresh(lambda w: BUNDLE / w / "manifest.json", maxsize=64)
 def _manifest(well: str) -> dict:
     import json
     p = BUNDLE / well / "manifest.json"
@@ -98,7 +161,7 @@ def _manifest(well: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-@lru_cache(maxsize=8)
+@_fresh(lambda w: BUNDLE / w / "tracks.csv")
 def _tracks(well: str) -> pd.DataFrame:
     """Per-frame track table. Cached -- these are 100k-500k rows each."""
     return pd.read_csv(BUNDLE / well / "tracks.csv")
@@ -222,6 +285,11 @@ def list_wells() -> str:
     out.append(
         "\nNote: the time between frames is NOT constant. Never assume a fixed interval -- "
         "use measure() or the per-frame timestamps, which are exact."
+    )
+    out.append(
+        f"Server: {_SERVER_STAMP}. Bundles are re-read whenever their files change, so a "
+        f"rebuild mid-session is picked up; the CODE is not -- it is whatever was on disk "
+        f"when this process started, and restarting the session is the only way to reload it."
     )
     if unstamped:
         out.append(
@@ -1399,9 +1467,19 @@ def get_filmstrip_at(
 
     where = (f"anchored on track {anchor_track_id}" if anchor_track_id is not None
              else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
+    # The corner label is the one mark in this toolset a reader cannot decode from the
+    # image: a session once grepped cell_mcp.py's source to find out what "~2362 @6um"
+    # meant. It is burned in so a frame stays identified if it gets separated from this
+    # text, which only works if the text says how to read it.
     lines = [f"{well}: frames {lo}-{hi}, showing {n} of {len(avail)}, {where}. "
-             f"Crop {crop_um:g} um wide. Nothing is ringed -- this is a PLACE, not a "
-             f"tracked object. Nearest tracked cell per frame:"]
+             f"Crop {crop_um:g} um wide. The yellow crosshair marks WHERE YOU ASKED to "
+             f"look -- nothing is ringed, because this is a place, not a tracked object, "
+             f"and a ring would imply something was detected there. The bottom-left label "
+             f"reads \"~<track_id> @<distance>um\": the NEAREST tracked cell to the "
+             f"crosshair and how far its centre sits from it -- not the thing at the "
+             f"crosshair, which may be untracked or nothing at all. It is only drawn when "
+             f"that cell is closer than the crop is wide, so a blank corner means nothing "
+             f"tracked is even in view. Nearest tracked cell per frame:"]
 
     images: list[np.ndarray] = []
     for f in picks:
@@ -1586,7 +1664,7 @@ def get_filmstrip_family(
     return out
 
 
-@lru_cache(maxsize=8)
+@_fresh(lambda w: BUNDLE / w / "lineage.csv")
 def _lineage(well: str) -> dict[int, dict]:
     p = BUNDLE / well / "lineage.csv"
     if not p.is_file():
