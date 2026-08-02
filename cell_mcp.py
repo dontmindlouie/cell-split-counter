@@ -19,6 +19,7 @@ import os
 import sys
 import functools
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -374,6 +375,75 @@ def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0) -> np
     cv2.rectangle(img, (x1 - px, y1), (x1, y1 + 5), (255, 255, 255), -1)
     cv2.putText(img, f"{target_um:g} um", (x1 - px, y1 - 5),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    return img
+
+
+class _Tile(NamedTuple):
+    """One rendered crop, plus what an overlay needs to draw on it.
+
+    `scale` and `x0`/`y0` are the crop's own geometry: a full-frame point (fx, fy)
+    lands at ((fx - x0) * scale, (fy - y0) * scale). `crop_h` is the PRE-upscale
+    height, which is the only thing that converts the upscaled image back to
+    micrometres per pixel -- see _stamp_tile.
+    """
+    img: np.ndarray
+    cx: float          # subject's position within the crop, post-upscale
+    cy: float
+    scale: float
+    crop_h: int
+    x0: int
+    y0: int
+
+
+def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
+               color: bool) -> "_Tile | None":
+    """Cut a 2*half crop around (cx, cy), apply the display LUT, upscale small crops.
+
+    Returns None when the box misses the field entirely, which every caller treats
+    as "skip this frame" rather than as an error -- a crop centred on a held
+    position can legitimately fall outside the image.
+
+    The upscale is here rather than in each caller because the coordinate rescale
+    that goes with it was the part getting copied: an overlay drawn at pre-upscale
+    coordinates lands at a quarter of the way into the image and looks like a
+    tracking error.
+    """
+    grey = _frame_png(well, int(frame))
+    h, w = grey.shape
+    cxi, cyi = int(round(cx)), int(round(cy))
+    x0, x1 = max(0, cxi - half), min(w, cxi + half)
+    y0, y1 = max(0, cyi - half), min(h, cyi + half)
+    crop = grey[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
+    img = _colorize(crop, well, color)
+    cx_crop, cy_crop = float(cxi - x0), float(cyi - y0)
+    s = 1.0
+    if img.shape[0] < _UPSCALE_TO:
+        s = _UPSCALE_TO / img.shape[0]
+        img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
+        cx_crop, cy_crop = cx_crop * s, cy_crop * s
+    return _Tile(img, cx_crop, cy_crop, s, int(crop.shape[0]), int(x0), int(y0))
+
+
+def _stamp_tile(tile: _Tile, label: str, um_px: float, scale_bar: bool,
+                corner: str | None = None,
+                corner_color: tuple[int, int, int] = (0, 255, 255)) -> np.ndarray:
+    """Burn the per-frame label in, optionally a bottom-left note, then the bar.
+
+    The scale bar must be told the um/px of the UPSCALED image, not of the source
+    frame -- hence crop_h / current height. Getting that ratio wrong mislabels the
+    bar by the upscale factor, and the bar is the calibration check a researcher
+    trusts over the numbers, so it is computed in exactly one place.
+    """
+    img = tile.img
+    cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                (255, 255, 255), 1, cv2.LINE_AA)
+    if corner:
+        cv2.putText(img, corner, (4, img.shape[0] - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35, corner_color, 1, cv2.LINE_AA)
+    if scale_bar:
+        img = _scale_bar(img, um_px * (tile.crop_h / img.shape[0]), target_um=10.0)
     return img
 
 
@@ -907,28 +977,16 @@ def _filmstrip_frames(
         on_track = f in by_frame
         row = by_frame[f] if on_track else (first_row if f < t_lo else last_row)
         walk_resolved = False
-        grey = _frame_png(well, int(f))
-        h, w = grey.shape
         if on_track:
-            cx, cy = int(round(row.cx)), int(round(row.cy))
+            cx, cy = float(row.cx), float(row.cy)
         else:
-            wcx, wcy, walk_resolved = walked.get(f, (row.cx, row.cy, False))
-            cx, cy = int(round(wcx)), int(round(wcy))
-        x0, x1 = max(0, cx - half), min(w, cx + half)
-        y0, y1 = max(0, cy - half), min(h, cy + half)
-        crop = grey[y0:y1, x0:x1]
-        if crop.size == 0:
+            cx, cy, walk_resolved = walked.get(f, (row.cx, row.cy, False))
+        # Where the cell lands in the crop is not always its centre pixel: the crop
+        # is clipped at the field edge.
+        tile = _crop_tile(well, int(f), cx, cy, half, color)
+        if tile is None:
             continue
-        img = _colorize(crop, well, color)
-        # Where the cell actually landed in the crop, before any upscaling -- the crop
-        # is clipped at the field edge, so this is not always the centre pixel.
-        cx_crop, cy_crop = cx - x0, cy - y0
-        if img.shape[0] < _UPSCALE_TO:
-            s = _UPSCALE_TO / img.shape[0]
-            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
-            cx_crop, cy_crop = cx_crop * s, cy_crop * s
-        else:
-            s = 1.0
+        img, cx_crop, cy_crop, s = tile.img, tile.cx, tile.cy, tile.scale
         if marker or not on_track:
             # Ring radius from the cell's own area, pushed out far enough to clear it.
             # Solid white when on-track (a real detection); solid orange when
@@ -957,11 +1015,7 @@ def _filmstrip_frames(
             label += " OFF-TRACK (walked)"
         else:
             label += f" OFF-TRACK (held @f{t_lo if f < t_lo else t_hi})"
-        cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                    (255, 255, 255), 1, cv2.LINE_AA)
-        if scale_bar:
-            img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
-        images.append(img)
+        images.append(_stamp_tile(tile, label, um_px, scale_bar))
     return header, images
 
 
@@ -1273,24 +1327,15 @@ def _family_filmstrip_frames(
     images: list[np.ndarray] = []
     for f in picks:
         cx_f, cy_f, n_present, n_gap = centres[f]
-        grey = _frame_png(well, int(f))
-        h, w = grey.shape
-        cx, cy = int(round(cx_f)), int(round(cy_f))
-        x0, x1 = max(0, cx - half), min(w, cx + half)
-        y0, y1 = max(0, cy - half), min(h, cy + half)
-        crop = grey[y0:y1, x0:x1]
-        if crop.size == 0:
+        tile = _crop_tile(well, int(f), cx_f, cy_f, half, color)
+        if tile is None:
             continue
-        img = _colorize(crop, well, color)
-        s = 1.0
-        if img.shape[0] < _UPSCALE_TO:
-            s = _UPSCALE_TO / img.shape[0]
-            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
+        img, s = tile.img, tile.scale
         if marker:
             # Ring ALL present members or none. One ring among several says nothing
             # about which cell the claim is about.
             for r in pos.get(f, []):
-                rx, ry = (r.cx - x0) * s, (r.cy - y0) * s
+                rx, ry = (r.cx - tile.x0) * s, (r.cy - tile.y0) * s
                 rad = float(np.sqrt(max(float(r.area_px), 1.0) / np.pi)) * 1.9 * s
                 rad = float(np.clip(rad, 8, min(img.shape[:2]) / 2 - 2))
                 cv2.circle(img, (int(rx), int(ry)), int(rad), (255, 255, 255), 1, cv2.LINE_AA)
@@ -1303,11 +1348,7 @@ def _family_filmstrip_frames(
             label += (f" [{n_present} seen, gap {','.join(str(t) for t in gapped[f])}]")
         else:
             label += f" [{n_present} member{'s' if n_present != 1 else ''}]"
-        cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                    (255, 255, 255), 1, cv2.LINE_AA)
-        if scale_bar:
-            img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
-        images.append(img)
+        images.append(_stamp_tile(tile, label, um_px, scale_bar))
     return header, images
 
 
@@ -2231,24 +2272,14 @@ def watch_location_over_time(
     images: list[np.ndarray] = []
     for f in picks:
         ccx, ccy = _centre(int(f))
-        grey = _frame_png(well, int(f))
-        h, w = grey.shape
-        cxi, cyi = int(round(ccx)), int(round(ccy))
-        x0, x1 = max(0, cxi - half), min(w, cxi + half)
-        y0, y1 = max(0, cyi - half), min(h, cyi + half)
-        crop = grey[y0:y1, x0:x1]
-        if crop.size == 0:
+        tile = _crop_tile(well, int(f), ccx, ccy, half, color)
+        if tile is None:
             continue
-        img = _colorize(crop, well, color)
-        cx_crop, cy_crop = cxi - x0, cyi - y0
-        if img.shape[0] < _UPSCALE_TO:
-            s = _UPSCALE_TO / img.shape[0]
-            img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
-            cx_crop, cy_crop = cx_crop * s, cy_crop * s
+        img = tile.img
         # A crosshair, not a ring: it marks where you asked to look, and must not
         # imply that something was detected there. Gapped in the middle so it never
         # covers the chromatin being judged.
-        cxp, cyp = int(cx_crop), int(cy_crop)
+        cxp, cyp = int(tile.cx), int(tile.cy)
         for dx0, dx1 in ((-12, -5), (5, 12)):
             cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
             cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
@@ -2260,14 +2291,10 @@ def watch_location_over_time(
             tid, dum = near
             note = f"track {tid}, {dum:.1f} um away"
         lines.append(f"  f{int(f)} ({_hours(well, int(f)):.2f} h): {note}")
-        cv2.putText(img, f"f{int(f)} t={_hours(well, int(f)):.1f}h", (4, 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
-        if near is not None and near[1] < crop_um:
-            cv2.putText(img, f"~{near[0]} @{near[1]:.0f}um", (4, img.shape[0] - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1, cv2.LINE_AA)
-        if scale_bar:
-            img = _scale_bar(img, um_px * (crop.shape[0] / img.shape[0]), target_um=10.0)
-        images.append(img)
+        corner = (f"~{near[0]} @{near[1]:.0f}um"
+                  if near is not None and near[1] < crop_um else None)
+        images.append(_stamp_tile(tile, f"f{int(f)} t={_hours(well, int(f)):.1f}h",
+                                  um_px, scale_bar, corner=corner))
 
     lines.append(
         "\nA nearest cell many microns away means the thing at this position is NOT "
