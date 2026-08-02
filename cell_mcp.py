@@ -396,7 +396,8 @@ def list_wells() -> str:
     """
     if not BUNDLE.is_dir():
         return f"No bundle at {BUNDLE}. Set CELL_BUNDLE_DIR to a built bundle directory."
-    out = ["well | cell_line | frames | hours | tracks | um/px | interval_min | built"]
+    out = ["well | cell_line | frames | hours | tracks | um/px | "
+           "interval_min med/mean/max | built"]
     unstamped = []
     for d in sorted(BUNDLE.iterdir()):
         if not (d / "manifest.json").is_file():
@@ -409,11 +410,18 @@ def list_wells() -> str:
         out.append(
             f"{d.name} | {m.get('cell_line') or '?'} | {m['n_frames']} | "
             f"{m['duration_hours']:.1f} | {m['n_tracks']} | {m['pixel_size_um']:.4f} | "
-            f"{m['interval_ms']['median'] / 60000:.1f} | {built}"
+            f"{m['interval_ms']['median'] / 60000:.1f}/"
+            f"{m['interval_ms']['mean'] / 60000:.1f}/"
+            f"{m['interval_ms']['max'] / 60000:.1f} | {built}"
         )
     out.append(
         "\nNote: the time between frames is NOT constant. Never assume a fixed interval -- "
-        "use measure() or the per-frame timestamps, which are exact."
+        "use measure() or the per-frame timestamps, which are exact. Three numbers are "
+        "printed because one would be a trap: the median is the typical frame, but only "
+        "the MEAN reproduces the hours column, and the max is how far apart the worst "
+        "pair gets. Where they spread (nTSC: 4.9 median, 6.2 mean, 14.5 max) the interval "
+        "DRIFTS through the run, so frames x any of them is wrong -- and wrong by more, "
+        "the later in the movie you are."
     )
     out.append(
         f"Server: {_SERVER_STAMP}. Bundles are re-read whenever their files change, so a "
