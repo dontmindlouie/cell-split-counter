@@ -359,7 +359,7 @@ def test_an_unlinked_sister_is_found_by_position(monkeypatch, fake):
     monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
     monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
 
-    members, added = cell_mcp._resolve_family(fake, [1])
+    members, added = cell_mcp._resolve_family(fake, [1], include_nearby=True)
     assert 50 in members and added == [50]
 
 
@@ -377,7 +377,7 @@ def test_a_long_standing_neighbour_is_not_mistaken_for_a_daughter(monkeypatch, f
     monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
     monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
 
-    members, added = cell_mcp._resolve_family(fake, [1])
+    members, added = cell_mcp._resolve_family(fake, [1], include_nearby=True)
     assert 60 not in members and added == []
 
 

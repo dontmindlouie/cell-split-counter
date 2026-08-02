@@ -2037,7 +2037,7 @@ def get_filmstrip(
 
 
 def _resolve_family(well: str, track_ids: list[int],
-                    include_nearby: bool = True) -> tuple[list[int], list[int]]:
+                    include_nearby: bool = False) -> tuple[list[int], list[int]]:
     """Add a track's recorded daughters, then the ones nobody recorded.
 
     Returns (members, added_positionally).
@@ -2056,11 +2056,19 @@ def _resolve_family(well: str, track_ids: list[int],
     separately so the header can say the strip is showing objects the lineage does not
     vouch for, which is a different claim from a recorded daughter.
 
-    It stays narrow in SPACE -- a radius set by the mother's own size, at most two
-    additions -- because widening that turns "the sister" into "the neighbourhood", and
-    a crop centred on a crowd follows nothing. It is wide in TIME, and forward-heavy,
-    because the sister appears when the cell actually divides rather than when the link
-    ends: BeWo 969's anaphase is 23 frames past its link.
+    OFF BY DEFAULT, because nearest-by-distance is not good enough to decide this and
+    a silent wrong guess is worse than no guess. On BeWo 969 it picked tracks 3829 and
+    3879 -- which start 2.3 um apart, six frames apart, and NEVER COEXIST. They are one
+    object at (250, 412) losing and regaining its id, 22 um north of the mother, and
+    the strip centred on a chain of re-acquisitions instead of on a pair of daughters.
+    The reviewer spotted it immediately: "I don't think that's the right daughter, and
+    it's also not a midpoint -- are there two tracks that instantiated near the same
+    place?" There were four.
+
+    Use list_nearby_tracks() instead and choose the members yourself. It reports which
+    candidates COEXIST, which is the test this heuristic lacks: two daughters must be
+    on screen at the same time, so a chain of non-overlapping tracks at one spot is one
+    cell being re-acquired, never a sister pair.
     """
     ids = [int(t) for t in track_ids]
     if len(track_ids) == 1:
@@ -2093,6 +2101,131 @@ def _resolve_family(well: str, track_ids: list[int],
     extra = [int(t) for t in near.sort_values("d2").index if int(t) not in ids]
     extra = extra[:2]
     return [*ids, *extra], extra
+
+
+@server.tool()
+def list_nearby_tracks(
+    well: str,
+    track_id: int | None = None,
+    x: float | None = None, y: float | None = None, frame: int | None = None,
+    before_min: float = 15.0, after_min: float = 75.0,
+    radius_um: float | None = None,
+    new_only: bool = True,
+) -> str:
+    """Every object segmented near a place and time -- so YOU can work out who the
+    daughters are. Free: no images.
+
+    This is the tool to reach for when lineage.csv is wrong or empty about a division,
+    which on BeWo is most of the time. Cellpose segments the daughters perfectly well;
+    it is the TRACKER that declines to link them, so the objects you need already exist
+    in tracks.csv with their own ids. Nothing here needs re-segmenting or a model.
+
+    It deliberately does not pick for you. A first attempt did -- nearest two starts to
+    the mother -- and on BeWo 969 it chose tracks 3829 and 3879, which begin 2.3 um and
+    six frames apart and are one cell being re-acquired, not two daughters. A wrong
+    guess made silently is worse than no guess, so this hands you the evidence instead.
+
+    THE TEST THAT SETTLES IT IS COEXISTENCE. Two daughters must be on screen at the
+    same time. A run of tracks at one spot whose spans do not overlap -- 3782 f776-777,
+    3806 f778-780, 3829 f781-786, 3879 f787-813 -- is a single object losing and
+    regaining its id, however close together they look. The `coexists_with` column is
+    there to make that judgement without opening an image, and a candidate coexisting
+    with nothing cannot be half of a pair.
+
+    A real sister also has to be NEW: a cell that has been on screen for hours and
+    merely happens to be nearby is a neighbour. Hence new_only, and hence the window
+    reaching much further forward than back -- the sister appears when the cell divides,
+    which on BeWo runs ~20 min past where the tracker's link ends.
+
+    Anchor it either on a track (its last known position and frame, which is where a
+    mother was lost) or on an explicit x/y/frame from get_filmstrip_at.
+
+    Args:
+        well: well name from list_wells().
+        track_id: anchor on this track's LAST position and frame. Usually the mother.
+        x, y, frame: anchor on an explicit point instead, in pixels.
+        before_min, after_min: how far either side of the anchor frame to look, in
+            minutes. Forward-heavy by default, for the reason above.
+        radius_um: search radius. None = the anchor's own radius + 14 um, so it scales
+            with the cell line rather than assuming RUES2-sized nuclei.
+        new_only: only tracks that BEGIN inside the window. False also lists tracks
+            already running through it, which is what you want when asking "what is
+            this thing overlapping with".
+    """
+    df = _tracks(well)
+    m = _manifest(well)
+    um_px = m["pixel_size_um"]
+    srt = df.sort_values("frame")
+    last = srt.groupby("track_id").last()
+    first = srt.groupby("track_id").first()
+    med = srt.groupby("track_id").area_um2.median()
+
+    if track_id is not None:
+        tid = int(track_id)
+        if tid not in last.index:
+            raise ValueError(f"track {tid} not found in {well}. Use list_tracks().")
+        x0, y0 = float(last.loc[tid, "cx"]), float(last.loc[tid, "cy"])
+        f0 = int(last.loc[tid, "frame"])
+        a0 = float(med.loc[tid])
+        anchor = f"track {tid}'s last position, f{f0}"
+    elif None not in (x, y, frame):
+        x0, y0, f0 = float(x), float(y), int(frame)
+        a0 = float(med.median())
+        anchor = f"point ({x0:.0f}, {y0:.0f}) at f{f0}"
+        tid = None
+    else:
+        raise ValueError("give either track_id, or all of x, y and frame.")
+
+    r_um = radius_um if radius_um else float(np.sqrt(max(a0, 1.0) / np.pi)) + 14.0
+    r_px = r_um / um_px
+    lo = _frame_at_offset_min(well, f0, -before_min)
+    hi = _frame_at_offset_min(well, f0, after_min)
+
+    if new_only:
+        pool = first[(first.frame >= lo) & (first.frame <= hi)]
+        near = pool[((pool.cx - x0) ** 2 + (pool.cy - y0) ** 2) <= r_px * r_px]
+        ids = [int(t) for t in near.index if t != tid]
+    else:
+        win = df[(df.frame >= lo) & (df.frame <= hi)]
+        win = win[((win.cx - x0) ** 2 + (win.cy - y0) ** 2) <= r_px * r_px]
+        ids = [int(t) for t in win.track_id.unique() if t != tid]
+
+    if not ids:
+        return (f"{well}: nothing segmented within {r_um:.0f} um of {anchor} "
+                f"in f{lo}-{hi}"
+                + (" that BEGINS there (new_only=True; pass new_only=False to include "
+                   "tracks already running)" if new_only else "") + ".")
+
+    spans = {t: (int(first.loc[t, "frame"]), int(last.loc[t, "frame"])) for t in ids}
+    out = [
+        f"{well}: {len(ids)} object(s) within {r_um:.0f} um of {anchor}, "
+        f"frames {lo}-{hi} ({_minutes_between(well, lo, hi):.0f} min)"
+        + (", counting only tracks that BEGIN in the window." if new_only else "."),
+        "",
+        "track_id | frames | n | area_um2 | dist_um | coexists_with",
+    ]
+    rows = []
+    for t in ids:
+        s, e = spans[t]
+        co = [u for u in ids
+              if u != t and spans[u][0] <= e and spans[u][1] >= s]
+        fr = first.loc[t]
+        d = float(np.hypot(fr.cx - x0, fr.cy - y0)) * um_px
+        rows.append((d, t, s, e, int((df.track_id == t).sum()),
+                     float(med.loc[t]), co))
+    for d, t, s, e, n, a, co in sorted(rows):
+        out.append(f"{t} | {s}-{e} | {n} | {a:.0f} | {d:.1f} | "
+                   f"{', '.join(str(u) for u in co) if co else 'NOTHING'}")
+    out.append(
+        "\nTwo daughters must COEXIST. A candidate whose coexists_with is NOTHING "
+        "cannot be half of a pair, and a run of such tracks at one spot with "
+        "consecutive spans is one cell losing and regaining its id. Distance alone "
+        "will not tell you apart -- on BeWo 969 the two nearest starts were 2.3 um and "
+        "six frames apart, and were the same cell. Pick the members yourself and pass "
+        "them to get_filmstrip_family(track_ids=[...]) to see the event; nothing here "
+        "is a claim that a division happened."
+    )
+    return "\n".join(out)
 
 
 @server.tool()
