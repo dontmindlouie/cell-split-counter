@@ -1714,6 +1714,16 @@ def _kid_ids(s) -> list[int]:
     return [int(k) for k in str(s).split() if k.strip().lstrip("-").isdigit()]
 
 
+def _fmt2(v) -> str:
+    """A score to 2dp, or '-' when it is missing. NaN counts as missing."""
+    return "-" if v is None or v != v else f"{v:.2f}"
+
+
+def _fmt0(v, blank: str = "-") -> str:
+    """A whole number, or `blank` when it is missing."""
+    return blank if v is None or v != v else f"{v:.0f}"
+
+
 # A recorded daughter lasting this many frames or fewer is a stub, not an outcome.
 # Shared by the vanishing_daughter stratum and by the ratio suppression in
 # find_candidates so the two can never disagree about which rows are measurable.
@@ -1791,6 +1801,201 @@ def _division_strata(rows, lin, tracks, m) -> list:
         else:
             labels.append("clean")
     return labels
+
+
+# The standing explanations printed under a candidate table. They are constants rather
+# than inline f-strings because they are the larger half of what find_candidates emits,
+# and reading its control flow meant scrolling past them. Every value they interpolate
+# is a module constant, so they can be built once at import.
+_CENSUS_NOTE = (
+    "First match wins, so these partition the pool and sum to its total. "
+    "Priority order is a judgement call and the marginal counts move if you "
+    "change it. THE THRESHOLDS ARE UNVALIDATED -- each row is a hypothesis "
+    "with a count, not a verdict, and they are very likely wrong per cell "
+    "line (a micronucleus is garbage on RUES2 and may be the phenotype on WGD). "
+    "Nothing here is discarded: pass stratum= to pull rows from one class, "
+    "which is how you sample a class to measure how often it is real."
+)
+
+_CENSUS_NEXT_STEP = (
+    "Every stratum here describes the RECORDED link. When a row's daughters "
+    "look like stubs, list_nearby_tracks(well, track_id=...) shows every "
+    "object segmented at that spot -- including the ones nothing links to -- "
+    "and follow_cells_over_time(track_ids=[...], centre_frame=<cond_f>) renders "
+    "whichever of them you decide are the daughters."
+)
+
+_FRAGMENT_NOTE = (
+    "\nA LOW size ratio with a healthy dna ratio is the fragment signature -- the "
+    "big object carries the DNA and the small one is a micronucleus, so the 'split' "
+    "is not a division. Confirm on the pixels before believing either way."
+)
+
+_STRATUM_NOTE = (
+    f"stratum is the first artifact class this row trips -- the same label the "
+    f"census counts. It is printed per row because reading a row without it is how "
+    f"a known-suspect link gets ranked as the cleanest in the well."
+    f"\ndau_frames is how many frames each recorded daughter lasts. Where either is "
+    f"{_STUB_DAUGHTER_FRAMES} or fewer, dna and size read 'n/a': they are measured "
+    f"ACROSS that link, so a one-frame daughter makes them noise, and a printed "
+    f"number would outrank the honest rows. Persistent daughters (e.g. 77/77) are "
+    f"the ones whose ratios mean anything. Not a verdict -- the tracker breaking at "
+    f"a real division also produces stubs, which is why an 'n/a' row is a reason to "
+    f"call list_nearby_tracks, not a reason to reject it."
+)
+
+_COND_NOTE = (
+    f"cond is the CONDENSATION peak -- brightness per pixel at its highest, "
+    f"relative to this mother's own median and to the other cells in the same "
+    f"frame (so bleaching cancels). 1.0 is her normal interphase state; mitosis "
+    f"packs the same DNA into fewer pixels, so it reads above 1. cond_f is the "
+    f"frame it peaked at, and it is usually LATER than last_frame -- the link "
+    f"ends where the tracker loses the cell, not where the cell divides. "
+    f"cond_area is the family's area there over her baseline (below 1 = compacted) "
+    f"and cond_dna is total signal over her baseline. "
+    f"Only frames holding {_COND_DNA_MIN}-{_COND_DNA_MAX}x the baseline signal "
+    f"were eligible: below that the DNA has genuinely gone and the object is a "
+    f"fragment, whatever its brightness does. '-' means no eligible frame, or too "
+    f"short a mother to have a baseline. "
+    f"This is the only MORPHOLOGY column here -- every other one describes who the "
+    f"tracker linked to whom, and on BeWo that topology scored close to "
+    f"anti-correlated with a human reading metaphase plates. Unvalidated, and it "
+    f"cannot tell condensed chromatin from the clumped chromatin of a dying cell."
+)
+
+_BORN_NOTE = (
+    "\nborn_dna/born_size describe how this track was BORN, not how it ends -- "
+    "it has no daughters by definition. A low born_size that then vanishes is "
+    "most likely a fragment appearing and going, not a cell dying."
+)
+
+_NOT_DEATHS_NOTE = (
+    "This pool is deliberately NOT called deaths. A cell that died and a "
+    "division whose daughters were never linked both look like a track that "
+    "stops -- topology cannot tell them apart, and 96% of one hand-checked "
+    "sample of 'deaths' in this project turned out to still be alive."
+)
+
+
+def _candidate_pool(well: str, lin, pool: str, n_frames: int, m: dict):
+    """The rows of one pool, or a string explaining why there are none.
+
+    Returning text rather than raising: an empty or unavailable pool is an answer
+    about the well, not a caller error, and the reason is the useful part.
+    """
+    if pool == "division":
+        rows = lin[lin.n_daughters.fillna(0) >= 2].copy()
+        # Scores live on the DAUGHTER rows; lift the first daughter's onto the mother.
+        by_id = lin.set_index("track_id")
+        first_kid = rows.daughter_ids.astype(str).str.split().str[0]
+        for col in ("dna_ratio", "size_ratio", "link_distance_px"):
+            rows[col] = [
+                by_id[col].get(int(k)) if str(k).strip().lstrip("-").isdigit() else None
+                for k in first_kid
+            ]
+    elif pool == "track_end":
+        rows = lin[(lin.last_frame < n_frames - 1) & (lin.n_daughters.fillna(0) == 0)].copy()
+    elif pool == "contested":
+        if "alt_parents" not in lin.columns:
+            return (f"{well}'s lineage came from {m.get('lineage', {}).get('source', '?')}, "
+                    f"which records no alternatives, so there is no contested pool. "
+                    f"alt_parents only exists on geometry-sourced lineage.")
+        rows = lin[lin.alt_parents.astype(str).str.strip().replace("nan", "") != ""].copy()
+    else:
+        raise ValueError(f"unknown pool {pool!r}; use division, track_end, or contested.")
+    if rows.empty:
+        return f"{well}: nothing in the {pool} pool."
+    return rows
+
+
+def _sort_candidates(rows, sort_by: str, pool: str, seed: int | None):
+    """Order the pool, returning (rows, the sort ACTUALLY applied).
+
+    A score-based sort on a pool that carries no scores would silently return the
+    rows in file order while the header claimed otherwise, so it falls back
+    explicitly and the caller says so. track_end rows have no link scores by
+    definition -- they have no link.
+    """
+    def _has(col: str) -> bool:
+        return col in rows.columns and bool(rows[col].notna().any())
+
+    if sort_by == "fragment_like" and _has("size_ratio"):
+        return rows.sort_values("size_ratio", na_position="last"), sort_by
+    if sort_by == "dna_anomaly" and _has("dna_ratio"):
+        return (rows.reindex((rows.dna_ratio - 1.0).abs()
+                             .sort_values(ascending=False).index), sort_by)
+    if sort_by == "duration":
+        return rows.sort_values("duration_f", ascending=False), sort_by
+    if sort_by == "frame":
+        return rows.sort_values("first_frame"), sort_by
+    if sort_by == "condensation" and _has("cond"):
+        return rows.sort_values("cond", ascending=False, na_position="last"), sort_by
+    if sort_by == "random":
+        # Shuffle the WHOLE surviving pool and let limit take the head, so the sample
+        # is drawn from every row that qualifies rather than from the top of some
+        # other ordering. Sorting by first_frame first makes the draw independent of
+        # the row order lineage.csv happened to be written in.
+        return rows.sort_values("first_frame").sample(frac=1.0, random_state=seed), sort_by
+    applied = "duration" if pool == "track_end" else "frame"
+    return ((rows.sort_values("duration_f", ascending=False) if applied == "duration"
+             else rows.sort_values("first_frame")), applied)
+
+
+def _division_table(shown, well: str) -> list[str]:
+    """The division pool's row table, its column notes, and a prefilled call per row."""
+    out = ["track_id | frames | daughters | dau_frames | stratum | dna | size | "
+           "link_px | edge_um | cond | cond_f | cond_dna | cond_area | also"]
+    for r in shown.itertuples():
+        # Ratios measured across a link whose daughter lasts a frame or two are not
+        # weak evidence, they are noise shaped like a measurement -- and worse than a
+        # blank, because "1.01 / 1.00" reads as the cleanest row on the page. That is
+        # exactly how a reader ranked a vanishing_daughter artifact first on 2026-08-01.
+        stub = getattr(r, "dau_min", float("nan"))
+        measurable = not (stub == stub and stub <= _STUB_DAUGHTER_FRAMES)
+        g = _fmt2 if measurable else (lambda v: "n/a")
+        out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
+                   f"{r.daughter_ids} | {getattr(r, 'dau_frames', '-') or '-'} | "
+                   f"{getattr(r, 'stratum', '-')} | {g(r.dna_ratio)} | {g(r.size_ratio)} | "
+                   f"{_fmt0(r.link_distance_px)} | "
+                   f"{_fmt0(r.edge_um, blank='?')} | "
+                   f"{_fmt2(getattr(r, 'cond', None))} | "
+                   f"{'-' if int(getattr(r, 'cond_frame', -1)) < 0 else int(r.cond_frame)} | "
+                   f"{_fmt2(getattr(r, 'cond_dna', None))} | "
+                   f"{_fmt2(getattr(r, 'cond_area', None))} | "
+                   f"{getattr(r, 'also', '') or '-'}")
+    out += [_FRAGMENT_NOTE, _STRATUM_NOTE, _COND_NOTE]
+    # Hand-building the next call is where the documented trap gets sprung: centring on
+    # the link (last_frame) instead of on the condensation peak shows the frames AFTER
+    # the event. Prefill it, so the default is the right one.
+    out.append("\nReady to look -- paste one (centred on cond_f, not on the link):")
+    for r in shown.itertuples():
+        cf_ = int(getattr(r, "cond_frame", -1))
+        centre = cf_ if cf_ >= 0 else int(r.last_frame)
+        fam = [int(r.track_id), *_kid_ids(r.daughter_ids)]
+        out.append(f'  {int(r.track_id)}  follow_cells_over_time(well="{well}", '
+                   f'track_ids={fam}, centre_frame={centre})'
+                   + ("" if cf_ >= 0 else "   [no cond peak -- centred on the link, "
+                                          "which is usually EARLY; widen if empty]"))
+    return out
+
+
+def _birth_table(shown, pool: str) -> list[str]:
+    """The non-division pools' row table.
+
+    These scores describe the track's OWN BIRTH link, not an ending -- a track here
+    has no daughters by definition. Shown because the combination is genuinely
+    informative: something born as a tiny fragment and then vanishing is a different
+    story from a full-sized nucleus that stops.
+    """
+    out = ["track_id | frames | duration | born_dna | born_size | edge_um"]
+    for r in shown.itertuples():
+        out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
+                   f"{int(r.duration_f)} | {_fmt2(getattr(r, 'dna_ratio', None))} | "
+                   f"{_fmt2(getattr(r, 'size_ratio', None))} | "
+                   f"{_fmt0(r.edge_um, blank='?')}")
+    if pool == "track_end":
+        out += [_BORN_NOTE, _NOT_DEATHS_NOTE]
+    return out
 
 
 @server.tool()
@@ -1905,29 +2110,9 @@ def find_candidates(
             return float("nan")
         return _edge_um(well, float(pos.loc[tid, "cx"]), float(pos.loc[tid, "cy"]))
 
-    if pool == "division":
-        rows = lin[lin.n_daughters.fillna(0) >= 2].copy()
-        # Scores live on the DAUGHTER rows; lift the first daughter's onto the mother.
-        by_id = lin.set_index("track_id")
-        first_kid = rows.daughter_ids.astype(str).str.split().str[0]
-        for col in ("dna_ratio", "size_ratio", "link_distance_px"):
-            rows[col] = [
-                by_id[col].get(int(k)) if str(k).strip().lstrip("-").isdigit() else None
-                for k in first_kid
-            ]
-    elif pool == "track_end":
-        rows = lin[(lin.last_frame < n_frames - 1) & (lin.n_daughters.fillna(0) == 0)].copy()
-    elif pool == "contested":
-        if "alt_parents" not in lin.columns:
-            return (f"{well}'s lineage came from {m.get('lineage', {}).get('source', '?')}, "
-                    f"which records no alternatives, so there is no contested pool. "
-                    f"alt_parents only exists on geometry-sourced lineage.")
-        rows = lin[lin.alt_parents.astype(str).str.strip().replace("nan", "") != ""].copy()
-    else:
-        raise ValueError(f"unknown pool {pool!r}; use division, track_end, or contested.")
-
-    if rows.empty:
-        return f"{well}: nothing in the {pool} pool."
+    rows = _candidate_pool(well, lin, pool, n_frames, m)
+    if isinstance(rows, str):
+        return rows
 
     rows["edge_um"] = [_edge(int(t)) for t in rows.track_id]
     n_before = len(rows)
@@ -1974,33 +2159,7 @@ def find_candidates(
     n_edge_dropped = n_pool - len(rows)
     rows["duration_f"] = rows.last_frame - rows.first_frame
 
-    # A score-based sort on a pool that carries no scores would silently return the
-    # rows in file order while the header claimed otherwise, so fall back explicitly
-    # and say so. track_end rows have no link scores by definition -- they have no link.
-    def _has(col: str) -> bool:
-        return col in rows.columns and bool(rows[col].notna().any())
-
-    applied = sort_by
-    if sort_by == "fragment_like" and _has("size_ratio"):
-        rows = rows.sort_values("size_ratio", na_position="last")
-    elif sort_by == "dna_anomaly" and _has("dna_ratio"):
-        rows = rows.reindex((rows.dna_ratio - 1.0).abs().sort_values(ascending=False).index)
-    elif sort_by == "duration":
-        rows = rows.sort_values("duration_f", ascending=False)
-    elif sort_by == "frame":
-        rows = rows.sort_values("first_frame")
-    elif sort_by == "condensation" and _has("cond"):
-        rows = rows.sort_values("cond", ascending=False, na_position="last")
-    elif sort_by == "random":
-        # Shuffle the WHOLE surviving pool and let limit take the head, so the sample
-        # is drawn from every row that qualifies rather than from the top of some
-        # other ordering. Sorting by first_frame first makes the draw independent of
-        # the row order lineage.csv happened to be written in.
-        rows = rows.sort_values("first_frame").sample(frac=1.0, random_state=seed)
-    else:
-        applied = "duration" if pool == "track_end" else "frame"
-        rows = (rows.sort_values("duration_f", ascending=False) if applied == "duration"
-                else rows.sort_values("first_frame"))
+    rows, applied = _sort_candidates(rows, sort_by, pool, seed)
 
     shown = rows.head(limit) if limit > 0 else rows.iloc[:0]
     note = "" if applied == sort_by else (
@@ -2025,22 +2184,8 @@ def find_candidates(
     if census:
         out.append("\nWhat the pool is made of -- stratum | n | share | why")
         out += census
-        out.append(
-            "First match wins, so these partition the pool and sum to its total. "
-            "Priority order is a judgement call and the marginal counts move if you "
-            "change it. THE THRESHOLDS ARE UNVALIDATED -- each row is a hypothesis "
-            "with a count, not a verdict, and they are very likely wrong per cell "
-            "line (a micronucleus is garbage on RUES2 and may be the phenotype on WGD). "
-            "Nothing here is discarded: pass stratum= to pull rows from one class, "
-            "which is how you sample a class to measure how often it is real."
-        )
-        out.append(
-            "Every stratum here describes the RECORDED link. When a row's daughters "
-            "look like stubs, list_nearby_tracks(well, track_id=...) shows every "
-            "object segmented at that spot -- including the ones nothing links to -- "
-            "and follow_cells_over_time(track_ids=[...], centre_frame=<cond_f>) renders "
-            "whichever of them you decide are the daughters."
-        )
+        out.append(_CENSUS_NOTE)
+        out.append(_CENSUS_NEXT_STEP)
 
     if limit <= 0:
         return "\n".join(out)
@@ -2050,100 +2195,8 @@ def find_candidates(
                    "exclude_near_edge=False.")
         return "\n".join(out)
 
-    if pool == "division":
-        out.append("track_id | frames | daughters | dau_frames | stratum | dna | size | "
-                   "link_px | edge_um | cond | cond_f | cond_dna | cond_area | also")
-        for r in shown.itertuples():
-            f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
-            # Ratios measured across a link whose daughter lasts a frame or two are not
-            # weak evidence, they are noise shaped like a measurement -- and worse than a
-            # blank, because "1.01 / 1.00" reads as the cleanest row on the page. That is
-            # exactly how a reader ranked a vanishing_daughter artifact first on 2026-08-01.
-            stub = getattr(r, "dau_min", float("nan"))
-            measurable = not (stub == stub and stub <= _STUB_DAUGHTER_FRAMES)
-            g = (lambda v: f(v)) if measurable else (lambda v: "n/a")  # noqa: E731
-            out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
-                       f"{r.daughter_ids} | {getattr(r, 'dau_frames', '-') or '-'} | "
-                       f"{getattr(r, 'stratum', '-')} | {g(r.dna_ratio)} | {g(r.size_ratio)} | "
-                       f"{'-' if r.link_distance_px != r.link_distance_px else f'{r.link_distance_px:.0f}'} | "
-                       f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'} | "
-                       f"{f(getattr(r, 'cond', None))} | "
-                       f"{'-' if int(getattr(r, 'cond_frame', -1)) < 0 else int(r.cond_frame)} | "
-                       f"{f(getattr(r, 'cond_dna', None))} | "
-                       f"{f(getattr(r, 'cond_area', None))} | "
-                       f"{getattr(r, 'also', '') or '-'}")
-        out.append(
-            "\nA LOW size ratio with a healthy dna ratio is the fragment signature -- the "
-            "big object carries the DNA and the small one is a micronucleus, so the 'split' "
-            "is not a division. Confirm on the pixels before believing either way."
-        )
-        out.append(
-            f"stratum is the first artifact class this row trips -- the same label the "
-            f"census counts. It is printed per row because reading a row without it is how "
-            f"a known-suspect link gets ranked as the cleanest in the well."
-            f"\ndau_frames is how many frames each recorded daughter lasts. Where either is "
-            f"{_STUB_DAUGHTER_FRAMES} or fewer, dna and size read 'n/a': they are measured "
-            f"ACROSS that link, so a one-frame daughter makes them noise, and a printed "
-            f"number would outrank the honest rows. Persistent daughters (e.g. 77/77) are "
-            f"the ones whose ratios mean anything. Not a verdict -- the tracker breaking at "
-            f"a real division also produces stubs, which is why an 'n/a' row is a reason to "
-            f"call list_nearby_tracks, not a reason to reject it."
-        )
-        out.append(
-            f"cond is the CONDENSATION peak -- brightness per pixel at its highest, "
-            f"relative to this mother's own median and to the other cells in the same "
-            f"frame (so bleaching cancels). 1.0 is her normal interphase state; mitosis "
-            f"packs the same DNA into fewer pixels, so it reads above 1. cond_f is the "
-            f"frame it peaked at, and it is usually LATER than last_frame -- the link "
-            f"ends where the tracker loses the cell, not where the cell divides. "
-            f"cond_area is the family's area there over her baseline (below 1 = compacted) "
-            f"and cond_dna is total signal over her baseline. "
-            f"Only frames holding {_COND_DNA_MIN}-{_COND_DNA_MAX}x the baseline signal "
-            f"were eligible: below that the DNA has genuinely gone and the object is a "
-            f"fragment, whatever its brightness does. '-' means no eligible frame, or too "
-            f"short a mother to have a baseline. "
-            f"This is the only MORPHOLOGY column here -- every other one describes who the "
-            f"tracker linked to whom, and on BeWo that topology scored close to "
-            f"anti-correlated with a human reading metaphase plates. Unvalidated, and it "
-            f"cannot tell condensed chromatin from the clumped chromatin of a dying cell."
-        )
-    else:
-        # These scores describe the track's OWN BIRTH link, not an ending -- a track
-        # here has no daughters by definition. Shown because the combination is
-        # genuinely informative: something born as a tiny fragment and then vanishing
-        # is a different story from a full-sized nucleus that stops.
-        out.append("track_id | frames | duration | born_dna | born_size | edge_um")
-        for r in shown.itertuples():
-            f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
-            out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
-                       f"{int(r.duration_f)} | {f(getattr(r, 'dna_ratio', None))} | "
-                       f"{f(getattr(r, 'size_ratio', None))} | "
-                       f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'}")
-        if pool == "track_end":
-            out.append(
-                "\nborn_dna/born_size describe how this track was BORN, not how it ends -- "
-                "it has no daughters by definition. A low born_size that then vanishes is "
-                "most likely a fragment appearing and going, not a cell dying."
-            )
-            out.append(
-                "This pool is deliberately NOT called deaths. A cell that died and a "
-                "division whose daughters were never linked both look like a track that "
-                "stops -- topology cannot tell them apart, and 96% of one hand-checked "
-                "sample of 'deaths' in this project turned out to still be alive."
-            )
-    if pool == "division":
-        # Hand-building this call is where the documented trap gets sprung: centring on
-        # the link (last_frame) instead of on the condensation peak shows the frames
-        # AFTER the event. Prefill it, so the default is the right one.
-        out.append("\nReady to look -- paste one (centred on cond_f, not on the link):")
-        for r in shown.itertuples():
-            cf_ = int(getattr(r, "cond_frame", -1))
-            centre = cf_ if cf_ >= 0 else int(r.last_frame)
-            fam = [int(r.track_id), *_kid_ids(r.daughter_ids)]
-            out.append(f'  {int(r.track_id)}  follow_cells_over_time(well="{well}", '
-                       f'track_ids={fam}, centre_frame={centre})'
-                       + ("" if cf_ >= 0 else "   [no cond peak -- centred on the link, "
-                                              "which is usually EARLY; widen if empty]"))
+    out += (_division_table(shown, well) if pool == "division"
+            else _birth_table(shown, pool))
     out.append("Next: get_track_profile (free) on anything here, then follow_cells_over_time to look.")
     return "\n".join(out)
 
