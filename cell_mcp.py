@@ -1190,8 +1190,39 @@ def _family_filmstrip_frames(
         ids_g = sorted({t for v in gapped.values() for t in v})
         spec.append(f"{len(gapped)} frame(s) labelled 'gap' (member "
                     f"{', '.join(str(t) for t in ids_g)} not segmented there).")
-    if held:
+    # A HELD frame is a frozen crop of a PLACE, and it costs exactly what a real one
+    # costs. When most of the strip is HELD the member set does not cover the window
+    # that was asked for, and the reader finds out only by spending the images and
+    # looking at them -- 8 of 12 in one call on 2026-08-01, a third of that session's
+    # whole budget. Say it up front, and hand back the call that fixes it: the real
+    # daughters are usually unlinked ids that begin inside the window, because the
+    # tracker breaks AT the division rather than through it.
+    severe = held and len(held) >= max(2, len(picks) // 3)
+    if held and not severe:
         spec.append(f"{len(held)} frame(s) labelled HELD -- no member present.")
+    elif severe:
+        cand: dict[int, int] = {}
+        for r in df[df.frame.isin(held) & ~df.track_id.isin(kept)].itertuples():
+            cx_f, cy_f, _, _ = centres[int(r.frame)]
+            if float(np.hypot(r.cx - cx_f, r.cy - cy_f)) * um_px <= crop_um / 2.0:
+                cand[int(r.track_id)] = cand.get(int(r.track_id), 0) + 1
+        top = sorted(cand, key=lambda t: -cand[t])[:4]
+        msg = (f"WARNING -- the members cover only {len(picks) - len(held)} of "
+               f"{len(picks)} sampled frames. The other {len(held)} are HELD: a frozen "
+               f"crop of a place, showing whatever happens to sit there.")
+        if top:
+            msg += (f" Segmented inside the crop on those frames but NOT in this set: "
+                    f"{', '.join(f'{t} ({cand[t]}f)' for t in top)}. Add them -- "
+                    f'follow_cells_over_time(well="{well}", '
+                    f"track_ids={sorted(set(kept) | set(top))}, centre_frame={transition}) "
+                    f"-- or list_nearby_tracks(well, track_id={kept[0] if kept else ids[0]}) "
+                    f"to see everything there. Unlinked ids beginning LATE are the "
+                    f"expected shape of a real division here, not an anomaly.")
+        else:
+            msg += (" Nothing else was segmented inside the crop on those frames either, "
+                    "so the window most likely reaches past the event: re-centre with "
+                    "centre_frame= on the condensation peak, or cut after_min.")
+        spec.insert(0, msg)
     if dropped:
         spec.append(f"{len(dropped)} further member(s) were dropped to keep the centre "
                     f"stable ({', '.join(str(t) for t in dropped)}); the {len(kept)} "
@@ -1635,6 +1666,40 @@ _STRATA = [
 ]
 
 
+def _kid_ids(s) -> list[int]:
+    """The daughter ids in a lineage.csv `daughter_ids` cell, which is space-joined text."""
+    return [int(k) for k in str(s).split() if k.strip().lstrip("-").isdigit()]
+
+
+# A recorded daughter lasting this many frames or fewer is a stub, not an outcome.
+# Shared by the vanishing_daughter stratum and by the ratio suppression in
+# find_candidates so the two can never disagree about which rows are measurable.
+# Counted INCLUSIVELY (last - first + 1), because a daughter that exists cannot last
+# zero frames -- the stratum's own `dur < 5` is the same cut on an exclusive span.
+_STUB_DAUGHTER_FRAMES = 5
+
+
+def _daughter_spans(rows, lin) -> tuple[list[str], list[float]]:
+    """Per row: how long each recorded daughter lasted, and the shorter of the two.
+
+    Free -- already in lineage.csv. It is here because on the one sample where it
+    has been looked at, it separated the real divisions from the artifacts better
+    than any of the scored columns did: daughters that persisted (118/159, 77/77)
+    against stubs (6/10, 4/1, 1/2). n=5 and one cell line, so it is printed as a
+    fact about the tracking, not scored or sorted on.
+    """
+    li = lin.set_index("track_id")
+    dur = (li.last_frame - li.first_frame + 1).to_dict()
+    spans, worst = [], []
+    for r in rows.itertuples():
+        kids = _kid_ids(r.daughter_ids)
+        ds = [dur.get(k, float("nan")) for k in kids]
+        spans.append("/".join("?" if d != d else f"{int(d)}" for d in ds) or "-")
+        finite = [d for d in ds if d == d]
+        worst.append(min(finite) if finite else float("nan"))
+    return spans, worst
+
+
 def _division_strata(rows, lin, tracks, m) -> list:
     """Label each recorded division with the FIRST artifact class it trips.
 
@@ -1660,12 +1725,9 @@ def _division_strata(rows, lin, tracks, m) -> list:
         if "intensity_mean" in tracks.columns else None
     dim_cut = float(bright.median()) * 0.6 if bright is not None and len(bright) else None
 
-    def _kids(s) -> list[int]:
-        return [int(k) for k in str(s).split() if k.strip().lstrip("-").isdigit()]
-
     labels = []
     for r in rows.itertuples():
-        kids = _kids(r.daughter_ids)
+        kids = _kid_ids(r.daughter_ids)
         fam = [int(r.track_id), *kids]
         if suspect & set(fam):
             labels.append("merged_id")
@@ -1678,7 +1740,7 @@ def _division_strata(rows, lin, tracks, m) -> list:
         elif (r.size_ratio == r.size_ratio and r.size_ratio < 0.25
               and r.dna_ratio == r.dna_ratio and r.dna_ratio > 0.8):
             labels.append("fragment_like")
-        elif kids and min((dur.get(k, np.nan) for k in kids), default=np.nan) < 5:
+        elif kids and min((dur.get(k, np.nan) for k in kids), default=np.nan) < _STUB_DAUGHTER_FRAMES:
             labels.append("vanishing_daughter")
         elif (dim_cut is not None
               and any(k in bright.index and bright[k] < dim_cut for k in kids)):
@@ -1833,6 +1895,7 @@ def find_candidates(
     census = []
     if pool == "division":
         rows["stratum"] = _division_strata(rows, lin, tracks, m)
+        rows["dau_frames"], rows["dau_min"] = _daughter_spans(rows, lin)
         cs, cf, cd, ca = _condensation(well, rows, lin, tracks, m["pixel_size_um"])
         rows["cond"], rows["cond_frame"] = cs, cf
         rows["cond_dna"], rows["cond_area"] = cd, ca
@@ -1945,12 +2008,20 @@ def find_candidates(
         return "\n".join(out)
 
     if pool == "division":
-        out.append("track_id | frames | daughters | dna | size | link_px | edge_um | "
-                   "cond | cond_f | cond_dna | cond_area | also")
+        out.append("track_id | frames | daughters | dau_frames | stratum | dna | size | "
+                   "link_px | edge_um | cond | cond_f | cond_dna | cond_area | also")
         for r in shown.itertuples():
             f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
+            # Ratios measured across a link whose daughter lasts a frame or two are not
+            # weak evidence, they are noise shaped like a measurement -- and worse than a
+            # blank, because "1.01 / 1.00" reads as the cleanest row on the page. That is
+            # exactly how a reader ranked a vanishing_daughter artifact first on 2026-08-01.
+            stub = getattr(r, "dau_min", float("nan"))
+            measurable = not (stub == stub and stub <= _STUB_DAUGHTER_FRAMES)
+            g = (lambda v: f(v)) if measurable else (lambda v: "n/a")  # noqa: E731
             out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
-                       f"{r.daughter_ids} | {f(r.dna_ratio)} | {f(r.size_ratio)} | "
+                       f"{r.daughter_ids} | {getattr(r, 'dau_frames', '-') or '-'} | "
+                       f"{getattr(r, 'stratum', '-')} | {g(r.dna_ratio)} | {g(r.size_ratio)} | "
                        f"{'-' if r.link_distance_px != r.link_distance_px else f'{r.link_distance_px:.0f}'} | "
                        f"{'?' if r.edge_um != r.edge_um else f'{r.edge_um:.0f}'} | "
                        f"{f(getattr(r, 'cond', None))} | "
@@ -1962,6 +2033,18 @@ def find_candidates(
             "\nA LOW size ratio with a healthy dna ratio is the fragment signature -- the "
             "big object carries the DNA and the small one is a micronucleus, so the 'split' "
             "is not a division. Confirm on the pixels before believing either way."
+        )
+        out.append(
+            f"stratum is the first artifact class this row trips -- the same label the "
+            f"census counts. It is printed per row because reading a row without it is how "
+            f"a known-suspect link gets ranked as the cleanest in the well."
+            f"\ndau_frames is how many frames each recorded daughter lasts. Where either is "
+            f"{_STUB_DAUGHTER_FRAMES} or fewer, dna and size read 'n/a': they are measured "
+            f"ACROSS that link, so a one-frame daughter makes them noise, and a printed "
+            f"number would outrank the honest rows. Persistent daughters (e.g. 77/77) are "
+            f"the ones whose ratios mean anything. Not a verdict -- the tracker breaking at "
+            f"a real division also produces stubs, which is why an 'n/a' row is a reason to "
+            f"call list_nearby_tracks, not a reason to reject it."
         )
         out.append(
             f"cond is the CONDENSATION peak -- brightness per pixel at its highest, "
@@ -2005,6 +2088,19 @@ def find_candidates(
                 "stops -- topology cannot tell them apart, and 96% of one hand-checked "
                 "sample of 'deaths' in this project turned out to still be alive."
             )
+    if pool == "division":
+        # Hand-building this call is where the documented trap gets sprung: centring on
+        # the link (last_frame) instead of on the condensation peak shows the frames
+        # AFTER the event. Prefill it, so the default is the right one.
+        out.append("\nReady to look -- paste one (centred on cond_f, not on the link):")
+        for r in shown.itertuples():
+            cf_ = int(getattr(r, "cond_frame", -1))
+            centre = cf_ if cf_ >= 0 else int(r.last_frame)
+            fam = [int(r.track_id), *_kid_ids(r.daughter_ids)]
+            out.append(f'  {int(r.track_id)}  follow_cells_over_time(well="{well}", '
+                       f'track_ids={fam}, centre_frame={centre})'
+                       + ("" if cf_ >= 0 else "   [no cond peak -- centred on the link, "
+                                              "which is usually EARLY; widen if empty]"))
     out.append("Next: get_track_profile (free) on anything here, then follow_cells_over_time to look.")
     return "\n".join(out)
 

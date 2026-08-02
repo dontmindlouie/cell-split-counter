@@ -80,6 +80,67 @@ def test_it_never_claims_a_sort_it_did_not_apply(well, monkeypatch):
     assert "asked for fragment_like" in out and "sorted by frame" in out
 
 
+def _rows(out: str) -> list[str]:
+    return [l for l in out.splitlines() if l and l[0].isdigit() and " | " in l]
+
+
+def test_the_stratum_is_printed_on_every_row_not_just_in_the_census(well):
+    """It was computed and counted, but only shown in the summary block -- so a reader
+    scanning the table ranked a known vanishing_daughter link as the cleanest row in
+    the well (2026-08-01, track 115)."""
+    out = cell_mcp.find_candidates(well, pool="division", sort_by="fragment_like")
+    assert "| stratum |" in out
+    for line in _rows(out):
+        assert any(name in line for name, _ in cell_mcp._STRATA), line
+
+
+def test_ratios_measured_across_a_stub_link_read_na_not_a_number(well):
+    """Both mothers here have a 2-frame daughter. dna/size are measured ACROSS that
+    link, so a printed 0.98 outranks the honest rows -- worse than a blank."""
+    out = cell_mcp.find_candidates(well, pool="division", sort_by="fragment_like")
+    for line in _rows(out):
+        assert "n/a | n/a" in line, line
+        assert "0.98" not in line and "1.02" not in line, line
+
+
+def test_ratios_come_back_when_both_daughters_persist(well):
+    df = pd.read_csv(Path(cell_mcp.BUNDLE) / "W" / "lineage.csv")
+    df.loc[df.track_id == 3, "last_frame"] = 40  # no longer a stub
+    df.to_csv(Path(cell_mcp.BUNDLE) / "W" / "lineage.csv", index=False)
+    out = cell_mcp.find_candidates(well, pool="division", sort_by="fragment_like")
+    row = next(l for l in _rows(out) if l.startswith("1 |"))
+    assert "0.98" in row and "n/a" not in row, row
+
+
+def test_dau_frames_can_never_disagree_with_the_vanishing_daughter_stratum(well):
+    """One threshold, two consumers.
+
+    Note the asymmetry, which is deliberate: strata are FIRST-match-wins, so a row
+    with a stub daughter that also trips fragment_like is labelled fragment_like and
+    never reaches the vanishing_daughter test. The census therefore UNDERSTATES how
+    many links rest on a stub. Suppression must key off the span itself, not off the
+    label, or those rows print ratios again through the side door.
+    """
+    out = cell_mcp.find_candidates(well, pool="division", sort_by="fragment_like")
+    for line in _rows(out):
+        spans = [int(x) for x in line.split("|")[3].strip().split("/") if x.strip().isdigit()]
+        stub = min(spans) <= cell_mcp._STUB_DAUGHTER_FRAMES
+        assert stub == ("n/a" in line), line
+        if "vanishing_daughter" in line:
+            assert stub, line
+    assert "0" not in [l.split("|")[3].strip() for l in _rows(out)], \
+        "a daughter that exists cannot last zero frames -- count inclusively"
+
+
+def test_it_hands_back_a_call_centred_on_the_event_not_on_the_link(well):
+    """Hand-building this call is where the documented trap gets sprung."""
+    out = cell_mcp.find_candidates(well, pool="division", sort_by="fragment_like")
+    assert "Ready to look" in out
+    call = next(l for l in out.splitlines() if "follow_cells_over_time(" in l and "  1 " in l)
+    assert "track_ids=[1, 2, 3]" in call, "the family, not the mother alone"
+    assert "centre_frame=" in call
+
+
 def test_contested_pool_says_so_when_the_source_cannot_supply_it(well, monkeypatch):
     monkeypatch.setattr(cell_mcp, "_manifest", lambda w: {
         "n_frames": 100, "pixel_size_um": 0.5, "width_px": 512, "height_px": 512,

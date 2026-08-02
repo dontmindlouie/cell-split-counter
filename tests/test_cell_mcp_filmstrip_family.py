@@ -11,6 +11,7 @@ server: a held position must never be presentable as a measured one, and the cro
 not rescale between frames so that a rendering artifact can be read as biology.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -50,6 +51,15 @@ def fake(monkeypatch):
                         lambda well, f: np.full((512, 512), 40, dtype=np.uint8))
     monkeypatch.setattr(cell_mcp, "_hours", lambda well, f: f * 0.1)
     return "fake"
+
+
+def _window(header: str) -> tuple[int, int]:
+    """The rendered frame range, found by SHAPE rather than by splitting on the first
+    'frames ' in the header. The header carries prose that legitimately contains that
+    word ahead of the range, so the naive split silently read a warning instead."""
+    m = re.search(r"frames (\d+)-(\d+) \(", header)
+    assert m, f"no frame range in header: {header[:200]}"
+    return int(m.group(1)), int(m.group(2))
 
 
 def _strip(fake, ids, **kw):
@@ -109,6 +119,30 @@ def test_a_frame_with_no_member_is_held_and_labelled_never_interpolated(fake):
     whole tool set exists to avoid."""
     header, _ = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39, max_images=12)
     assert "HELD" in header and "Neither is interpolated" in header
+
+
+def test_a_mostly_held_strip_says_so_before_the_images_are_spent(fake):
+    """A HELD frame costs what a real one costs and teaches nothing -- it is a frozen
+    crop of a place. Learning that by looking at 8 of 12 rendered images, as happened
+    on 2026-08-01, is the whole failure; the header has the counts before the render."""
+    header, _ = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39, max_images=12)
+    assert "WARNING" in header and "cover only" in header
+    assert header.startswith("WARNING"), "a warning after the prose is one nobody reads"
+    assert "re-centre" in header or "cut after_min" in header
+
+
+def test_it_names_the_tracks_that_would_fill_a_held_strip(fake, monkeypatch):
+    """The daughters the tracker never linked are the usual reason a strip goes HELD,
+    and they are sitting right there in the crop. Naming them turns a dead render into
+    the next call."""
+    rows = cell_mcp._tracks(fake).to_dict("records")
+    rows += [{"track_id": 4, "frame": f, "cx": 140.0, "cy": 100.0, "area_px": 200.0,
+              "n_masks_in_frame": 1, "intensity_mean": 100.0} for f in range(20, 30)]
+    monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
+    header, _ = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39, max_images=12)
+    assert "WARNING" in header
+    assert "NOT in this set" in header and "4 (" in header
+    assert "track_ids=[1, 2, 3, 4]" in header, "hand back the call, not just the id"
 
 
 def test_members_are_capped_and_chosen_once_by_lifetime(fake, monkeypatch):
@@ -299,21 +333,21 @@ def test_window_reaches_much_further_forward_by_default(fake):
     header, _ = _strip(fake, [1, 2, 3],
                        before_min=cell_mcp._WINDOW_BEFORE_MIN,
                        after_min=cell_mcp._WINDOW_AFTER_MIN)
-    lo, hi = (int(x) for x in header.split("frames ")[1].split(" (")[0].split("-"))
+    lo, hi = _window(header)
     assert hi - 10 > 10 - lo, "must look further past the transition than before it"
 
 
 def test_a_minute_window_is_never_quietly_shorter_than_asked(fake):
     """Rounding inward would make a 90 min window mean 85 on some wells, silently."""
     header, _ = _strip(fake, [1, 2, 3], before_min=12.0, after_min=12.0)
-    lo, hi = (int(x) for x in header.split("frames ")[1].split(" (")[0].split("-"))
+    lo, hi = _window(header)
     assert cell_mcp._minutes_between(fake, lo, 10) >= 12.0
     assert cell_mcp._minutes_between(fake, 10, hi) >= 12.0
 
 
 def test_the_header_states_the_window_in_minutes(fake):
     header, _ = _strip(fake, [1, 2, 3])
-    assert "min)" in header.split("frames ")[1][:40], "frame numbers alone hide cadence"
+    assert re.search(r"frames \d+-\d+ \(\d+ min\)", header), "frame numbers alone hide cadence"
 
 
 # --- sampling: gap-free when it fits, time-spaced when it does not ------------
