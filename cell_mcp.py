@@ -2484,7 +2484,10 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
             marker (optional, default False): ring the tracked cell -- with
                 track_ids, rings every member present or none.
 
-    Returns the path to the written .html file. Images are embedded as base64, so the
+    Returns the ABSOLUTE path to the written .html file -- give that path to the user
+    verbatim, on its own, so they can click or paste it. Do not shorten it, do not
+    describe where the file is instead of naming it, and do not make them ask twice.
+    Images are embedded as base64, so the
     file is portable on its own -- open it directly, or serve it
     (`python -m http.server`) if file:// is blocked in the browser being used.
     """
@@ -2632,7 +2635,12 @@ document.addEventListener('keydown', function(e) {{
     import time
     out_path = out_dir / f"browser_{time.strftime('%Y%m%d_%H%M%S')}.html"
     out_path.write_text(html, encoding="utf-8")
-    return str(out_path)
+    # ABSOLUTE, always. BUNDLE is usually relative, so this used to return
+    # "data\bundle\<well>\browsers\browser_....html" -- which is only openable by
+    # someone already sitting in the repo root. The reader is a person in a terminal
+    # or a chat window who wants to click it, and their verdict was that they had to
+    # "hunt down the html link". A path they cannot open is not a deliverable.
+    return str(out_path.resolve())
 
 
 _ANNOTATION_FIELDS = [
