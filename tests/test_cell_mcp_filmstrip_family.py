@@ -58,11 +58,11 @@ def _strip(fake, ids, **kw):
     kw = {"start_frame": None, "end_frame": None, "max_images": 12, "crop_um": None,
           "color": False, "scale_bar": False, "marker": False,
           "before_min": 20.0, "after_min": 20.0, "stride_min": cell_mcp._STRIDE_MIN,
-          "cap": cell_mcp.MAX_IMAGES, **kw}
+          "cap": cell_mcp.MAX_IMAGES, "added": None, **kw}
     return cell_mcp._family_filmstrip_frames(
         fake, ids, kw["start_frame"], kw["end_frame"], kw["max_images"], kw["crop_um"],
         kw["color"], kw["scale_bar"], kw["marker"],
-        kw["before_min"], kw["after_min"], kw["stride_min"], kw["cap"])
+        kw["before_min"], kw["after_min"], kw["stride_min"], kw["cap"], kw["added"])
 
 
 def test_window_is_chosen_around_the_membership_transition(fake):
@@ -143,9 +143,9 @@ def test_no_ring_by_default_and_the_header_says_why(fake):
 def test_a_lone_mother_expands_to_her_recorded_daughters(fake, monkeypatch):
     monkeypatch.setattr(cell_mcp, "_lineage",
                         lambda well: {1: {"daughters": [2, 3]}})
-    assert cell_mcp._resolve_family(fake, [1]) == [1, 2, 3]
-    # Explicit sets are left exactly as given -- the caller may be disputing the link.
-    assert cell_mcp._resolve_family(fake, [1, 2]) == [1, 2]
+    assert cell_mcp._resolve_family(fake, [1], include_nearby=False) == ([1, 2, 3], [])
+    # Explicit sets keep their recorded members -- the caller may be disputing the link.
+    assert cell_mcp._resolve_family(fake, [1, 2], include_nearby=False) == ([1, 2], [])
 
 
 # --------------------------------------------------------------------- dropouts
@@ -334,3 +334,63 @@ def test_a_page_may_show_more_frames_than_the_context_cap(fake):
     _, images = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39,
                        max_images=None, cap=cell_mcp.MAX_IMAGES_PAGE)
     assert len(images) == 40, "the whole range fits under the page cap"
+
+
+# --- daughters the lineage never recorded ------------------------------------
+#
+# "Only tracking 1 daughter, would be nice to have midpoint" -- the maintainer, scoring BeWo
+# case 12 (track 969), where the mitosis is plainly visible (pro 768, meta 777, ana
+# 792) but only one daughter is linked, so the crop follows half the event and the
+# real sister drifts out of frame.
+
+
+def test_an_unlinked_sister_is_found_by_position(monkeypatch, fake):
+    """A daughter the tracker never connected still has to APPEAR as a new object next
+    to her mother. That is what makes her findable from geometry alone."""
+    rows = list(cell_mcp._tracks(fake).to_dict("records"))
+    # Track 1 ends at f9 at (100, 100); 2 and 3 are her recorded daughters. Track 50
+    # begins at f10 right beside her and is linked to nobody.
+    for f in range(10, 20):
+        rows.append({"track_id": 50, "frame": f, "cx": 104.0, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0,
+                     "area_um2": 50.0})
+    for r in rows:
+        r.setdefault("area_um2", r["area_px"] * 0.25)
+    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
+
+    members, added = cell_mcp._resolve_family(fake, [1])
+    assert 50 in members and added == [50]
+
+
+def test_a_long_standing_neighbour_is_not_mistaken_for_a_daughter(monkeypatch, fake):
+    """The discriminator is that a sister is NEW. A cell that has been on screen the
+    whole time and merely happens to be close is a neighbour, and sweeping it in turns
+    'the sister' into 'the neighbourhood'."""
+    rows = list(cell_mcp._tracks(fake).to_dict("records"))
+    for f in range(0, 20):
+        rows.append({"track_id": 60, "frame": f, "cx": 104.0, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0,
+                     "area_um2": 50.0})
+    for r in rows:
+        r.setdefault("area_um2", r["area_px"] * 0.25)
+    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
+
+    members, added = cell_mcp._resolve_family(fake, [1])
+    assert 60 not in members and added == []
+
+
+def test_the_header_says_a_member_is_there_by_position_not_lineage(monkeypatch, fake):
+    """Showing an unrecorded object silently would be claiming the lineage vouches for
+    it. It does not, and that is a different claim from a recorded daughter."""
+    rows = list(cell_mcp._tracks(fake).to_dict("records"))
+    for f in range(10, 20):
+        rows.append({"track_id": 50, "frame": f, "cx": 104.0, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0,
+                     "area_um2": 50.0})
+    for r in rows:
+        r.setdefault("area_um2", r["area_px"] * 0.25)
+    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
+    header, _ = _strip(fake, [1, 2, 3, 50], added=[50])
+    assert "by POSITION" in header and "50" in header

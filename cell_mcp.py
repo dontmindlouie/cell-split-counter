@@ -999,6 +999,7 @@ def _family_filmstrip_frames(
     color: bool, scale_bar: bool, marker: bool,
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
+    added: list[int] | None = None,
 ) -> tuple[str, list[np.ndarray]]:
     """Crop centred on a SET of tracks, resolved per frame from whoever is present.
 
@@ -1138,6 +1139,16 @@ def _family_filmstrip_frames(
     if missing:
         spec.append(f"NOT FOUND in {well} and ignored: "
                     f"{', '.join(str(t) for t in missing)}.")
+    shown_added = [t for t in (added or []) if t in kept]
+    if shown_added:
+        spec.append(
+            f"{', '.join(str(t) for t in shown_added)} "
+            f"{'is' if len(shown_added) == 1 else 'are'} in this strip by POSITION, "
+            f"not by lineage: {'it' if len(shown_added) == 1 else 'they'} began next "
+            f"to the mother within a few frames of the link, but nothing links "
+            f"{'it' if len(shown_added) == 1 else 'them'} to her. Included so the crop "
+            f"holds the whole event rather than the half the tracker recorded -- "
+            f"treat as an object worth seeing, not as a recorded daughter.")
 
     gen = [
         "Each frame is centred on the MEAN position of the members present in it, so "
@@ -1208,6 +1219,17 @@ def _family_filmstrip_frames(
 # How far either side of the mother's last frame to look for the mitotic figure.
 # Forward-heavy for the same reason the filmstrip window is: the link is where the
 # tracker gave up, and the figure can be ~20 min past it.
+# How far from the mother's own edge, and how far either side of the link IN MINUTES,
+# to look for a daughter the tracker never linked.
+#
+# Minutes and forward-heavy, for the third time in this file and for the same reason:
+# the link is where the tracker gave up, not where the cell divided. A first cut used
+# +/- 4 FRAMES and found nothing on BeWo 969, whose anaphase is 23 frames past its
+# link -- the very case that prompted this. Real sisters appear late.
+_FAMILY_NEARBY_UM = 14.0
+_FAMILY_NEARBY_BEFORE_MIN = 15.0
+_FAMILY_NEARBY_AFTER_MIN = 75.0
+
 _COND_BEFORE_MIN = 20.0
 _COND_AFTER_MIN = 60.0
 
@@ -2014,19 +2036,63 @@ def get_filmstrip(
     return out
 
 
-def _resolve_family(well: str, track_ids: list[int]) -> list[int]:
-    """Add a track's recorded daughters when only the mother was named.
+def _resolve_family(well: str, track_ids: list[int],
+                    include_nearby: bool = True) -> tuple[list[int], list[int]]:
+    """Add a track's recorded daughters, then the ones nobody recorded.
 
-    Convenience with a warning attached: the daughters come from lineage.csv, which
-    records what the TRACKER linked, not what happened. Pass the ids explicitly when
-    you already doubt the link -- and remember get_lineage's rule, that presence in
-    the table is not evidence the division was real.
+    Returns (members, added_positionally).
+
+    The daughters come from lineage.csv, which records what the TRACKER linked, not
+    what happened -- and where the tracker fails through a division it links one
+    daughter, or none, or a piece of debris. A strip built from that member set then
+    follows the mother and one daughter, the real sister drifts out of frame, and the
+    reviewer sees half an event. That is the exact complaint this exists to answer:
+    "only tracking 1 daughter, would be nice to have midpoint."
+
+    So after the recorded daughters, look for tracks that BEGIN near where the mother
+    ended, within a few frames of the link. A sister the tracker never connected still
+    has to appear as a new object next to her mother -- that is what makes this
+    findable from geometry with no new data. Anything found this way is returned
+    separately so the header can say the strip is showing objects the lineage does not
+    vouch for, which is a different claim from a recorded daughter.
+
+    It stays narrow in SPACE -- a radius set by the mother's own size, at most two
+    additions -- because widening that turns "the sister" into "the neighbourhood", and
+    a crop centred on a crowd follows nothing. It is wide in TIME, and forward-heavy,
+    because the sister appears when the cell actually divides rather than when the link
+    ends: BeWo 969's anaphase is 23 frames past its link.
     """
-    if len(track_ids) != 1:
-        return [int(t) for t in track_ids]
-    lin = _lineage(well)
-    kids = (lin.get(int(track_ids[0])) or {}).get("daughters") or []
-    return [int(track_ids[0]), *[int(k) for k in kids]]
+    ids = [int(t) for t in track_ids]
+    if len(track_ids) == 1:
+        lin = _lineage(well)
+        kids = (lin.get(ids[0]) or {}).get("daughters") or []
+        ids = [ids[0], *[int(k) for k in kids]]
+    if not include_nearby:
+        return ids, []
+
+    df = _tracks(well)
+    mother = df[df.track_id == ids[0]]
+    if mother.empty:
+        return ids, []
+    mother = mother.sort_values("frame")
+    link = int(mother.frame.iloc[-1])
+    x0, y0 = float(mother.cx.iloc[-1]), float(mother.cy.iloc[-1])
+    a0 = float(mother.area_um2.median()) if "area_um2" in mother else 0.0
+    um_px = _manifest(well)["pixel_size_um"]
+    r_px = (float(np.sqrt(max(a0, 1.0) / np.pi)) + _FAMILY_NEARBY_UM) / um_px
+
+    # Candidates: tracks whose FIRST frame lands near the link. A sister the tracker
+    # lost the mother into appears as a new id right there; a neighbour that merely
+    # happens to be close has been on screen for a long time already.
+    starts = df.sort_values("frame").groupby("track_id").first()
+    lo = _frame_at_offset_min(well, link, -_FAMILY_NEARBY_BEFORE_MIN)
+    hi = _frame_at_offset_min(well, link, _FAMILY_NEARBY_AFTER_MIN)
+    win = starts[(starts.frame >= lo) & (starts.frame <= hi)]
+    d2 = (win.cx - x0) ** 2 + (win.cy - y0) ** 2
+    near = win[d2 <= r_px * r_px].assign(d2=d2[d2 <= r_px * r_px])
+    extra = [int(t) for t in near.sort_values("d2").index if int(t) not in ids]
+    extra = extra[:2]
+    return [*ids, *extra], extra
 
 
 @server.tool()
@@ -2095,10 +2161,11 @@ def get_filmstrip_family(
     """
     if not track_ids:
         raise ValueError("track_ids is empty; give at least one track.")
+    members, added = _resolve_family(well, track_ids)
     header, images = _family_filmstrip_frames(
-        well, _resolve_family(well, track_ids), start_frame, end_frame,
+        well, members, start_frame, end_frame,
         max_images, crop_um, color, scale_bar, marker,
-        before_min, after_min, stride_min, MAX_IMAGES,
+        before_min, after_min, stride_min, MAX_IMAGES, added,
     )
     from mcp.types import TextContent
     out: list = [TextContent(type="text", text=header)]
@@ -2484,9 +2551,11 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
             marker (optional, default False): ring the tracked cell -- with
                 track_ids, rings every member present or none.
 
-    Returns the ABSOLUTE path to the written .html file -- give that path to the user
-    verbatim, on its own, so they can click or paste it. Do not shorten it, do not
-    describe where the file is instead of naming it, and do not make them ask twice.
+    Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
+    the user BOTH, verbatim, each on its own line -- terminals and chat clients
+    linkify a URL but not a Windows path, and which one is clickable depends on their
+    client. Do not shorten either, do not describe where the file is instead of naming
+    it, and do not make them ask twice.
     Images are embedded as base64, so the
     file is portable on its own -- open it directly, or serve it
     (`python -m http.server`) if file:// is blocked in the browser being used.
@@ -2501,7 +2570,7 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
         if "track_id" not in ev and "track_ids" not in ev:
             raise ValueError(f"events[{i}] needs 'track_id' or 'track_ids': {ev!r}")
         if "track_ids" in ev:
-            members = _resolve_family(well, [int(t) for t in ev["track_ids"]])
+            members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])
             crop = ev.get("crop_um")
             mx = ev.get("max_images")
             header, images = _family_filmstrip_frames(
@@ -2513,7 +2582,7 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
                 float(ev.get("before_min", _WINDOW_BEFORE_MIN)),
                 float(ev.get("after_min", _WINDOW_AFTER_MIN)),
                 float(ev.get("stride_min", _STRIDE_MIN)),
-                MAX_IMAGES_PAGE,
+                MAX_IMAGES_PAGE, added,
             )
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:
@@ -2635,12 +2704,15 @@ document.addEventListener('keydown', function(e) {{
     import time
     out_path = out_dir / f"browser_{time.strftime('%Y%m%d_%H%M%S')}.html"
     out_path.write_text(html, encoding="utf-8")
-    # ABSOLUTE, always. BUNDLE is usually relative, so this used to return
-    # "data\bundle\<well>\browsers\browser_....html" -- which is only openable by
-    # someone already sitting in the repo root. The reader is a person in a terminal
-    # or a chat window who wants to click it, and their verdict was that they had to
-    # "hunt down the html link". A path they cannot open is not a deliverable.
-    return str(out_path.resolve())
+    # ABSOLUTE, always, and as a file:// URL too. BUNDLE is usually relative, so this
+    # used to return "data\bundle\<well>\browsers\browser_....html" -- openable only by
+    # someone already sitting in the repo root. The reader is a person in a terminal or
+    # a chat window, and they said so twice: first that they had to "hunt down the html
+    # link", then that the absolute path still was not clickable and they were pasting
+    # it into Chrome by hand. Terminals and chat clients linkify a URL, not a Windows
+    # path, so give them both and let whichever one their client understands win.
+    full = out_path.resolve()
+    return f"{full}\n{full.as_uri()}"
 
 
 _ANNOTATION_FIELDS = [
