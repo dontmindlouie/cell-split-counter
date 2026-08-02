@@ -634,6 +634,28 @@ def get_track_profile(well: str, track_id: int) -> str:
                      f"{' -- low size ratio means one is a fragment, not a daughter' if (kr.get('size_ratio') or 1) < 0.25 else ''}]")
         lines.append(line)
         lines.append("  (get_lineage has the link scores and any contested alternatives)")
+        # Point at the other path when the recorded one is threadbare. A cold session
+        # reads "ends in a recorded split into 1846 + 1847", believes it, and never
+        # learns that both are 1-2 frame stubs and the real daughters are unlinked
+        # tracks a few frames later. Cellpose segmented them; only the tracker
+        # declined to connect them.
+        kid_lives = [len(df[df.track_id == int(d)])
+                     for d in (rec.get("daughters") or [])]
+        if kid_lives and max(kid_lives) < 5:
+            lines.append(
+                f"  ** the recorded daughters last "
+                f"{', '.join(str(n) for n in kid_lives)} frame(s) -- too short to be "
+                f"the outcome. The real daughters are usually unlinked tracks that "
+                f"appear LATER, since the tracker breaks at the division rather than "
+                f"through it. Call list_nearby_tracks(well, track_id={track_id}) to "
+                f"see every object segmented there, and centre a filmstrip with "
+                f"centre_frame= rather than trusting this link. **")
+    elif not rec.get("daughters"):
+        lines.append(
+            f"  lineage   no recorded daughters. That is not evidence the cell did not "
+            f"divide -- it more often means the tracker lost it at the division. "
+            f"list_nearby_tracks(well, track_id={track_id}) lists what was actually "
+            f"segmented where this track ended.")
     if has_solidity:
         lines.append(f"  solidity   {_sparkline(solidity)}  (min {min(solidity):.3f}, max {max(solidity):.3f})")
     lines.append(f"  area_um2   {_sparkline(area)}  (min {min(area):.0f}, max {max(area):.0f})")
@@ -1890,6 +1912,13 @@ def find_candidates(
             "line (a micronucleus is garbage on RUES2 and may be the phenotype on WGD). "
             "Nothing here is discarded: pass stratum= to pull rows from one class, "
             "which is how you sample a class to measure how often it is real."
+        )
+        out.append(
+            "Every stratum here describes the RECORDED link. When a row's daughters "
+            "look like stubs, list_nearby_tracks(well, track_id=...) shows every "
+            "object segmented at that spot -- including the ones nothing links to -- "
+            "and get_filmstrip_family(track_ids=[...], centre_frame=<cond_f>) renders "
+            "whichever of them you decide are the daughters."
         )
 
     if limit <= 0:
