@@ -111,17 +111,33 @@ def test_a_frame_with_no_member_is_held_and_labelled_never_interpolated(fake):
     assert "HELD" in header and "Neither is interpolated" in header
 
 
-def test_members_are_capped_and_chosen_once_by_size(fake, monkeypatch):
-    """A cell shattering during necrosis can throw many ids. Re-picking the largest
-    per frame would make the centre lurch as membership churned; picking once over the
-    window keeps the strip on the same objects, jagged but stable."""
+def test_members_are_capped_and_chosen_once_by_lifetime(fake, monkeypatch):
+    """A cell shattering during necrosis can throw many ids. Re-picking per frame would
+    make the centre lurch as membership churned; picking once over the window keeps the
+    strip on the same objects, jagged but stable.
+
+    Ranked by LIFETIME, not size. Median area dropped BeWo 1893 -- f480-497, the
+    surviving daughter -- for being the smallest object in the set, which is the one
+    member the strip could not afford to lose."""
     rows = [{"track_id": t, "frame": f, "cx": 100.0 + t, "cy": 100.0,
              "area_px": 500.0 - 10 * t, "n_masks_in_frame": 1, "intensity_mean": 100.0}
-            for t in range(1, 12) for f in range(5)]
+            for t in range(1, 12) for f in range(t % 5 + 1)]
     monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
     header, _ = _strip(fake, list(range(1, 12)), start_frame=0, end_frame=4)
     assert "dropped to keep the centre stable" in header
-    assert "largest by median area" in header
+    assert "longest-lived" in header
+    kept = header.split("tracks [")[1].split("]")[0]
+    # 4, 9 (5 frames each) outlive 1, 6, 11 (2 frames) despite being smaller.
+    assert "4" in kept and "9" in kept
+
+
+def test_a_member_absent_from_the_window_is_not_called_dropped(fake):
+    """"Dropped to keep the centre stable" claims a choice was made. A member whose
+    track ended before the window is simply not there, and saying otherwise sent a
+    reader looking for a decision that never happened."""
+    header, _ = _strip(fake, [1, 2, 3], start_frame=15, end_frame=19)
+    assert "not present anywhere in this window" in header
+    assert "1" in header.split("not present anywhere")[0].split(".")[-1] or "1" in header
 
 
 def test_unknown_ids_are_reported_rather_than_silently_ignored(fake):

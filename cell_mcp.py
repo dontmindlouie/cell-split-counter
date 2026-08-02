@@ -999,7 +999,7 @@ def _family_filmstrip_frames(
     color: bool, scale_bar: bool, marker: bool,
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
-    added: list[int] | None = None,
+    added: list[int] | None = None, centre_frame: int | None = None,
 ) -> tuple[str, list[np.ndarray]]:
     """Crop centred on a SET of tracks, resolved per frame from whoever is present.
 
@@ -1060,8 +1060,14 @@ def _family_filmstrip_frames(
     # cell divided -- the mitotic figure can be ~20 min past it. See the comment on
     # _WINDOW_AFTER_MIN: rendering to the transition is what made real divisions
     # look like artifacts.
+    # centre_frame wins when given, because inferring the transition from member spans
+    # only means anything for a mother-plus-daughters set. Hand-pick the members from
+    # list_nearby_tracks and the "second-earliest member's first frame" rule starts
+    # sliding the window AWAY from the event -- adding the intermediate tracks of BeWo
+    # 1824 moved it from f470-510 to f463-503, off the mitosis it was opened for.
     starts = sorted(spans.items(), key=lambda kv: kv[1][0])
-    transition = starts[1][1][0] if len(starts) > 1 else starts[0][1][0]
+    transition = (int(centre_frame) if centre_frame is not None
+                  else (starts[1][1][0] if len(starts) > 1 else starts[0][1][0]))
     lo = (_frame_at_offset_min(well, transition, -before_min)
           if start_frame is None else max(0, int(start_frame)))
     hi = (_frame_at_offset_min(well, transition, after_min)
@@ -1074,10 +1080,23 @@ def _family_filmstrip_frames(
     n = len(picks)
 
     win = sub[(sub.frame >= lo) & (sub.frame <= hi)]
+    # A member with no rows inside the window was not "dropped" -- it simply is not
+    # there, which is a different fact and needs saying differently. Conflating the two
+    # produced "6 members were dropped to keep the centre stable" for a window in which
+    # six of the seven members had already ended.
+    present = set(int(t) for t in win.track_id.unique())
+    absent = [t for t in ids if t not in present]
+    ids = [t for t in ids if t in present]
     kept = ids
     dropped: list[int] = []
     if len(ids) > _FAMILY_MAX_MEMBERS:
-        rank = win.groupby("track_id")["area_px"].median().sort_values(ascending=False)
+        # LONGEST-LIVED first, size only as a tie-break. Ranking by median area threw
+        # out BeWo 1893 -- f480-497, the surviving daughter and the only member that
+        # carried the outcome -- for being the smallest object in the set. The member
+        # you cannot afford to lose is the one that is still there at the end.
+        rank = (win.groupby("track_id")
+                .agg(n=("frame", "size"), a=("area_px", "median"))
+                .sort_values(["n", "a"], ascending=False))
         kept = [int(t) for t in rank.index[:_FAMILY_MAX_MEMBERS]]
         dropped = [t for t in ids if t not in kept]
         win = win[win.track_id.isin(kept)]
@@ -1124,8 +1143,12 @@ def _family_filmstrip_frames(
             f"{t}:f{spans[t][0]}-{spans[t][1]}" for t in kept if t in spans) + "."
     ]
     if start_frame is None and end_frame is None:
-        spec.append(f"Window auto-chosen around the membership transition at "
-                    f"f{transition}: {before_min:g} min before, {after_min:g} min after.")
+        spec.append(
+            f"Window auto-chosen around "
+            + (f"the frame you centred on, f{transition}"
+               if centre_frame is not None
+               else f"the membership transition at f{transition}")
+            + f": {before_min:g} min before, {after_min:g} min after.")
     if gapped:
         ids_g = sorted({t for v in gapped.values() for t in v})
         spec.append(f"{len(gapped)} frame(s) labelled 'gap' (member "
@@ -1135,7 +1158,11 @@ def _family_filmstrip_frames(
     if dropped:
         spec.append(f"{len(dropped)} further member(s) were dropped to keep the centre "
                     f"stable ({', '.join(str(t) for t in dropped)}); the {len(kept)} "
-                    f"kept are the largest by median area over this window.")
+                    f"kept are the longest-lived over this window.")
+    if absent:
+        spec.append(f"{', '.join(str(t) for t in absent)} "
+                    f"{'is' if len(absent) == 1 else 'are'} not present anywhere in "
+                    f"this window and contribute nothing to the centre.")
     if missing:
         spec.append(f"NOT FOUND in {well} and ignored: "
                     f"{', '.join(str(t) for t in missing)}.")
@@ -1437,6 +1464,124 @@ def _condensation(well: str, rows, lin, tracks, um_px: float) -> tuple[list, lis
     return scores, peaks, dnas, areas
 
 
+def _collapse_sites(well: str, rows, tracks) -> dict[int, list[int]]:
+    """Group recorded divisions that are the SAME physical event.
+
+    Returns {representative_mother: [the others]}.
+
+    A tracker that fails through a division does not fail once. On BeWo M2, tracks
+    1824 (f468-472), 1860 (f475-479) and 1883 (f479-496) are one cell at one spot,
+    each recorded as its own division with its own daughters -- and they took three of
+    the top five rows of a `cond`-ranked sample. A reviewer asked for five candidates
+    and got three copies of one event: the review budget is spent three times on one
+    answer, and any rate computed from the pool counts it three times.
+
+    The rule is the one that settled the daughter question, applied to mothers: a
+    mother whose track BEGINS where another mother's ENDED, within a short window, is
+    the same cell re-acquired. Non-overlapping spans at one place is a broken track,
+    not two cells -- BeWo does not divide twice in 84 minutes.
+
+    But proximity alone folds real divisions too, because a genuine daughter also
+    begins where her mother ended. What separates them is DURATION: a re-acquisition
+    is over in minutes, a lineage takes hours. So a merge is allowed only while the
+    whole group stays inside _SITE_MAX_SPAN_MIN.
+
+    Union-find, because the relation chains: 1824 links 1860, 1860 links 1883, and all
+    three must land in one group even though 1824 and 1883 are 24 frames apart.
+
+    Nothing is discarded -- the members are returned so the caller can list them. A
+    dropped row is a row nobody can audit, which is the failure that made events.csv
+    unusable.
+    """
+    m = _manifest(well)
+    # Needs geometry, size and real timestamps. A bundle missing any of them gets no
+    # fold rather than a silently wrong one -- every row stays its own site.
+    ids0 = [int(t) for t in rows.track_id]
+    if (not {"cx", "cy", "area_um2"}.issubset(tracks.columns)
+            or not m.get("frame_timestamps_ms")):
+        return {t: [] for t in ids0}
+    um_px = m["pixel_size_um"]
+    srt = tracks.sort_values("frame")
+    first = srt.groupby("track_id").first()
+    last = srt.groupby("track_id").last()
+    med = srt.groupby("track_id").area_um2.median()
+
+    ids = [int(t) for t in rows.track_id if t in last.index]
+    parent = {t: t for t in ids}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    # Pairs first, then a SPAN-CAPPED merge. Two knobs, and each was forced by a
+    # failure:
+    #
+    # Proximity alone chained f140 to f697 through a whole lineage and folded 81% of
+    # the pool, because a genuine daughter also begins where her mother ended -- so
+    # A->B->C walks straight through real divisions. Gating on "do two new objects
+    # coexist here" then folded almost NOTHING (3 rows of 1253): in a crowded BeWo
+    # field some pair always coexists, so the gate fires everywhere.
+    #
+    # What actually separates the two is DURATION. A re-acquisition of one cell is
+    # over in minutes; a lineage takes hours. So the merge is allowed only while the
+    # whole group stays inside _SITE_MAX_SPAN_MIN, which is far shorter than any cell
+    # cycle and long enough for a tracker to drop and regain an id several times.
+    starts = first.loc[ids]
+    sx, sy, sf = starts.cx.to_numpy(), starts.cy.to_numpy(), starts.frame.to_numpy()
+    sid = np.array(ids)
+    links = []
+    for t in ids:
+        fe = int(last.loc[t, "frame"])
+        x0, y0 = float(last.loc[t, "cx"]), float(last.loc[t, "cy"])
+        r_px = (float(np.sqrt(max(float(med.loc[t]), 1.0) / np.pi))
+                + _SITE_RADIUS_UM) / um_px
+        hi = _frame_at_offset_min(well, fe, _SITE_GAP_MIN)
+        sel = ((sf >= fe) & (sf <= hi) & (sid != t)
+               & (((sx - x0) ** 2 + (sy - y0) ** 2) <= r_px * r_px))
+        for u in sid[sel]:
+            links.append((fe, t, int(u)))
+
+    span = {t: (int(first.loc[t, "frame"]), int(last.loc[t, "frame"])) for t in ids}
+    gspan = {t: span[t] for t in ids}
+    for _, a, b in sorted(links):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            continue
+        lo_f = min(gspan[ra][0], gspan[rb][0])
+        hi_f = max(gspan[ra][1], gspan[rb][1])
+        if _minutes_between(well, lo_f, hi_f) > _SITE_MAX_SPAN_MIN:
+            continue
+        union(a, b)
+        gspan[find(a)] = (lo_f, hi_f)
+
+    groups: dict[int, list[int]] = {}
+    for t in ids:
+        groups.setdefault(find(t), []).append(t)
+    # Representative: the mother with the most frames -- the recording of this event
+    # that saw the most of it.
+    out: dict[int, list[int]] = {}
+    for members in groups.values():
+        rep = max(members, key=lambda t: int(last.loc[t, "frame"])
+                  - int(first.loc[t, "frame"]))
+        out[rep] = [t for t in members if t != rep]
+    return out
+
+
+# How close, and how long after, a mother must re-appear to count as the same cell.
+_SITE_RADIUS_UM = 14.0
+_SITE_GAP_MIN = 30.0
+# A group may not span more than this. Far shorter than any cell cycle, long enough
+# for a tracker to drop and regain one cell's id several times over.
+_SITE_MAX_SPAN_MIN = 60.0
+
+
 _STRATA = [
     # (name, blurb) in PRIORITY order -- first match wins, so the counts partition the
     # pool and sum to its total. Measurement defects are tested before biological
@@ -1515,6 +1660,7 @@ def find_candidates(
     exclude_near_edge: bool = True,
     stratum: str | None = None,
     seed: int | None = None,
+    collapse: bool = True,
 ) -> str:
     """Scan a WHOLE WELL and rank what is worth looking at. Free -- no images.
 
@@ -1589,6 +1735,12 @@ def find_candidates(
             area and brightness are understated because the nucleus is clipped. They
             are still COUNTED in the census, and asking for stratum="edge_clipped"
             turns this off automatically.
+        collapse: fold recorded divisions that are one physical event into a single
+            row (division pool only, ON by default). A tracker that fails through a
+            division fails repeatedly, so one BeWo mitosis appeared as tracks 1824,
+            1860 and 1883 -- three of the top five rows of one ranked sample. The
+            folded ids are listed in the `also` column, never dropped. Turn it off to
+            see the raw recorded pool.
         stratum: restrict rows to one census class (division pool only).
         seed: fixes the shuffle for sort_by="random", so the same call returns the
             same sample and a result can be checked by someone else. Recorded in
@@ -1647,6 +1799,15 @@ def find_candidates(
         cs, cf, cd, ca = _condensation(well, rows, lin, tracks, m["pixel_size_um"])
         rows["cond"], rows["cond_frame"] = cs, cf
         rows["cond_dna"], rows["cond_area"] = cd, ca
+        sites = _collapse_sites(well, rows, tracks) if collapse else {}
+        if collapse:
+            rows["also"] = [" ".join(str(u) for u in sites.get(int(t), []))
+                            for t in rows.track_id]
+            n_folded = len(rows) - len(sites)
+            rows = rows[rows.track_id.astype(int).isin(sites)]
+        else:
+            rows["also"] = ""
+            n_folded = 0
         counts = rows.stratum.value_counts()
         census = [f"{name} | {int(counts.get(name, 0))} | "
                   f"{100 * int(counts.get(name, 0)) / max(n_before, 1):.1f}% | {blurb}"
@@ -1706,10 +1867,14 @@ def find_candidates(
             + (f", seed={seed} (re-callable)." if seed is not None else
                ", UNSEEDED -- pass seed= if this sample will back a number.")
             ) if applied == "random" and limit > 0 else ""
+    fold = (f" {n_before} recorded divisions fold into {n_before - n_folded} distinct "
+            f"SITES ({n_folded} rows were the same cell re-acquired); the folded ids "
+            f"are in the `also` column, not discarded."
+            if pool == "division" and n_folded else "")
     out = [f"{well}: {pool} pool, {n_before} total"
            + (f", stratum={stratum}" if stratum else "")
            + (f", showing {len(shown)} sorted by {applied}.{note}{draw}" if limit > 0
-              else ", census only (limit=0).")]
+              else ", census only (limit=0).") + fold]
     if n_edge_dropped and not census:
         out.append(f"({n_edge_dropped} near-edge rows not shown; "
                    f"exclude_near_edge=False to include them.)")
@@ -1737,7 +1902,7 @@ def find_candidates(
 
     if pool == "division":
         out.append("track_id | frames | daughters | dna | size | link_px | edge_um | "
-                   "cond | cond_f | cond_dna | cond_area")
+                   "cond | cond_f | cond_dna | cond_area | also")
         for r in shown.itertuples():
             f = lambda v: "-" if v is None or v != v else f"{v:.2f}"  # noqa: E731
             out.append(f"{int(r.track_id)} | {int(r.first_frame)}-{int(r.last_frame)} | "
@@ -1747,7 +1912,8 @@ def find_candidates(
                        f"{f(getattr(r, 'cond', None))} | "
                        f"{'-' if int(getattr(r, 'cond_frame', -1)) < 0 else int(r.cond_frame)} | "
                        f"{f(getattr(r, 'cond_dna', None))} | "
-                       f"{f(getattr(r, 'cond_area', None))}")
+                       f"{f(getattr(r, 'cond_area', None))} | "
+                       f"{getattr(r, 'also', '') or '-'}")
         out.append(
             "\nA LOW size ratio with a healthy dna ratio is the fragment signature -- the "
             "big object carries the DNA and the small one is a micronucleus, so the 'split' "
@@ -2233,6 +2399,7 @@ def get_filmstrip_family(
     well: str,
     track_ids: list[int],
     start_frame: int | None = None, end_frame: int | None = None,
+    centre_frame: int | None = None,
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
     max_images: int | None = None, stride_min: float = _STRIDE_MIN,
     crop_um: float | None = None,
@@ -2282,6 +2449,12 @@ def get_filmstrip_family(
         track_ids: the members. One id = that track plus its recorded daughters.
         start_frame, end_frame: inclusive override of the automatic window. Given
             both, the range is rendered gap-free up to the image cap.
+        centre_frame: put the window around THIS frame instead of around the frame
+            where membership changes. Pass it whenever you chose the members
+            yourself -- the membership rule only means something for a mother plus
+            her recorded daughters, and on a hand-picked set it drifts. find_candidates
+            hands you `cond_f`, the frame the chromatin was most condensed, which is
+            usually the right thing to centre on.
         before_min, after_min: MINUTES either side of the membership transition,
             when the window is automatic. Converted to frames from this well's own
             timestamps, which are not evenly spaced.
@@ -2298,7 +2471,7 @@ def get_filmstrip_family(
     header, images = _family_filmstrip_frames(
         well, members, start_frame, end_frame,
         max_images, crop_um, color, scale_bar, marker,
-        before_min, after_min, stride_min, MAX_IMAGES, added,
+        before_min, after_min, stride_min, MAX_IMAGES, added, centre_frame,
     )
     from mcp.types import TextContent
     out: list = [TextContent(type="text", text=header)]
@@ -2678,6 +2851,8 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
                 browser -- so frames here are sampled by time and a window under 60
                 frames renders GAP-FREE. Capping it is how a researcher ends up
                 looking at every third frame of the event they asked to see.
+            centre_frame (optional): centre the window on this frame rather than on
+                the membership transition. Use it for hand-picked member sets.
             before_min, after_min, stride_min (optional): window and sampling in
                 MINUTES, as in get_filmstrip_family.
             crop_um (optional, default 60.0): crop width in micrometres.
@@ -2716,6 +2891,7 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
                 float(ev.get("after_min", _WINDOW_AFTER_MIN)),
                 float(ev.get("stride_min", _STRIDE_MIN)),
                 MAX_IMAGES_PAGE, added,
+                None if ev.get("centre_frame") is None else int(ev["centre_frame"]),
             )
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:
