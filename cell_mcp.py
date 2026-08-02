@@ -43,28 +43,35 @@ server = MCPServer(
         "Solidity (area / convex-hull area) dips as a mask rounds up during mitosis, but "
         "how much it is worth depends on the cell line -- strong on compact RUES2 nuclei, "
         "near-useless on the large lobed nuclei of a WGD line, where it has no headroom. "
-        "Then use get_filmstrip() to watch "
+        "Then use follow_cells_over_time() to watch "
         "the flagged frames closely and measure() for real units. Expect a track to END "
         "at the moment its cell divides, with the daughters carrying new track_ids -- so "
         "if a cell's filmstrip stops abruptly, the event you want is just past it: use "
         "get_lineage() for the daughter ids, and pass start_frame/end_frame beyond the "
-        "track's own lifetime, which get_filmstrip renders rather than truncating. The "
+        "track's own lifetime, which follow_cells_over_time renders rather than truncating. The "
         "same thing happens in reverse: a track can just as easily BEGIN mid-division, "
         "so a track that looks already mid-event on its very first frame may need frames "
         "from BEFORE first_frame (via the mother, from get_lineage) to see the lead-up. "
         "When a mask-following crop keeps losing the cell, or the object you care about "
         "was never segmented at all and so has no track_id to ask about, switch to "
-        "get_filmstrip_at() -- it watches a POSITION over time instead of a mask, and "
+        "watch_location_over_time() -- it watches a POSITION over time instead of a mask, and "
         "reports the nearest tracked cell per frame so you can tell what you are seeing. "
         "Two more rules that matter: the interval between frames is NOT constant, so "
-        "never compute durations from frame counts -- use measure() or time_ms; and some "
+        "never compute durations from frame counts -- use measure() or time_ms. It "
+        "DRIFTS within a single run, it does not just vary between wells: on the nTSC "
+        "well it runs 3.0 min early and 14.5 min late, so frames x interval is off by "
+        "~25% depending where in the movie you are, and a duration quoted that way is "
+        "wrong in the direction that matters for how long a cell spends in mitosis. "
+        "manifest.json's interval_ms carries BOTH a median and a mean (4.9 and 6.2 on "
+        "that well) -- say which one you are quoting, and note that only the mean "
+        "reproduces duration_hours. And some "
         "track_ids are flagged as merged cells, which must not be measured. Images show "
         "chromatin only (H2B-mCherry), so the shapes are nuclei rather than whole cells. "
         "If a cell looks dim or unusual and you can't tell whether that's the cell itself "
         "or the whole field, call get_neighbourhood_stats() before spending more images on "
         "it -- it's free and separates a cell-autonomous change from bleaching/defocus. "
         "When the user asks to SEE something rather than be told about it -- 'show me', "
-        "'let me see', 'send me' -- answer with show_cells(), which writes a page of "
+        "'let me see', 'send me' -- answer with show_cells_in_browser(), which writes a page of "
         "labelled filmstrips they can open, rather than describing frames in prose. "
         "Record human verdicts with annotate(); it is the only file here a human owns."
     ),
@@ -116,7 +123,7 @@ _STRIDE_MIN = 6.0
 _UPSCALE_TO = 312
 
 # Splits a filmstrip header into "what is true of this strip" and "how this tool
-# renders". show_cells prints the second half once per PAGE instead of once per
+# renders". show_cells_in_browser prints the second half once per PAGE instead of once per
 # case: a reviewer reading 14 identical paragraphs reads none of them, and the
 # caveats live in that half.
 _HDR_SEP = "\n\n"
@@ -436,7 +443,7 @@ def list_tracks(
     """List tracked cells in a well, most interesting first.
 
     A "track" is one cell followed over time, identified by track_id. Use this to
-    find cells worth looking at before calling get_filmstrip on them.
+    find cells worth looking at before calling follow_cells_over_time on them.
 
     Args:
         well: well name from list_wells().
@@ -529,7 +536,7 @@ def get_track_profile(well: str, track_id: int) -> str:
     """See how a cell's size, shape, and brightness change over its whole track, with no images.
 
     Free to call -- reads numbers already measured from the video, not pixels --
-    so use this BEFORE get_filmstrip to decide which frames are worth spending
+    so use this BEFORE follow_cells_over_time to decide which frames are worth spending
     images on.
 
     `solidity` (area / convex-hull area) dips when a mask rounds up or briefly
@@ -691,7 +698,7 @@ def get_track_profile(well: str, track_id: int) -> str:
         "separate a dim local patch from a dim field."
     )
     lines.append(
-        "These are candidate frames to spend a get_filmstrip call on -- not a verdict; "
+        "These are candidate frames to spend a follow_cells_over_time call on -- not a verdict; "
         "none of these numbers alone can tell a division from a death from a tracking "
         "artifact."
     )
@@ -704,12 +711,12 @@ def get_track_profile(well: str, track_id: int) -> str:
 # again as JSON in structured_content, base64 payload and all. At downscale=1 that
 # second copy is ~550k characters of base64 and blows the tool-output limit on its own.
 @server.tool(structured_output=False)
-def get_frame(well: str, frame: int, downscale: int = 2,
+def view_whole_field(well: str, frame: int, downscale: int = 2,
               color: bool = True, scale_bar: bool = True) -> ImageContent:
     """Show one whole field of view, to get oriented.
 
     Use this to see the overall layout and pick a region or cell, then use
-    get_filmstrip to follow a specific cell closely over time.
+    follow_cells_over_time to follow a specific cell closely over time.
 
     Args:
         well: well name from list_wells().
@@ -717,7 +724,7 @@ def get_frame(well: str, frame: int, downscale: int = 2,
         downscale: shrink by this factor to save space. 2 is usually plenty. At 1 a
             single frame costs a large fraction of the context window, and a nucleus
             is still only ~20 px across -- too coarse to judge chromatin either way.
-            Use get_filmstrip for anything that depends on a cell's shape.
+            Use follow_cells_over_time for anything that depends on a cell's shape.
         color: apply the microscope's own display colour (matches Fiji).
         scale_bar: burn in a labelled scale bar.
     """
@@ -808,9 +815,9 @@ def _filmstrip_frames(
     color: bool, scale_bar: bool, marker: bool,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
 ) -> tuple[str, list[np.ndarray]]:
-    """Shared by get_filmstrip (MCP images) and show_cells (HTML page).
+    """Shared by follow_cells_over_time (MCP images) and show_cells_in_browser (HTML page).
 
-    Returns (header text, rendered crop images) -- see get_filmstrip's docstring
+    Returns (header text, rendered crop images) -- see follow_cells_over_time's docstring
     for the semantics; this is that function's body with the ImageContent
     encoding split off so a second caller can embed the same pixels differently.
     """
@@ -1155,7 +1162,7 @@ def _family_filmstrip_frames(
     # The header is built in two halves, separated by _HDR_SEP: what is true of THIS
     # strip, then the standing explanation of how the tool renders. A page of 14 cases
     # repeated the standing half 14 times, and the reviewer stopped reading it after
-    # the first -- which means the warnings inside it stopped working. show_cells
+    # the first -- which means the warnings inside it stopped working. show_cells_in_browser
     # hoists the second half to the top of the page and prints it once.
     spec = [
         f"{well} tracks [{who}]: frames {lo}-{hi} "
@@ -1917,7 +1924,7 @@ def find_candidates(
             "Every stratum here describes the RECORDED link. When a row's daughters "
             "look like stubs, list_nearby_tracks(well, track_id=...) shows every "
             "object segmented at that spot -- including the ones nothing links to -- "
-            "and get_filmstrip_family(track_ids=[...], centre_frame=<cond_f>) renders "
+            "and follow_cells_over_time(track_ids=[...], centre_frame=<cond_f>) renders "
             "whichever of them you decide are the daughters."
         )
 
@@ -1990,7 +1997,7 @@ def find_candidates(
                 "stops -- topology cannot tell them apart, and 96% of one hand-checked "
                 "sample of 'deaths' in this project turned out to still be alive."
             )
-    out.append("Next: get_track_profile (free) on anything here, then get_filmstrip to look.")
+    out.append("Next: get_track_profile (free) on anything here, then follow_cells_over_time to look.")
     return "\n".join(out)
 
 
@@ -2014,7 +2021,7 @@ def _nearest_detection(well: str, frame: int, x: float, y: float,
 
 
 @server.tool(structured_output=False)
-def get_filmstrip_at(
+def watch_location_over_time(
     well: str,
     start_frame: int,
     end_frame: int,
@@ -2028,7 +2035,7 @@ def get_filmstrip_at(
 ) -> list:
     """Watch a PLACE over time, instead of following a cell's own mask.
 
-    get_filmstrip answers "what happened to track N". This answers "what happened
+    follow_cells_over_time answers "what happened to track N". This answers "what happened
     HERE", which is a different question and often the one you actually have.
 
     Reach for this when:
@@ -2169,68 +2176,6 @@ def get_filmstrip_at(
     return out
 
 
-@server.tool()
-def get_filmstrip(
-    well: str, track_id: int,
-    start_frame: int | None = None, end_frame: int | None = None,
-    max_images: int | None = None, stride_min: float = _STRIDE_MIN,
-    crop_um: float = 60.0,
-    color: bool = True, scale_bar: bool = True, marker: bool = False,
-) -> list:
-    """Follow one cell over time as a series of close-up images.
-
-    The crop re-centres on the cell in every frame, so a moving cell stays in
-    view. This is the main tool for judging what a cell is actually doing --
-    dividing, dying, or sitting still.
-
-    You may request frames outside the track's own lifetime, and you often should:
-    a track usually ENDS as its cell divides, with the daughters carrying new
-    track_ids, so the division itself lies just past the last tracked frame. Those
-    frames are labelled OFF-TRACK and rendered by following the nearest detected
-    blob frame-to-frame from the track's boundary (solid orange ring) -- usually
-    keeps the crop on the same physical object even though its track_id changed,
-    but is never confirmed to be THIS cell rather than a neighbour. Where that walk
-    loses the trail (nothing nearby, or a multi-frame gap), the crop freezes at the
-    last position it WAS resolved (dashed blue ring) instead of guessing further.
-    Either way, nothing there is centred or identified the way an on-track frame
-    is -- read OFF-TRACK frames as "this patch of the field", not "this cell".
-
-    Frames are sampled evenly across the requested range, so a wide range gives a
-    coarse overview and a narrow range gives frame-by-frame detail. Each image is
-    labelled with its frame number and elapsed time.
-
-    Args:
-        well: well name from list_wells().
-        track_id: the cell to follow, from list_tracks().
-        start_frame: defaults to when the cell first appears. May precede it.
-        end_frame: defaults to when it was last seen. May follow it.
-        max_images: pin the frame count. None (recommended) samples by TIME: a
-            range that fits under the cap of 12 comes back GAP-FREE, and a longer
-            one is thinned to ~stride_min spacing rather than to a frame count. A
-            fixed count means different time resolution on different wells, and it
-            was silently skipping frames inside ranges that were asked for
-            explicitly -- which is exactly where the evidence is.
-        stride_min: target spacing between rendered frames, in minutes.
-        crop_um: width of the crop in micrometres. 60 shows a cell and its
-            immediate neighbours; lower it to zoom in.
-        color: apply the microscope's own display colour.
-        scale_bar: burn in a labelled scale bar.
-        marker: draw a thin ring around the tracked cell, sized to sit clear of it.
-            Off by default because the ring is one more shape in an image whose
-            shapes are the evidence. Turn it on for wide crops, where "the one in
-            the middle" stops being obvious. Forced on for OFF-TRACK frames, where
-            the ring marks the held position rather than a detected cell.
-    """
-    header, images = _filmstrip_frames(
-        well, track_id, start_frame, end_frame, max_images, crop_um,
-        color, scale_bar, marker, stride_min, MAX_IMAGES,
-    )
-    from mcp.types import TextContent
-    out: list = [TextContent(type="text", text=header)]
-    out.extend(_encode(img) for img in images)
-    return out
-
-
 def _resolve_family(well: str, track_ids: list[int],
                     include_nearby: bool = False) -> tuple[list[int], list[int]]:
     """Add a track's recorded daughters, then the ones nobody recorded.
@@ -2333,7 +2278,7 @@ def list_nearby_tracks(
     which on BeWo runs ~20 min past where the tracker's link ends.
 
     Anchor it either on a track (its last known position and frame, which is where a
-    mother was lost) or on an explicit x/y/frame from get_filmstrip_at.
+    mother was lost) or on an explicit x/y/frame from watch_location_over_time.
 
     Args:
         well: well name from list_wells().
@@ -2417,16 +2362,17 @@ def list_nearby_tracks(
         "consecutive spans is one cell losing and regaining its id. Distance alone "
         "will not tell you apart -- on BeWo 969 the two nearest starts were 2.3 um and "
         "six frames apart, and were the same cell. Pick the members yourself and pass "
-        "them to get_filmstrip_family(track_ids=[...]) to see the event; nothing here "
+        "them to follow_cells_over_time(track_ids=[...]) to see the event; nothing here "
         "is a claim that a division happened."
     )
     return "\n".join(out)
 
 
 @server.tool()
-def get_filmstrip_family(
+def follow_cells_over_time(
     well: str,
-    track_ids: list[int],
+    track_id: int | None = None,
+    track_ids: list[int] | None = None,
     start_frame: int | None = None, end_frame: int | None = None,
     centre_frame: int | None = None,
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
@@ -2434,40 +2380,49 @@ def get_filmstrip_family(
     crop_um: float | None = None,
     color: bool = True, scale_bar: bool = True, marker: bool = False,
 ) -> list:
-    """Before, during and after a division -- one strip that follows mother THEN
-    daughters, without losing either.
+    """Follow one cell, or a mother and her daughters, over time as close-up images.
 
-    This is the strip to reach for on any event where the cell of interest stops
-    being one object. get_filmstrip follows a single mask, so it goes OFF-TRACK at
-    exactly the moment the division happens; get_filmstrip_at watches a fixed point,
-    which only holds still if the cells happen not to migrate. Here the crop is
-    centred on the mean position of whichever members are present in each frame, so
-    it rides the mother up to the handoff and the daughters' midpoint after it. No
-    mode switch, because membership does the switching.
+    The main tool for judging what a cell is actually doing -- dividing, dying, or
+    sitting still. The crop re-centres every frame, so a moving cell stays in view.
+    To watch a fixed PLACE rather than a cell, use watch_location_over_time().
 
-    Pass just the mother and the daughters recorded in lineage.csv are added for you.
-    Pass every id yourself when you do not trust that link, or for anything that is
-    not a division -- a cell fragmenting during necrosis is a member set too, and the
-    strip will stay on the debris field rather than chase one shard.
+    Give EITHER `track_id` (one cell) or `track_ids` (a set), and pick deliberately
+    -- they follow different things:
 
-    By default the WINDOW is chosen for you around the frame where membership
-    changes, and it is measured in MINUTES: 30 min before, 90 min after. It is
-    lopsided on purpose. The transition is the frame where the TRACKER stopped
-    linking, and on BeWo the mitotic figure appears up to ~20 min LATER -- so a
-    window that stops near the transition shows the lead-up and hides the outcome,
-    and every real division scored off it reads as an artifact. Widen `after_min`
-    before concluding a candidate is not a division. Give start_frame/end_frame to
-    override with exact frames.
+    ONE MASK -- `track_id=N`. Follows that track and nothing else. Frames past the
+    track's own lifetime are labelled OFF-TRACK and rendered by walking the nearest
+    detected blob from the track's boundary (solid orange ring): usually the same
+    physical object under a new id, but never confirmed to be THIS cell rather than
+    a neighbour. Where the walk loses the trail the crop freezes at the last
+    resolved position (dashed blue ring) instead of guessing further. Read OFF-TRACK
+    frames as "this patch of the field", not "this cell".
+
+    A MEMBER SET -- `track_ids=[...]`. The crop centres on the mean position of
+    whichever members are present in each frame, so it rides the mother up to the
+    handoff and the daughters' midpoint after it. No mode switch, because membership
+    does the switching. This is the one to reach for on any event where the cell
+    stops being one object: `track_id` follows a single mask and so goes OFF-TRACK
+    at exactly the moment the division happens. `track_ids=[N]` -- a ONE-ELEMENT
+    list -- means track N plus the daughters recorded in lineage.csv, which is NOT
+    the same as `track_id=N`. Pass every id yourself when you do not trust that
+    link, or for anything that is not a division: a cell fragmenting during necrosis
+    is a member set too, and the strip will stay on the debris field rather than
+    chase one shard.
+
+    With a member set the WINDOW is chosen for you around the frame where membership
+    changes, measured in MINUTES: 30 before, 90 after. It is lopsided on purpose.
+    The transition is the frame where the TRACKER stopped linking, and on BeWo the
+    mitotic figure appears up to ~20 min LATER -- so a window that stops near the
+    transition shows the lead-up and hides the outcome, and every real division
+    scored off it reads as an artifact. Widen `after_min` before concluding a
+    candidate is not a division. Give start_frame/end_frame to override with exact
+    frames; you may ask for frames outside a track's lifetime, and you often should,
+    since a track usually ENDS as its cell divides.
 
     Frames are sampled by TIME (~`stride_min` apart), not by a fixed count, so a
     strip means the same thing on a well shot every 3.0 min as on one shot every
     4.9. If the whole window fits under the image cap you get EVERY frame -- no
     gaps. Set max_images only to budget context deliberately.
-
-    By default the CROP is auto-fitted once for the whole strip, wide enough to hold
-    every member across the sampled frames. Do not set crop_um by hand unless you
-    want a particular zoom -- guessing it is how you end up with a sibling drifting
-    out of frame halfway along, since separation grows as the daughters move apart.
 
     What it will not do: interpolate. A frame where no member is present holds the
     previous centre and is labelled HELD, because a made-up position rendered like a
@@ -2475,34 +2430,68 @@ def get_filmstrip_family(
 
     Args:
         well: well name from list_wells().
-        track_ids: the members. One id = that track plus its recorded daughters.
+        track_id: ONE cell to follow, from list_tracks(). Mutually exclusive with
+            track_ids.
+        track_ids: the members of a set. One id = that track plus its recorded
+            daughters. Mutually exclusive with track_id.
         start_frame, end_frame: inclusive override of the automatic window. Given
-            both, the range is rendered gap-free up to the image cap.
+            both, the range is rendered gap-free up to the image cap. With
+            `track_id` these default to the track's first and last frame.
         centre_frame: put the window around THIS frame instead of around the frame
             where membership changes. Pass it whenever you chose the members
             yourself -- the membership rule only means something for a mother plus
-            her recorded daughters, and on a hand-picked set it drifts. find_candidates
-            hands you `cond_f`, the frame the chromatin was most condensed, which is
-            usually the right thing to centre on.
+            her recorded daughters, and on a hand-picked set it drifts.
+            find_candidates hands you `cond_f`, the frame the chromatin was most
+            condensed, which is usually the right thing to centre on. Member sets
+            only.
         before_min, after_min: MINUTES either side of the membership transition,
             when the window is automatic. Converted to frames from this well's own
-            timestamps, which are not evenly spaced.
-        max_images: pin the frame count. None (recommended) samples by time.
+            timestamps, which are not evenly spaced. Member sets only.
+        max_images: pin the frame count. None (recommended) samples by TIME: a range
+            that fits under the cap of 12 comes back GAP-FREE, and a longer one is
+            thinned to ~stride_min spacing rather than to a frame count. A fixed
+            count means different time resolution on different wells, and it was
+            silently skipping frames inside ranges that were asked for explicitly --
+            which is exactly where the evidence is.
         stride_min: target spacing between rendered frames, in minutes.
-        crop_um: width in micrometres. None (recommended) = auto-fit.
+        crop_um: width of the crop in micrometres. None (recommended) means 60 for a
+            single track -- a cell and its immediate neighbours -- and auto-fit for
+            a member set, wide enough to hold every member across the sampled
+            frames. Do not set it by hand on a member set unless you want a
+            particular zoom: guessing is how a sibling drifts out of frame halfway
+            along, since separation grows as the daughters move apart.
         color: apply the microscope's own display colour.
         scale_bar: burn in a labelled scale bar.
-        marker: ring EVERY member present in each frame, or none at all.
+        marker: draw a thin ring around the tracked cell -- with track_ids, rings
+            every member present in each frame or none at all. Off by default
+            because the ring is one more shape in an image whose shapes are the
+            evidence. Turn it on for wide crops, where "the one in the middle" stops
+            being obvious. Forced on for OFF-TRACK frames, where the ring marks the
+            held position rather than a detected cell.
     """
-    if not track_ids:
-        raise ValueError("track_ids is empty; give at least one track.")
-    members, added = _resolve_family(well, track_ids)
-    header, images = _family_filmstrip_frames(
-        well, members, start_frame, end_frame,
-        max_images, crop_um, color, scale_bar, marker,
-        before_min, after_min, stride_min, MAX_IMAGES, added, centre_frame,
-    )
+    if (track_id is None) == (track_ids is None):
+        raise ValueError(
+            "give exactly one of track_id (follow ONE mask) or track_ids (follow a "
+            "member set). Note track_ids=[N] is not track_id=N: the list form adds "
+            "N's recorded daughters."
+        )
     from mcp.types import TextContent
+
+    if track_ids is not None:
+        if not track_ids:
+            raise ValueError("track_ids is empty; give at least one track.")
+        members, added = _resolve_family(well, track_ids)
+        header, images = _family_filmstrip_frames(
+            well, members, start_frame, end_frame,
+            max_images, crop_um, color, scale_bar, marker,
+            before_min, after_min, stride_min, MAX_IMAGES, added, centre_frame,
+        )
+    else:
+        header, images = _filmstrip_frames(
+            well, int(track_id), start_frame, end_frame, max_images,
+            60.0 if crop_um is None else crop_um,
+            color, scale_bar, marker, stride_min, MAX_IMAGES,
+        )
     out: list = [TextContent(type="text", text=header)]
     out.extend(_encode(img) for img in images)
     return out
@@ -2574,7 +2563,7 @@ def get_lineage(well: str, track_id: int) -> str:
     if not lin:
         return (f"No lineage.csv in this bundle for {well}, so mother/daughter links are "
                 f"unavailable. You can still follow a cell past the end of its track: "
-                f"get_filmstrip accepts start_frame/end_frame outside the track's lifetime "
+                f"follow_cells_over_time accepts start_frame/end_frame outside the track's lifetime "
                 f"and will render those frames as OFF-TRACK.")
 
     cov = _manifest(well).get("lineage", {}).get("coverage", "unknown")
@@ -2670,7 +2659,7 @@ def get_lineage(well: str, track_id: int) -> str:
         "ends, or overlapping it heavily, is an id-linking artifact."
     )
     lines.append(
-        "\nTo see the division itself, ask get_filmstrip for a range spanning the "
+        "\nTo see the division itself, ask follow_cells_over_time for a range spanning the "
         "mother's last frames and the daughters' first frames -- it renders frames "
         "outside a track's own lifetime rather than truncating to it."
     )
@@ -2835,7 +2824,7 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
 
 
 @server.tool()
-def show_cells(well: str, events: list[dict], note: str = "") -> str:
+def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
 
     CALL THIS WHENEVER THE USER SAYS "show me", "let me see", "send me", "put
@@ -2847,7 +2836,7 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
     Also the right tool when you have finished an investigation and want to hand over
     the evidence -- after answering "what happens to these 12 tracks", write one page
     covering all of them instead of pasting filmstrips into chat one at a time. Each
-    cell renders with the exact same crop logic as get_filmstrip (colour LUT, scale
+    cell renders with the exact same crop logic as follow_cells_over_time (colour LUT, scale
     bar, OFF-TRACK handling), so the page matches what you already reviewed.
 
     Pair each entry with a `label` that says what you concluded and why -- the page
@@ -2863,15 +2852,16 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
             later has the labels but not the question, and asking again costs them
             more than writing it costs you.
         events: one dict per cell to show, each with EITHER
-            track_id: one cell, rendered as get_filmstrip does it, OR
-            track_ids: a member set, rendered as get_filmstrip_family does it -- use
+            track_id: ONE mask, rendered as follow_cells_over_time(track_id=...)
+                does it, OR
+            track_ids: a member set, as follow_cells_over_time(track_ids=[...]) -- use
                 this for divisions, so the strip follows the mother and then the
                 daughters' midpoint in one row instead of losing them at the handoff.
                 A single id here expands to that track plus its recorded daughters,
                 the window defaults to 30 min before / 90 min after the membership
                 transition (`before_min`/`after_min` keys), and crop_um defaults to
                 auto-fit rather than 60.
-            start_frame, end_frame (optional): as in get_filmstrip -- may fall outside
+            start_frame, end_frame (optional): as in follow_cells_over_time -- may fall outside
                 the track's own lifetime, e.g. to show a division just past its end.
             label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
                 309/319/321". Defaults to "track <track_id>".
@@ -2883,7 +2873,7 @@ def show_cells(well: str, events: list[dict], note: str = "") -> str:
             centre_frame (optional): centre the window on this frame rather than on
                 the membership transition. Use it for hand-picked member sets.
             before_min, after_min, stride_min (optional): window and sampling in
-                MINUTES, as in get_filmstrip_family.
+                MINUTES, as in follow_cells_over_time.
             crop_um (optional, default 60.0): crop width in micrometres.
             marker (optional, default False): ring the tracked cell -- with
                 track_ids, rings every member present or none.
@@ -3087,7 +3077,7 @@ def annotate(
     in events.csv corresponds to it at all.
 
     Only call this after you (or the person you're working with) actually looked at
-    the pixels via get_filmstrip -- this is a verdict, not a guess from get_track_profile
+    the pixels via follow_cells_over_time -- this is a verdict, not a guess from get_track_profile
     numbers alone.
 
     Args:

@@ -1,4 +1,4 @@
-"""Tests for get_filmstrip_family -- the crop centred on a SET of tracks.
+"""Tests for follow_cells_over_time -- the crop centred on a SET of tracks.
 
 Its reason to exist: a division is the one event where the subject stops being one
 object, which is exactly when a single-mask filmstrip goes OFF-TRACK and a fixed-point
@@ -410,3 +410,64 @@ def test_the_header_says_a_member_is_there_by_position_not_lineage(monkeypatch, 
     monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
     header, _ = _strip(fake, [1, 2, 3, 50], added=[50])
     assert "by POSITION" in header and "50" in header
+
+
+# --- the merged tool's dispatch -------------------------------------------------
+# get_filmstrip and get_filmstrip_family used to be two tools. They were merged
+# because the single-track one was never being reached for: a names-only tool list
+# made "the filmstrip cluster" look interchangeable, and the family form with a
+# one-element list had quietly become the tool everyone actually called. The two
+# BACKENDS still differ, though -- one mask vs a member set -- so the dispatch is
+# now the thing that has to stay honest.
+
+def test_track_id_and_track_ids_are_not_interchangeable(monkeypatch, fake):
+    """track_ids=[N] adds N's recorded daughters; track_id=N does not.
+
+    Merging the two tools would be a silent behaviour change if a scalar id started
+    pulling in daughters -- a reviewer asking to see ONE mask would get a crop that
+    re-centres on objects the tracker chose for them.
+    """
+    monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
+    members, _ = cell_mcp._resolve_family(fake, [1])
+    assert members == [1, 2, 3]
+
+    seen = {}
+
+    def spy_single(well, track_id, *a, **k):
+        seen["single"] = track_id
+        return "hdr", []
+
+    def spy_family(well, members, *a, **k):
+        seen["family"] = list(members)
+        return "hdr", []
+
+    monkeypatch.setattr(cell_mcp, "_filmstrip_frames", spy_single)
+    monkeypatch.setattr(cell_mcp, "_family_filmstrip_frames", spy_family)
+
+    cell_mcp.follow_cells_over_time(fake, track_id=1)
+    assert seen == {"single": 1}
+
+    seen.clear()
+    cell_mcp.follow_cells_over_time(fake, track_ids=[1])
+    assert seen == {"family": [1, 2, 3]}
+
+
+def test_neither_or_both_is_refused_rather_than_guessed(fake):
+    """Picking one for the caller would pick the wrong backend half the time."""
+    with pytest.raises(ValueError, match="exactly one"):
+        cell_mcp.follow_cells_over_time(fake)
+    with pytest.raises(ValueError, match="exactly one"):
+        cell_mcp.follow_cells_over_time(fake, track_id=1, track_ids=[1])
+
+
+def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
+    """crop_um=None means auto-fit for a member set but 60 for one mask -- the old
+    get_filmstrip default. Passing None straight through would hand _filmstrip_frames
+    a None where it wants a float."""
+    seen = {}
+    monkeypatch.setattr(
+        cell_mcp, "_filmstrip_frames",
+        lambda well, tid, sf, ef, mx, crop, *a, **k: (seen.setdefault("crop", crop), ("hdr", []))[1],
+    )
+    cell_mcp.follow_cells_over_time(fake, track_id=1)
+    assert seen["crop"] == 60.0

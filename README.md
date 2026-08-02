@@ -25,9 +25,10 @@ to put her measurements, not in trying to automate her out of the loop. See
    actually needed to navigate it later (indexed frames, track table, lineage,
    calibration) into a ~0.2GB-per-well bundle, then serves it to a researcher's own
    Claude Code session over a local stdio MCP: `list_wells`, `list_tracks`,
-   `get_track_profile`, `get_frame`, `get_filmstrip`, `get_lineage`, `measure`,
-   `get_neighbourhood_stats`, `get_filmstrip_at`, `get_filmstrip_family`,
-   `find_candidates`, `show_cells`. She clones the repo, points
+   `get_track_profile`, `view_whole_field`, `follow_cells_over_time`, `get_lineage`,
+   `measure`, `get_neighbourhood_stats`, `watch_location_over_time`,
+   `list_nearby_tracks`, `find_candidates`, `show_cells_in_browser`, `annotate`.
+   She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
 
@@ -99,39 +100,43 @@ see the file itself for full argument docs):
   reject rate per stratum *is* the finding. Thresholds are explicitly unvalidated and
   say so at every call; they are near-certainly wrong per cell line.
 - `get_track_profile(well, track_id)` — free (no images) sparkline of a track's own
-  area/brightness/solidity over time; decides where a `get_filmstrip` call is worth
+  area/brightness/solidity over time; decides where a `follow_cells_over_time` call is worth
   spending.
-- `get_frame(well, frame)` — one whole field of view.
-- `get_filmstrip(well, track_id, start_frame, end_frame, ...)` — the main tool: a
-  cell followed over time as re-centred close-up crops, with the ND2's own display
-  color and an optional tracking-ring marker. May request frames outside a track's
-  own lifetime (a division usually happens in the gap between a track ending and its
-  daughters' tracks starting).
-- `get_filmstrip_at(well, start_frame, end_frame, x, y | anchor_track_id, ...)` —
+- `view_whole_field(well, frame)` — one whole field of view.
+- `follow_cells_over_time(well, track_id | track_ids, ...)` — the main tool: cells
+  followed over time as re-centred close-up crops, with the ND2's own display color
+  and an optional tracking-ring marker. May request frames outside a track's own
+  lifetime (a division usually happens in the gap between a track ending and its
+  daughters' tracks starting). Takes **either** form, and they are not the same
+  call:
+  - `track_id=N` follows **one mask**. Frames past the track's life are walked to the
+    nearest blob and labelled `OFF-TRACK`, or frozen and ringed in dashed blue where
+    the walk loses the trail — read as "this patch of field", not "this cell".
+  - `track_ids=[...]` follows a **member set**, which is what a division needs: the
+    crop centres on the mean position of whichever members are present in each frame,
+    so it follows the mother up to the handoff and the daughters' midpoint after it,
+    with no mode switch — membership does the switching. `track_ids=[N]` means N plus
+    her recorded daughters, so it is *not* `track_id=N`. The window defaults to the
+    membership transition (± `before_min`/`after_min`, in minutes), and the crop width
+    auto-fits **once** for the whole strip, wide enough to hold every member: sizing
+    per frame would make the nuclei appear to breathe, and hand-guessing it is how a
+    sibling drifts out of frame halfway along. Frames with no member present hold the
+    last centre and are labelled `HELD`, never interpolated. Members are capped (6)
+    and chosen once by median area, so a cell fragmenting during necrosis keeps the
+    crop on the debris field instead of chasing one shard.
+- `watch_location_over_time(well, start_frame, end_frame, x, y | anchor_track_id, ...)` —
   the same crops addressed by **position** rather than by mask. Answers "what
   happened here" instead of "what happened to track N", which matters because every
   other tool addresses cells by `track_id`: an object the segmenter never caught
   otherwise cannot be asked about at all. Also the tool for when a mask-following
   crop keeps losing the cell — segmentation fails hardest exactly during mitosis and
   death. Reports the nearest tracked cell per frame instead of ringing anything.
-- `get_filmstrip_family(well, track_ids, ...)` — before/during/after a division in one
-  strip. The crop centres on the **mean position of whichever members are present in
-  each frame**, so it follows the mother up to the handoff and the daughters' midpoint
-  after it, with no mode switch — membership does the switching. Pass just the mother
-  and her recorded daughters are added. The window defaults to the membership
-  transition (± `before`/`after`), and the crop width auto-fits **once** for the whole
-  strip, wide enough to hold every member: sizing per frame would make the nuclei
-  appear to breathe, and hand-guessing it is how a sibling drifts out of frame halfway
-  along. Frames with no member present hold the last centre and are labelled `HELD`,
-  never interpolated. Members are capped (6) and chosen once by median area, so a cell
-  fragmenting during necrosis keeps the crop on the debris field instead of chasing
-  one shard.
 - `get_lineage(well, track_id)` — mother/daughter links.
 - `measure(well, track_id, frame)` — real units (µm², hours), not pixels or frames.
 - `get_neighbourhood_stats(well, track_id, frame)` — compares one cell against its
   nearest neighbours and the whole field at a single frame, as a z-score — separates
   "this cell is dim" from "the whole field is dim right now."
-- `show_cells(well, events)` — writes a self-contained HTML page (images
+- `show_cells_in_browser(well, events)` — writes a self-contained HTML page (images
   embedded as base64) of specific cells/frame-ranges, to hand off rather than
   describe in chat.
 - `annotate(well, track_id, outcome_class, ...)` — appends stage marks

@@ -1,4 +1,4 @@
-"""Tests for get_filmstrip_at -- the position-addressed filmstrip.
+"""Tests for watch_location_over_time -- the position-addressed filmstrip.
 
 Its reason to exist is that every other tool addresses cells by track_id, so an object
 the segmenter never caught cannot be asked about at all. The nearest-detection readout
@@ -57,16 +57,16 @@ def test_nearest_detection_is_none_when_the_frame_has_nothing(fake):
 
 def test_requires_either_a_point_or_an_anchor(fake):
     with pytest.raises(ValueError, match="either x and y"):
-        cell_mcp.get_filmstrip_at(fake, start_frame=0, end_frame=2)
+        cell_mcp.watch_location_over_time(fake, start_frame=0, end_frame=2)
     with pytest.raises(ValueError, match="either x and y"):
-        cell_mcp.get_filmstrip_at(fake, start_frame=0, end_frame=2, x=1.0)
+        cell_mcp.watch_location_over_time(fake, start_frame=0, end_frame=2, x=1.0)
 
 
 def test_rejects_an_unknown_anchor_track(fake):
     with pytest.raises(ValueError, match="anchor track 999 not found"):
-        cell_mcp.get_filmstrip_at(fake, start_frame=0, end_frame=2, anchor_track_id=999)
+        cell_mcp.watch_location_over_time(fake, start_frame=0, end_frame=2, anchor_track_id=999)
 
 
 def test_rejects_an_inverted_range(fake):
     with pytest.raises(ValueError, match="empty range"):
-        cell_mcp.get_filmstrip_at(fake, start_frame=5, end_frame=1, x=1.0, y=1.0)
+        cell_mcp.watch_location_over_time(fake, start_frame=5, end_frame=1, x=1.0, y=1.0)
