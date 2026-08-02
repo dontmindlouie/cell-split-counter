@@ -69,10 +69,8 @@ def _strip(fake, ids, **kw):
           "color": False, "scale_bar": False, "marker": False,
           "before_min": 20.0, "after_min": 20.0, "stride_min": cell_mcp._STRIDE_MIN,
           "cap": cell_mcp.MAX_IMAGES, "added": None, **kw}
-    return cell_mcp._family_filmstrip_frames(
-        fake, ids, kw["start_frame"], kw["end_frame"], kw["max_images"], kw["crop_um"],
-        kw["color"], kw["scale_bar"], kw["marker"],
-        kw["before_min"], kw["after_min"], kw["stride_min"], kw["cap"], kw["added"])
+    start, end = kw.pop("start_frame"), kw.pop("end_frame")
+    return cell_mcp._family_filmstrip_frames(fake, ids, start, end, **kw)
 
 
 def test_window_is_chosen_around_the_membership_transition(fake):
@@ -288,7 +286,8 @@ def test_every_image_tool_discloses_that_brightness_is_not_comparable(fake):
     assert "0.5/99.5" in header and "NOT comparable" in header
     assert "get_track_profile" in header, "must point at where brightness IS reliable"
 
-    solo, _ = cell_mcp._filmstrip_frames(fake, 1, 0, 9, 4, 40.0, False, False, False)
+    solo, _ = cell_mcp._filmstrip_frames(fake, 1, 0, 9, max_images=4, crop_um=40.0,
+                                         color=False, scale_bar=False, marker=False)
     assert "0.5/99.5" in solo
 
 
@@ -499,9 +498,11 @@ def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
     get_filmstrip default. Passing None straight through would hand _filmstrip_frames
     a None where it wants a float."""
     seen = {}
-    monkeypatch.setattr(
-        cell_mcp, "_filmstrip_frames",
-        lambda well, tid, sf, ef, mx, crop, *a, **k: (seen.setdefault("crop", crop), ("hdr", []))[1],
-    )
+
+    def spy(well, tid, sf, ef, *, crop_um, **k):
+        seen["crop"] = crop_um
+        return "hdr", []
+
+    monkeypatch.setattr(cell_mcp, "_filmstrip_frames", spy)
     cell_mcp.follow_cells_over_time(fake, track_id=1)
     assert seen["crop"] == 60.0

@@ -889,6 +889,7 @@ def _walk_positions(
 def _filmstrip_frames(
     well: str, track_id: int,
     start_frame: int | None, end_frame: int | None,
+    *,
     max_images: int | None, crop_um: float,
     color: bool, scale_bar: bool, marker: bool,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
@@ -1086,6 +1087,7 @@ def _resolve_family_centres(
 def _family_filmstrip_frames(
     well: str, track_ids: list[int],
     start_frame: int | None, end_frame: int | None,
+    *,
     max_images: int | None, crop_um: float | None,
     color: bool, scale_bar: bool, marker: bool,
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
@@ -2614,14 +2616,18 @@ def follow_cells_over_time(
         members, added = _resolve_family(well, track_ids)
         header, images = _family_filmstrip_frames(
             well, members, start_frame, end_frame,
-            max_images, crop_um, color, scale_bar, marker,
-            before_min, after_min, stride_min, MAX_IMAGES, added, centre_frame,
+            max_images=max_images, crop_um=crop_um,
+            color=color, scale_bar=scale_bar, marker=marker,
+            before_min=before_min, after_min=after_min, stride_min=stride_min,
+            cap=MAX_IMAGES, added=added, centre_frame=centre_frame,
         )
     else:
         header, images = _filmstrip_frames(
-            well, int(track_id), start_frame, end_frame, max_images,
-            60.0 if crop_um is None else crop_um,
-            color, scale_bar, marker, stride_min, MAX_IMAGES,
+            well, int(track_id), start_frame, end_frame,
+            max_images=max_images,
+            crop_um=60.0 if crop_um is None else crop_um,
+            color=color, scale_bar=scale_bar, marker=marker,
+            stride_min=stride_min, cap=MAX_IMAGES,
         )
     out: list = [TextContent(type="text", text=header)]
     out.extend(_encode(img) for img in images)
@@ -3034,14 +3040,15 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             header, images = _family_filmstrip_frames(
                 well, members,
                 ev.get("start_frame"), ev.get("end_frame"),
-                None if mx is None else int(mx),
-                None if crop is None else float(crop),
-                True, True, bool(ev.get("marker", False)),
-                float(ev.get("before_min", _WINDOW_BEFORE_MIN)),
-                float(ev.get("after_min", _WINDOW_AFTER_MIN)),
-                float(ev.get("stride_min", _STRIDE_MIN)),
-                MAX_IMAGES_PAGE, added,
-                None if ev.get("centre_frame") is None else int(ev["centre_frame"]),
+                max_images=None if mx is None else int(mx),
+                crop_um=None if crop is None else float(crop),
+                color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
+                before_min=float(ev.get("before_min", _WINDOW_BEFORE_MIN)),
+                after_min=float(ev.get("after_min", _WINDOW_AFTER_MIN)),
+                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
+                cap=MAX_IMAGES_PAGE, added=added,
+                centre_frame=(None if ev.get("centre_frame") is None
+                              else int(ev["centre_frame"])),
             )
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:
@@ -3050,9 +3057,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             header, images = _filmstrip_frames(
                 well, track_id,
                 ev.get("start_frame"), ev.get("end_frame"),
-                None if mx is None else int(mx), float(ev.get("crop_um", 60.0)),
-                True, True, bool(ev.get("marker", False)),
-                float(ev.get("stride_min", _STRIDE_MIN)), MAX_IMAGES_PAGE,
+                max_images=None if mx is None else int(mx),
+                crop_um=float(ev.get("crop_um", 60.0)),
+                color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
+                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
+                cap=MAX_IMAGES_PAGE,
             )
             label = ev.get("label") or f"track {track_id}"
         b64_list = []
