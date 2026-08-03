@@ -387,7 +387,7 @@ def test_a_page_may_show_more_frames_than_the_context_cap(fake):
 
 # --- daughters the lineage never recorded ------------------------------------
 #
-# "Only tracking 1 daughter, would be nice to have midpoint" -- the maintainer, scoring BeWo
+# "Only tracking 1 daughter, would be nice to have midpoint" -- maintainer note, scoring
 # case 12 (track 969), where the mitosis is plainly visible (pro 768, meta 777, ana
 # 792) but only one daughter is linked, so the crop follows half the event and the
 # real sister drifts out of frame.

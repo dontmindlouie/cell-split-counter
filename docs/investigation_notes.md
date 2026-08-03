@@ -54,12 +54,12 @@ disappearance, an active division tracking dropped mid-way. This skewed toward t
 
 Two individual cases worth a closer look later: track 1122 ("cytokinesis failure,
 interesting, but technically not death" — fits none of the three verdict options), and
-track 9975 (the one real death — "the researcher keeps saying necrosis not death," a taxonomy
+track 9975 (the one real death — "keeps getting called necrosis not death," a taxonomy
 granularity not currently distinguished).
 
 ### Candidate root cause: mitotic rounding
 
-the maintainer's own pattern from reviewing the crops: cell elongates, then appears to vanish
+The maintainer's own pattern from reviewing the crops: cell elongates, then appears to vanish
 for a few frames, then reappears already split — around what looks like the
 metaphase-to-anaphase transition. Checked against the literature (not verified against
 this pipeline's own raw masks yet — see caveat below), this maps cleanly onto

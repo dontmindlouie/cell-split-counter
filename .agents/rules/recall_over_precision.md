@@ -1,18 +1,18 @@
-the maintainer clarified (2026-07-03) that false positives in this pipeline's Claude-reviewed
+The maintainer clarified (2026-07-03) that false positives in this pipeline's Claude-reviewed
 output are not costly the way a pure precision/recall/F1 comparison implies, because the
 project's real deliverable is a curated set of candidate events for the research
-scientist (the researcher) to review (see [[project_cell_split_counter]] "Product direction decided
+scientist to review (see [[project_cell_split_counter]] "Product direction decided
 2026-06-28: Track 2 — interesting event packager"), not an automated division count. A
 missed real division/abnormality is a permanently lost finding; a false positive in the
 reviewed output just costs the researcher a few seconds dismissing it.
 
 **Why:** the ground-truth sheet was never "divisions only" — it already logs failed
 splits and abnormalities (misaligned chromosomes, lagging chromosome, micronucleus,
-anaphase bridge) as interesting events the researcher tracks by hand. Recall against *any* interesting
-event is the actual value driver; clean precision on plain divisions is secondary.
+anaphase bridge) as interesting events the researcher tracks by hand. Recall against *any*
+interesting event is the actual value driver; clean precision on plain divisions is secondary.
 
 **Important distinction — don't conflate two different kinds of "false positive":**
-- the researcher's 2026-06-28 complaint ("0-confidence noise... too much eye strain to sift through")
+- The researcher's 2026-06-28 complaint ("0-confidence noise... too much eye strain to sift through")
   was about *raw, unreviewed* tracker noise before Claude ever screened it. That's still
   bad and should stay filtered out.
 - A Claude-reviewed candidate that turns out to be a false positive (already survived

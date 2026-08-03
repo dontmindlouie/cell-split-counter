@@ -1451,10 +1451,10 @@ def _condensation(well: str, rows, lin, tracks, um_px: float) -> tuple[list, lis
     manufacture the signal this is supposed to measure.
 
     HOW WELL IT ACTUALLY WORKS, measured against the only human labels this project
-    has (the maintainer, 2026-07-31, 26 blind-scored divisions across two lines):
+    has (maintainer review, 2026-07-31, 26 blind-scored divisions across two lines):
 
-        RUES2 M12   AUC 0.63   (3 real / 9 not)
-        BeWo M2     AUC 0.75   (4 real / 10 not)
+        Line A M12  AUC 0.63   (3 real / 9 not)
+        Line B M2   AUC 0.75   (4 real / 10 not)
         combined    AUC 0.68
 
     That is a weak ranking, and it is stated rather than hidden because the number

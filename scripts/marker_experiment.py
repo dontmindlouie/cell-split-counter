@@ -84,7 +84,7 @@ REFERENCE_CASES = {
         # this cell's own Cellpose mask area, already computed by the real pipeline.
         "cell_area_px": 460.0,
     },
-    # REJECTED 2026-07-08 (the maintainer visual review) -- do not reintroduce without
+    # REJECTED 2026-07-08 (maintainer visual review) -- do not reintroduce without
     # actually overlaying both candidate + neighbor centroids on one frame first.
     # These two were found by an automated centroid-distance/peak-frame proximity
     # script over events.csv, then pattern-matched to Claude's text description
@@ -98,7 +98,7 @@ REFERENCE_CASES = {
         "centroid": (407.6134969325153, 386.6503067484663),
         "local_frame": 615,  # same numbering as bewo_m2 output, no offset
         "expected": (
-            "real (the maintainer's human spot-check verdict, 2026-07-08, via the "
+            "real (maintainer's human spot-check verdict, 2026-07-08, via the "
             "--parent-ids filmstrip review of dual-marker-verified candidate pairs) -- "
             "note: 'both target and neighbor divide at the same time.' Raw verdict.txt "
             "already said real at confidence 0.67 with its own text flagging the exact "
@@ -121,7 +121,7 @@ REFERENCE_CASES = {
         "centroid": (384.7393026941363, 278.18225039619654),
         "local_frame": 468,  # same numbering as bewo_m2 output, no offset
         "expected": (
-            "real (the maintainer's human spot-check verdict, 2026-07-08) -- note: 'target "
+            "real (maintainer's human spot-check verdict, 2026-07-08) -- note: 'target "
             "starts to divide, neighbor to the south right divides during this time "
             "but a little far from the target.' Same floor-downgrade bug as "
             "parent_2535: raw verdict.txt said real at 0.67, floored to false_positive "

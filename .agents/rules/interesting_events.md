@@ -1,4 +1,4 @@
-the maintainer wants the cell-split-counter pipeline ([[project_cell_split_counter]]) to eventually
+The maintainer wants the cell-split-counter pipeline ([[project_cell_split_counter]]) to eventually
 capture "interesting events" beyond just cell divisions. Investigated scope 2026-07-07 and
 shipped the first, smallest piece; a second, bigger piece is scoped but not started.
 
@@ -51,7 +51,7 @@ the candidate-selection criterion (topological: "node with 2+ children") and the
 split-specific. So extending to other "interesting events" doesn't need new crop/API plumbing,
 just a different candidate generator feeding the same crop code with a different prompt.
 
-**Next step, scoped but NOT started (the maintainer is unsure yet how involved this should get):**
+**Next step, scoped but NOT started (unsure yet how involved this should get):**
 catching morphology anomalies on tracks that never split at all (e.g. a binucleated cell that
 persists its whole track without dividing — currently invisible, since nothing ever routes it to
 Claude unless Cellpose happens to segment its two nuclei as separate masks, making it *look*

@@ -50,8 +50,8 @@ What belongs here is how to *work in this repo*, which the server cannot know.
 - **Score, don't filter.** Where a tool cannot know, expose the number and let the
   reader judge. Filtering lineage links on biology rejected half of them with nothing
   to say whether that was right.
-- **Percentiles, not fixed cutoffs.** A threshold tuned on compact RUES2 nuclei
-  mis-fires on large lobed WGD ones.
+- **Percentiles, not fixed cutoffs.** A threshold tuned on compact nuclei in one
+  cell line mis-fires on large lobed nuclei in another.
 - **A held or inferred position must never render like a measured one.** OFF-TRACK and
   HELD frames are labelled as such; that honesty is what the tests pin.
 
