@@ -147,9 +147,10 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
-    windows: list[tuple[float, float]] = []
+    windows: list[list[tuple[float, float]]] = []  # one window per channel, per kept frame
     kept_index = 0
     with nd2.ND2File(config.video_path) as f:
+        n_channels = f.sizes.get("C", 1)
         color = getattr(f.metadata.channels[0].channel, "color", None)
         display_color_rgb = [color.r, color.g, color.b] if color else None
         (out_dir / _DISPLAY_COLOR_FILENAME).write_text(
@@ -157,23 +158,63 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
         )
         read_display_color.cache_clear()  # out_dir may reuse a path from an earlier run
 
-        total = f.sizes.get("T", f.shape[0])
-        for raw_index in range(total):
-            if raw_index % config.frame_step != 0:
-                continue
-            frame = f.read_frame(raw_index)
-            if config.roi is not None:
-                x, y, w, h = config.roi
-                frame = frame[y : y + h, x : x + w]
-            frame_gray, window = _rescale_to_uint8(frame)
-            windows.append(window)
-            out_path = out_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
-            cv2.imwrite(str(out_path), frame_gray)
-            paths.append(out_path)
-            kept_index += 1
+        total_t = f.sizes.get("T", f.shape[0])
+
+        if n_channels == 1:
+            for raw_index in range(total_t):
+                if raw_index % config.frame_step != 0:
+                    continue
+                frame = f.read_frame(raw_index)
+                if config.roi is not None:
+                    x, y, w, h = config.roi
+                    frame = frame[y : y + h, x : x + w]
+                frame_gray, window = _rescale_to_uint8(frame)
+                windows.append([window])
+                out_path = out_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
+                cv2.imwrite(str(out_path), frame_gray)
+                paths.append(out_path)
+                kept_index += 1
+        else:
+            # Multi-channel acquisition (e.g. ZO1_nTSC: AF488+mCherry; ACTB_M3:
+            # AF488+AF647+AF555). read_frame()'s flat sequence index does NOT follow
+            # simple t*C+c arithmetic (confirmed empirically 2026-08-03 -- computed
+            # indices didn't match nd2's own array), so channels are pulled via
+            # nd2.imread(dask=True), which resolves T/C coordinates correctly and only
+            # materializes the slice actually requested. Each channel is independently
+            # percentile-rescaled to uint8 BEFORE combining (not after), so one
+            # channel's absolute intensity scale can't wash out a dimmer one -- then
+            # combined by per-pixel max, which keeps both markers' signal rather than
+            # averaging one down. This is not losslessly reversible to raw the way the
+            # single-channel path is, so the per-channel windows are recorded for
+            # provenance only, not as an inverse transform.
+            t_arr = nd2.imread(config.video_path, dask=True)
+            for raw_index in range(total_t):
+                if raw_index % config.frame_step != 0:
+                    continue
+                channels = np.asarray(t_arr[raw_index])  # (C, Y, X)
+                if config.roi is not None:
+                    x, y, w, h = config.roi
+                    channels = channels[:, y : y + h, x : x + w]
+                per_channel_gray = []
+                frame_windows = []
+                for c in range(n_channels):
+                    gray, window = _rescale_to_uint8(channels[c])
+                    per_channel_gray.append(gray)
+                    frame_windows.append(window)
+                frame_gray = np.maximum.reduce(per_channel_gray)
+                windows.append(frame_windows)
+                out_path = out_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
+                cv2.imwrite(str(out_path), frame_gray)
+                paths.append(out_path)
+                kept_index += 1
+
     (out_dir / _DISPLAY_WINDOW_FILENAME).write_text(json.dumps(
-        {"note": "per-frame 0.5/99.5 percentile window used to make the 8-bit PNGs; "
-                 "raw ~= lo + png/255 * (hi - lo). Without it, apparent brightness is "
-                 "not comparable between frames.",
-         "windows": [[round(lo, 2), round(hi, 2)] for lo, hi in windows]}))
+        {"note": "per-frame, per-channel 0.5/99.5 percentile window(s) used to make the "
+                 "8-bit PNGs. Single-channel: raw ~= lo + png/255 * (hi - lo), so "
+                 "brightness is reversible. Multi-channel: each channel was rescaled "
+                 "independently then combined by per-pixel max, so the windows below "
+                 "are provenance only, not an inverse transform.",
+         "n_channels": n_channels,
+         "windows": [[[round(lo, 2), round(hi, 2)] for lo, hi in frame_windows]
+                     for frame_windows in windows]}))
     return paths
