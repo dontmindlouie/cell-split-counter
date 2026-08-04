@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TSC_DIR = Path(r"G:\Projects\TSC batch2")
-BEWO_DIR = Path(r"G:\Projects")
+TSC_DIR = Path(r"G:\Projects\20260709_TSC_Batch2")
+BEWO_DIR = Path(r"G:\Projects\Bewo_nd2")
 
 TSC_LINES = {1: None, 2: "nTSC", 3: "nTSC", 4: "nTSC",
              5: "pTSC", 6: "pTSC", 7: "pTSC", 8: "pTSC", 9: "pTSC",

@@ -46,6 +46,7 @@ def run(
     min_gpt_confidence: float = 0.65,
     triage_keep_fraction: float = 1.0,
     review_death_events: bool = True,
+    review_split_events: bool = True,
 ) -> None:
     t_start = time.time()
 
@@ -147,7 +148,7 @@ def run(
         splits, frame_dir, upper_threshold=float("inf"), max_reviews=10_000,
         backend=vision_backend, save_debug_crops=save_debug_crops, usage_out=split_vision_usage,
         gpt_reasoning_effort=gpt_reasoning_effort, min_gpt_confidence=min_gpt_confidence,
-    )
+    ) if review_split_events else splits
 
     t_after_splits = time.time()
 
