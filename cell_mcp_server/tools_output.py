@@ -1,0 +1,335 @@
+"""Output tools: show_cells_in_browser (writes an HTML filmstrip page) and
+annotate (the one write path -- appends to a human-owned CSV).
+
+Split out of the original single-file cell_mcp.py's "tools" section.
+"""
+
+import base64
+
+import cv2
+
+from .server import server, MAX_IMAGES_PAGE, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN, _HDR_SEP
+from .tools_filmstrip import _resolve_family
+
+import cell_mcp as _cm
+
+# BUNDLE, _manifest, _filmstrip_frames, and _family_filmstrip_frames below go
+# through `_cm.` rather than a direct import -- see the note at the top of io.py.
+
+@server.tool()
+def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
+    """Show the user cells -- writes a page of labelled filmstrips they can open.
+
+    CALL THIS WHENEVER THE USER SAYS "show me", "let me see", "send me", "put
+    together", "can I look at" -- anything meaning they want to LOOK at cells rather
+    than read a description of them. Describing twelve frames in prose when the
+    person asked to see them is the wrong answer, and it is the most common way to
+    get this wrong: the words "show me" should end in this call.
+
+    Also the right tool when you have finished an investigation and want to hand over
+    the evidence -- after answering "what happens to these 12 tracks", write one page
+    covering all of them instead of pasting filmstrips into chat one at a time. Each
+    cell renders with the exact same crop logic as follow_cells_over_time (colour LUT, scale
+    bar, OFF-TRACK handling), so the page matches what you already reviewed.
+
+    Pair each entry with a `label` that says what you concluded and why -- the page
+    outlives the conversation, and a bare track id tells the reader nothing about
+    what they are looking for.
+
+    Args:
+        well: well name from list_wells().
+        note: one or two sentences at the top of the page saying WHAT THE READER IS
+            being asked to do -- "score each case Y/N/unsure for a real division",
+            "pick which of these is the metaphase frame". Write it whenever the page
+            is a task rather than a report. A reviewer opening 14 filmstrips a day
+            later has the labels but not the question, and asking again costs them
+            more than writing it costs you.
+        events: one dict per cell to show, each with EITHER
+            track_id: ONE mask, rendered as follow_cells_over_time(track_id=...)
+                does it, OR
+            track_ids: a member set, as follow_cells_over_time(track_ids=[...]) -- use
+                this for divisions, so the strip follows the mother and then the
+                daughters' midpoint in one row instead of losing them at the handoff.
+                A single id here expands to that track plus its recorded daughters,
+                the window defaults to 30 min before / 90 min after the membership
+                transition (`before_min`/`after_min` keys), and crop_um defaults to
+                auto-fit rather than 60.
+            start_frame, end_frame (optional): as in follow_cells_over_time -- may fall outside
+                the track's own lifetime, e.g. to show a division just past its end.
+            label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
+                309/319/321". Defaults to "track <track_id>".
+            max_images (optional): pin the frame count. Leave it OFF by default. A
+                page costs no context -- the images go to disk and to a human's
+                browser -- so frames here are sampled by time and a window under 60
+                frames renders GAP-FREE. Capping it is how a researcher ends up
+                looking at every third frame of the event they asked to see.
+            centre_frame (optional): centre the window on this frame rather than on
+                the membership transition. Use it for hand-picked member sets.
+            before_min, after_min, stride_min (optional): window and sampling in
+                MINUTES, as in follow_cells_over_time.
+            crop_um (optional, default 60.0): crop width in micrometres.
+            marker (optional, default False): ring the tracked cell -- with
+                track_ids, rings every member present or none.
+
+    Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
+    the user BOTH, verbatim, each on its own line -- terminals and chat clients
+    linkify a URL but not a Windows path, and which one is clickable depends on their
+    client. Do not shorten either, do not describe where the file is instead of naming
+    it, and do not make them ask twice.
+    Images are embedded as base64, so the
+    file is portable on its own -- open it directly, or serve it
+    (`python -m http.server`) if file:// is blocked in the browser being used.
+    """
+    if not events:
+        raise ValueError("events is empty -- nothing to render.")
+
+    sections = []
+    shared: list[str] = []
+    lb_data = []
+    for i, ev in enumerate(events):
+        if "track_id" not in ev and "track_ids" not in ev:
+            raise ValueError(f"events[{i}] needs 'track_id' or 'track_ids': {ev!r}")
+        if "track_ids" in ev:
+            members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])
+            crop = ev.get("crop_um")
+            mx = ev.get("max_images")
+            header, images = _cm._family_filmstrip_frames(
+                well, members,
+                ev.get("start_frame"), ev.get("end_frame"),
+                max_images=None if mx is None else int(mx),
+                crop_um=None if crop is None else float(crop),
+                color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
+                before_min=float(ev.get("before_min", _WINDOW_BEFORE_MIN)),
+                after_min=float(ev.get("after_min", _WINDOW_AFTER_MIN)),
+                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
+                cap=MAX_IMAGES_PAGE, added=added,
+                centre_frame=(None if ev.get("centre_frame") is None
+                              else int(ev["centre_frame"])),
+            )
+            label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
+        else:
+            track_id = int(ev["track_id"])
+            mx = ev.get("max_images")
+            header, images = _cm._filmstrip_frames(
+                well, track_id,
+                ev.get("start_frame"), ev.get("end_frame"),
+                max_images=None if mx is None else int(mx),
+                crop_um=float(ev.get("crop_um", 60.0)),
+                color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
+                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
+                cap=MAX_IMAGES_PAGE,
+            )
+            label = ev.get("label") or f"track {track_id}"
+        b64_list = []
+        for img in images:
+            ok, buf = cv2.imencode(".png", img)
+            if not ok:
+                continue
+            b64_list.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+        tiles = [
+            f'<img src="data:image/png;base64,{b64}" loading="lazy" '
+            f'onclick="openLightbox({i},{j})">'
+            for j, b64 in enumerate(b64_list)
+        ]
+        # Split the per-case facts from the standing how-this-renders text and collect
+        # the latter for ONE printing at the top. Repeating it under every case is what
+        # made a reviewer stop reading it, and the caveats live in that half.
+        spec, _, gen = header.partition(_HDR_SEP)
+        if gen and gen not in shared:
+            shared.append(gen)
+        sections.append(
+            f"<section><h2>{i + 1}. {label}</h2>"
+            f"<p class=hdr>{spec}</p>"
+            f"<div class=filmstrip>{''.join(tiles)}</div></section>"
+        )
+        lb_data.append({"label": label, "images": b64_list})
+
+    lb_json = json.dumps(lb_data)
+    # Collapsed by default: it is reference, not the task. Open once, then get out of
+    # the way of the 14 cases the page actually exists for.
+    note_html = f"<p class=task>{note}</p>" if note else ""
+    shared_html = "".join(
+        f"<details class=howto><summary>How to read these strips</summary>"
+        f"<p>{g}</p></details>" for g in shared)
+
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{well} browser</title>
+<style>
+body {{ font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 2rem; }}
+h1 {{ font-weight: 400; }}
+section {{ margin-bottom: 2.5rem; border-top: 1px solid #333; padding-top: 1rem; }}
+h2 {{ font-size: 1.1rem; font-weight: 600; }}
+p.hdr {{ color: #999; font-size: 0.85rem; max-width: 60rem; }}
+p.task {{ color: #eee; font-size: 1rem; max-width: 60rem; background: #1d2a35; border-left: 3px solid #7aa7d0; padding: 0.7rem 1rem; }}
+details.howto {{ color: #888; font-size: 0.82rem; max-width: 60rem; margin-bottom: 1rem; }}
+details.howto summary {{ cursor: pointer; color: #7aa7d0; }}
+div.filmstrip {{ display: flex; flex-wrap: wrap; gap: 4px; }}
+div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+.lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 20; }}
+.lightbox.open {{ display: flex; }}
+.lightbox img {{ max-width: 92vw; max-height: 88vh; }}
+.lightbox-caption {{ position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); color: #ccc; font-size: 12.5px; }}
+.lightbox-close {{ position: absolute; top: 14px; right: 20px; color: #fff; font-size: 28px; line-height: 1; cursor: pointer; background: none; border: none; padding: 6px 10px; }}
+.lightbox-nav {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,0.12); color: #fff; border: none; font-size: 28px; line-height: 1; width: 52px; height: 64px; cursor: pointer; border-radius: 8px; }}
+.lightbox-nav:hover {{ background: rgba(255,255,255,0.24); }}
+.lightbox-nav:disabled {{ opacity: 0.25; cursor: default; }}
+.lightbox-nav.prev {{ left: 16px; }}
+.lightbox-nav.next {{ right: 16px; }}
+</style></head><body>
+<h1>{well}</h1>
+{note_html}
+{shared_html}
+{''.join(sections)}
+<div class="lightbox" id="lightbox">
+  <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+  <button class="lightbox-nav prev" id="lb-prev" onclick="stepLightbox(-1)">&lsaquo;</button>
+  <img id="lb-img" alt="">
+  <div class="lightbox-caption" id="lb-caption"></div>
+  <button class="lightbox-nav next" id="lb-next" onclick="stepLightbox(1)">&rsaquo;</button>
+</div>
+<script>
+var LB_DATA = {lb_json};
+var lbSection = 0, lbIdx = 0;
+function showLbFrame() {{
+  var imgs = LB_DATA[lbSection].images;
+  document.getElementById('lb-img').src = 'data:image/png;base64,' + imgs[lbIdx];
+  document.getElementById('lb-caption').textContent =
+    LB_DATA[lbSection].label + ' -- frame ' + (lbIdx + 1) + ' / ' + imgs.length;
+  document.getElementById('lb-prev').disabled = lbIdx === 0;
+  document.getElementById('lb-next').disabled = lbIdx === imgs.length - 1;
+}}
+function openLightbox(section, idx) {{
+  lbSection = section; lbIdx = idx;
+  showLbFrame();
+  document.getElementById('lightbox').classList.add('open');
+}}
+function closeLightbox() {{ document.getElementById('lightbox').classList.remove('open'); }}
+function stepLightbox(delta) {{
+  var imgs = LB_DATA[lbSection].images;
+  var next = lbIdx + delta;
+  if (next < 0 || next >= imgs.length) return;
+  lbIdx = next;
+  showLbFrame();
+}}
+document.getElementById('lightbox').addEventListener('click', function(e) {{
+  if (e.target.id === 'lightbox') closeLightbox();
+}});
+document.addEventListener('keydown', function(e) {{
+  if (!document.getElementById('lightbox').classList.contains('open')) return;
+  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowLeft') stepLightbox(-1);
+  if (e.key === 'ArrowRight') stepLightbox(1);
+}});
+</script>
+</body></html>"""
+
+    out_dir = _cm.BUNDLE / well / "browsers"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    import time
+    out_path = out_dir / f"browser_{time.strftime('%Y%m%d_%H%M%S')}.html"
+    out_path.write_text(html, encoding="utf-8")
+    # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
+    # used to return "data\bundle\<well>\browsers\browser_....html" -- openable only by
+    # someone already sitting in the repo root. The reader is a person in a terminal or
+    # a chat window, and they said so twice: first that they had to "hunt down the html
+    # link", then that the absolute path still was not clickable and they were pasting
+    # it into Chrome by hand. Terminals and chat clients linkify a URL, not a Windows
+    # path, so give them both and let whichever one their client understands win.
+    full = out_path.resolve()
+    return f"{full}\n{full.as_uri()}"
+
+
+_ANNOTATION_FIELDS = [
+    "timestamp", "annotator", "well", "cell_line", "condition", "track_id",
+    "event_id", "outcome_class",
+    "condensation_frame", "metaphase_frame", "anaphase_frame", "exit_frame",
+    "parent_id", "daughter_ids", "notes",
+]
+
+
+@server.tool()
+def annotate(
+    well: str, track_id: int, outcome_class: str,
+    condensation_frame: int | None = None,
+    metaphase_frame: int | None = None,
+    anaphase_frame: int | None = None,
+    exit_frame: int | None = None,
+    parent_id: int | None = None,
+    daughter_ids: list[int] | None = None,
+    event_id: str | None = None,
+    notes: str | None = None,
+    annotator: str | None = None,
+) -> str:
+    """Record a human-verified verdict for a cell. Appends a new row -- never edits
+    or overwrites a previous one, so nothing is ever silently lost or replaced.
+
+    This is the actual payoff of everything else here: browsing produces nothing
+    durable on its own, this is what turns a review session into a labeled dataset.
+    Written to a SEPARATE file (<bundle>/<well>/annotations.csv), never mixed into
+    events.csv -- that file is machine-generated, gets overwritten on every pipeline
+    re-run, and only has a row for events the detector already found, so writing
+    human verdicts onto it would silently cap what can ever be recorded at the
+    detector's own recall. The most valuable annotation is often one where nothing
+    in events.csv corresponds to it at all.
+
+    Only call this after you (or the person you're working with) actually looked at
+    the pixels via follow_cells_over_time -- this is a verdict, not a guess from get_track_profile
+    numbers alone.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the cell being annotated.
+        outcome_class: e.g. "divides", "dies", "neither" -- free text, but stay
+            consistent within a well so later rollups can group on it.
+        condensation_frame, metaphase_frame, anaphase_frame, exit_frame: the four
+            stage marks (chromatin condensation onset -> metaphase alignment ->
+            anaphase separation -> mitotic exit), as frame numbers. Leave any that
+            don't apply or weren't determined as None -- durations between whichever
+            marks ARE set can still be computed later from manifest.frame_timestamps_ms.
+        parent_id: the track this cell was born from, if relevant and known (may
+            differ from lineage.csv's own record, if you determined it was wrong).
+        daughter_ids: track_ids of the cells born from this one, if it divided.
+        event_id: the events.csv row this corresponds to, if any (e.g. "peak_frame"
+            value or similar identifier) -- leave None if you found this yourself and
+            nothing in events.csv flagged it. Never invent one.
+        notes: free text for anything the typed fields don't capture.
+        annotator: who determined this. Defaults to the CELL_MCP_ANNOTATOR
+            environment variable if set, else "unspecified" -- set that env var once
+            rather than passing this every call.
+    """
+    from datetime import datetime, timezone
+    import csv as _csv
+
+    m = _cm._manifest(well)
+    row = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "annotator": annotator or os.environ.get("CELL_MCP_ANNOTATOR", "unspecified"),
+        "well": well,
+        "cell_line": m.get("cell_line") or "",
+        "condition": m.get("condition") or "",
+        "track_id": track_id,
+        "event_id": event_id or "",
+        "outcome_class": outcome_class,
+        "condensation_frame": condensation_frame if condensation_frame is not None else "",
+        "metaphase_frame": metaphase_frame if metaphase_frame is not None else "",
+        "anaphase_frame": anaphase_frame if anaphase_frame is not None else "",
+        "exit_frame": exit_frame if exit_frame is not None else "",
+        "parent_id": parent_id if parent_id is not None else "",
+        "daughter_ids": " ".join(str(d) for d in daughter_ids) if daughter_ids else "",
+        "notes": notes or "",
+    }
+
+    out_path = _cm.BUNDLE / well / "annotations.csv"
+    is_new = not out_path.is_file()
+    with open(out_path, "a", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=_ANNOTATION_FIELDS)
+        if is_new:
+            w.writeheader()
+        w.writerow(row)
+
+    n = sum(1 for _ in open(out_path, encoding="utf-8")) - 1
+    return f"Recorded. {out_path} now has {n} annotation(s) for {well}."
+
+
+
+__all__ = ["show_cells_in_browser", "_ANNOTATION_FIELDS", "annotate"]
