@@ -181,6 +181,169 @@ def watch_location_over_time(
     return out
 
 
+_CHAIN_GAP_MIN = 10.0
+_CHAIN_MARGIN_UM = 14.0
+_CHAIN_AMBIGUOUS_RATIO = 1.3
+
+
+def _walk_chain(well: str, track_id: int, direction: str = "forward",
+                max_hops: int = 6, seen: set[int] | None = None) -> list[dict]:
+    """Walk a chain of id hops from `track_id` -- the same physical object losing and
+    regaining its id (segmentation wobble), not a division.
+
+    Applies the COEXISTENCE test list_nearby_tracks hands a reader by hand,
+    automatically, one hop at a time: the next link must be NEW near the current
+    end of the chain, close in space, and -- the part that tells a hop apart from a
+    sister -- must NOT overlap the current track's own span. Two daughters coexist;
+    a re-acquisition never does.
+
+    Stops the moment it stops being SURE, not when it runs out of candidates:
+    hit max_hops, no candidate within radius/gap, or the two closest candidates
+    score too close to call apart (`_CHAIN_AMBIGUOUS_RATIO`). Same reason
+    `_resolve_family`'s nearby-track guess is off by default -- BeWo 969 showed a
+    silent wrong hop is worse than stopping and asking. `direction="backward"`
+    walks the mirror image, from the track's FIRST frame/position backward.
+
+    Returns hops in walk order (excluding the seed), each:
+        {track_id, frames: (lo, hi), gap_frames, dist_um, size_ratio}
+    Empty if no hop resolves.
+    """
+    df = _cm._tracks(well)
+    if df.empty:
+        return []
+    um_px = _cm._manifest(well)["pixel_size_um"]
+    srt = df.sort_values("frame")
+    first = srt.groupby("track_id").first()
+    last = srt.groupby("track_id").last()
+    has_area = "area_um2" in srt.columns
+    med_area = srt.groupby("track_id").area_um2.median() if has_area else None
+
+    seen = set(seen) if seen else set()
+    seen.add(int(track_id))
+    chain: list[dict] = []
+    cur = int(track_id)
+
+    for _ in range(max_hops):
+        if cur not in first.index or cur not in last.index:
+            break
+        cur_lo, cur_hi = int(first.loc[cur, "frame"]), int(last.loc[cur, "frame"])
+        a_cur = float(med_area.loc[cur]) if med_area is not None and cur in med_area.index else None
+        r_um = (float(np.sqrt(max(a_cur, 1.0) / np.pi)) if a_cur else 0.0) + _CHAIN_MARGIN_UM
+        r_px = r_um / um_px
+
+        if direction == "forward":
+            f0, x0, y0 = cur_hi, float(last.loc[cur, "cx"]), float(last.loc[cur, "cy"])
+            lo, hi = f0 + 1, _frame_at_offset_min(well, f0, _CHAIN_GAP_MIN)
+            edge = first
+        else:
+            f0, x0, y0 = cur_lo, float(first.loc[cur, "cx"]), float(first.loc[cur, "cy"])
+            lo, hi = _frame_at_offset_min(well, f0, -_CHAIN_GAP_MIN), f0 - 1
+            edge = last
+        if lo > hi:
+            break
+
+        pool = edge[(edge.frame >= lo) & (edge.frame <= hi)]
+        pool = pool[~pool.index.isin(seen)]
+        if pool.empty:
+            break
+        d2 = (pool.cx - x0) ** 2 + (pool.cy - y0) ** 2
+        near = pool[d2 <= r_px * r_px]
+        if near.empty:
+            break
+
+        cands = []
+        for t in near.index:
+            t = int(t)
+            t_lo, t_hi = int(first.loc[t, "frame"]), int(last.loc[t, "frame"])
+            if t_lo <= cur_hi and t_hi >= cur_lo:
+                continue  # coexists with the current end -- a sister, not a hop
+            dist_um = float(np.sqrt(d2.loc[t])) * um_px
+            a_t = float(med_area.loc[t]) if med_area is not None and t in med_area.index else None
+            size_ratio = (a_t / a_cur) if (a_t and a_cur) else None
+            cands.append({
+                "track_id": t, "frames": (t_lo, t_hi),
+                "gap_frames": (t_lo - cur_hi) if direction == "forward" else (cur_lo - t_hi),
+                "dist_um": dist_um, "size_ratio": size_ratio,
+            })
+        if not cands:
+            break
+        cands.sort(key=lambda c: c["dist_um"])
+        best = cands[0]
+        if len(cands) > 1 and cands[1]["dist_um"] < best["dist_um"] * _CHAIN_AMBIGUOUS_RATIO:
+            break  # two candidates too close to call -- stop rather than guess
+
+        chain.append(best)
+        seen.add(best["track_id"])
+        cur = best["track_id"]
+
+    return chain
+
+
+@server.tool()
+def resolve_lineage_chain(well: str, track_id: int, direction: str = "forward",
+                          max_hops: int = 6) -> str:
+    """Chase a cell through id hops caused by segmentation losing and regaining it --
+    NOT a division. Free: no images.
+
+    A track can end mid-life for a reason that has nothing to do with mitosis: the
+    mask wobbles at telophase, drops out for a frame, and Cellpose hands the same
+    physical cell a new id when it reappears. `get_lineage` will not help here --
+    it only reads `lineage.csv`'s division links, and a hop like this was never a
+    division. Tracing it today means `list_nearby_tracks` plus `measure` by hand at
+    every hop; this does that walk automatically, one hop at a time, and STOPS the
+    moment it is no longer sure rather than guessing through an ambiguous one.
+
+    THE TEST IS THE SAME ONE list_nearby_tracks hands you by hand: a hop must be
+    NEW near the current end of the chain, close in space, and -- what tells a hop
+    apart from a real sister -- must NOT be on screen at the same time as the track
+    it follows. Two daughters coexist; a re-acquisition never does. Where two
+    candidates are nearly as close as each other this returns what it found so far
+    and says why it stopped, rather than pick one silently -- a wrong hop chosen
+    quietly is worse than stopping short, same reason `_resolve_family`'s nearby-
+    track guess is off by default.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the track to chase. Usually a daughter whose filmstrip goes
+            OFF-TRACK sooner than its sister's.
+        direction: "forward" (default) chases id hops after this track's last
+            frame -- the usual case, segmentation wobble right after a division.
+            "backward" chases hops before its first frame, for a track that starts
+            mid-event because the cell was already hard to segment on arrival.
+        max_hops: hard cap on chain length, so a bad well cannot walk forever.
+    """
+    if direction not in ("forward", "backward"):
+        raise ValueError('direction must be "forward" or "backward".')
+    df = _cm._tracks(well)
+    if df.empty or track_id not in df.track_id.values:
+        raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
+
+    chain = _walk_chain(well, track_id, direction=direction, max_hops=max_hops)
+    stitched = [int(track_id), *(h["track_id"] for h in chain)]
+
+    if not chain:
+        return (f"{well} track {track_id}: no {direction} hop resolves -- either this "
+                f"track's own id covers the cell for the whole window, or the next "
+                f"candidate was ambiguous (see list_nearby_tracks to look yourself).")
+
+    out = [f"{well} track {track_id}: {len(chain)} {direction} hop(s) resolved.",
+           "", "hop track_id | frames | gap_frames | dist_um | size_ratio"]
+    for h in chain:
+        sr = f"{h['size_ratio']:.2f}" if h["size_ratio"] is not None else "-"
+        out.append(f"{h['track_id']} | {h['frames'][0]}-{h['frames'][1]} | "
+                   f"{h['gap_frames']} | {h['dist_um']:.1f} | {sr}")
+    out.append(
+        f"\nStitched chain: {stitched}. Each hop passed the coexistence test (never "
+        f"overlapping the id before it) and had no other candidate within "
+        f"{_CHAIN_AMBIGUOUS_RATIO:g}x its distance -- still bookkeeping, not a "
+        f"judgement that these are all 'the same cell'; confirm on the pixels via "
+        f"follow_cells_over_time(track_ids={stitched})."
+        + (f" Stopped before {max_hops} hops -- no further candidate resolved "
+           f"(ambiguous or none nearby)." if len(chain) < max_hops else "")
+    )
+    return "\n".join(out)
+
+
 def _resolve_family(well: str, track_ids: list[int],
                     include_nearby: bool = False) -> tuple[list[int], list[int]]:
     """Add a track's recorded daughters, then the ones nobody recorded.
@@ -214,19 +377,44 @@ def _resolve_family(well: str, track_ids: list[int],
     candidates COEXIST, which is the test this heuristic lacks: two daughters must be
     on screen at the same time, so a chain of non-overlapping tracks at one spot is one
     cell being re-acquired, never a sister pair.
+
+    ALWAYS (not gated by include_nearby): each member is also chain-walked forward
+    via _walk_chain, chasing id hops from segmentation wobble rather than division --
+    the case that produced the literal complaint "the last couple of tracks snapped
+    to 1 daughter" when a daughter's track ended at a wobble hop and dropped out of
+    the centring mean. Unlike the nearby-track guess above, this IS the coexistence
+    test BeWo 969 was missing -- a hop must never overlap the id before it -- so it
+    is on by default; it still stops rather than guesses through an ambiguous hop.
+    Resolved hops land in `added`, same as the nearby-heuristic's finds, so the
+    header can say which members the lineage record itself does not vouch for.
     """
     ids = [int(t) for t in track_ids]
     if len(track_ids) == 1:
         lin = _cm._lineage(well)
         kids = (lin.get(ids[0]) or {}).get("daughters") or []
         ids = [ids[0], *[int(k) for k in kids]]
+
+    # Only daughters (ids[1:]) are chain-walked, never ids[0]. ids[0] is the anchor
+    # (the mother, by this function's own convention -- see the nearby-heuristic
+    # below, which reads ids[0] the same way) and her track ending IS the division;
+    # chasing her forward would just walk into her own daughters, which is already
+    # answered by lineage.csv/the nearby heuristic and would silently reproduce
+    # whichever daughter happens to be unlisted -- exactly the wrong-guess failure
+    # this whole function exists to avoid.
+    chained: list[int] = []
+    seen = set(ids)
+    for tid in ids[1:]:
+        for hop in _walk_chain(well, tid, direction="forward", seen=seen):
+            chained.append(hop["track_id"])
+            seen.add(hop["track_id"])
+
     if not include_nearby:
-        return ids, []
+        return [*ids, *chained], chained
 
     df = _cm._tracks(well)
     mother = df[df.track_id == ids[0]]
     if mother.empty:
-        return ids, []
+        return [*ids, *chained], chained
     mother = mother.sort_values("frame")
     link = int(mother.frame.iloc[-1])
     x0, y0 = float(mother.cx.iloc[-1]), float(mother.cy.iloc[-1])
@@ -243,9 +431,9 @@ def _resolve_family(well: str, track_ids: list[int],
     win = starts[(starts.frame >= lo) & (starts.frame <= hi)]
     d2 = (win.cx - x0) ** 2 + (win.cy - y0) ** 2
     near = win[d2 <= r_px * r_px].assign(d2=d2[d2 <= r_px * r_px])
-    extra = [int(t) for t in near.sort_values("d2").index if int(t) not in ids]
+    extra = [int(t) for t in near.sort_values("d2").index if int(t) not in ids and int(t) not in seen]
     extra = extra[:2]
-    return [*ids, *extra], extra
+    return [*ids, *chained, *extra], [*chained, *extra]
 
 
 @server.tool()
@@ -509,6 +697,8 @@ def follow_cells_over_time(
 
 __all__ = [
     "_FAMILY_NEARBY_UM", "_FAMILY_NEARBY_BEFORE_MIN", "_FAMILY_NEARBY_AFTER_MIN",
+    "_CHAIN_GAP_MIN", "_CHAIN_MARGIN_UM", "_CHAIN_AMBIGUOUS_RATIO",
     "_nearest_detection", "watch_location_over_time", "_resolve_family",
+    "_walk_chain", "resolve_lineage_chain",
     "list_nearby_tracks", "follow_cells_over_time",
 ]

@@ -222,6 +222,135 @@ def _condensation(well: str, rows, lin, tracks, um_px: float) -> tuple[list, lis
     return scores, peaks, dnas, areas
 
 
+def _prophase_onset(well: str, track_id: int) -> dict | None:
+    """Score condensation walking BACKWARD from a mother's own track start, through
+    any predecessor id-hops resolve_lineage_chain resolves, to find where the rise
+    actually began -- her first tracked frame is not necessarily where prophase
+    started, only where THIS id started.
+
+    Reuses two things that already exist rather than inventing new machinery:
+    _walk_chain's backward walk (the same coexistence-tested hop-chasing built for
+    a daughter's id hops after a division, applied in the other direction here),
+    and _condensation's own DNA-conservation gate and field-normalised brightness
+    ratio, scored over the resolved predecessor(s)' own tracked rows instead of a
+    disc summed from tracks.csv's whole neighbourhood -- the predecessor IS the
+    same physical object by construction, so there is no neighbourhood to sum.
+
+    Returns None, honestly, when no predecessor track resolves. That is not "no
+    prophase" -- it means condensation started before segmentation ever produced a
+    tracked row here at all (a real case: on nTSC_ZO1_1-4_M1 a mother's rosette-
+    pattern chromatin was visible before her track began and only findable by
+    manually stepping watch_location_over_time backward). Scoring THAT case needs
+    measuring raw label-image blobs with no track backing them, a different and
+    larger feature this does not attempt -- it would have to reproduce this
+    project's raw intensity calibration outside tracks.csv, and a wrong number
+    presented with the same confidence as a real one is worse than admitting the
+    gap. See resolve_lineage_chain for the tracked half of this same limit.
+    """
+    hops = _cm._walk_chain(well, track_id, direction="backward")
+    if not hops:
+        return None
+
+    tracks = _cm._tracks(well)
+    need = {"area_um2", "intensity_mean", "intensity_integrated"}
+    if not need.issubset(tracks.columns):
+        return None
+
+    chain_ids = [int(track_id), *(h["track_id"] for h in hops)]
+    sub = tracks[tracks.track_id.isin(chain_ids)].sort_values("frame")
+    if len(sub) < 5:
+        return None
+
+    field = tracks.groupby("frame").intensity_mean.median().replace(0, np.nan)
+    sub = sub.assign(rel=sub.intensity_mean / sub.frame.map(field))
+
+    mrows = tracks[tracks.track_id == int(track_id)].sort_values("frame")
+    first_f = int(mrows.frame.iloc[0])
+    base_hi = _frame_at_offset_min(well, first_f, _COND_BASE_MIN)
+    base = mrows[mrows.frame <= base_hi]
+    if len(base) < 3:
+        base = mrows.head(10)
+    a0 = float(base.area_um2.median())
+    i0 = float((base.intensity_mean / base.frame.map(field)).median())
+    s0 = float(base.intensity_integrated.median())
+    if not (a0 > 0 and i0 > 0 and s0 > 0):
+        return None
+
+    # Only the PREDECESSOR frames -- strictly before this track's own first frame --
+    # are candidates. Her own history IS the baseline; scoring it against itself
+    # would be circular and would always "find" prophase at her own noise floor.
+    window = sub[sub.frame < first_f].copy()
+    if window.empty:
+        return None
+    window["dna"] = window.intensity_integrated / s0
+    window = window[(window.dna >= _COND_DNA_MIN) & (window.dna <= _COND_DNA_MAX)]
+    if window.empty:
+        return None
+    window["val"] = window.rel / i0
+    peak = window.loc[window.val.idxmax()]
+
+    return {
+        "prophase_frame": int(peak.frame), "score": float(peak.val),
+        "dna": float(peak.dna), "chain": chain_ids,
+    }
+
+
+@server.tool()
+def find_prophase_onset(well: str, track_id: int) -> str:
+    """Look for where a mother's chromatin condensation actually BEGAN, earlier
+    than her own track -- her first tracked frame is where THIS id started, not
+    necessarily where the biology did.
+
+    Chases the same id-hop chain resolve_lineage_chain does, backward from this
+    track's first frame, then scores each resolved predecessor frame with the same
+    brightness-rise/DNA-conservation test find_candidates uses for cond/cond_f --
+    just walked the other direction. A ranking signal, same as cond_f: it names
+    where to look, not a verdict that prophase happened there. Confirm on the
+    pixels via follow_cells_over_time(track_id=..., centre_frame=<prophase_frame>).
+
+    Give up nothing silently: if no predecessor track resolves at all, that is
+    reported as its own case, not folded into "no prophase found" -- it means the
+    signal may exist before ANY track here, visible only by stepping
+    watch_location_over_time backward through the raw frames by eye.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the mother track, from a division candidate.
+    """
+    df = _cm._tracks(well)
+    if df.empty or track_id not in df.track_id.values:
+        raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
+
+    hops = _cm._walk_chain(well, track_id, direction="backward")
+    if not hops:
+        return (f"{well} track {track_id}: no predecessor track resolves backward, so "
+                f"there is nothing here to score. This does NOT mean condensation began "
+                f"at this track's own first frame -- it means checking earlier means "
+                f"stepping watch_location_over_time backward through the raw frames by "
+                f"eye, since no tracked row exists to measure.")
+
+    result = _prophase_onset(well, track_id)
+    chain_ids = [int(track_id), *(h["track_id"] for h in hops)]
+    if result is None:
+        return (f"{well} track {track_id}: {len(hops)} backward hop(s) resolve "
+                f"(chain {chain_ids}), but no frame in them passes the same DNA-"
+                f"conservation gate find_candidates uses for cond/cond_f -- either "
+                f"nothing there was condensing, or the family lost too much signal to "
+                f"score. Look at the chain yourself: follow_cells_over_time("
+                f"track_ids={chain_ids}).")
+
+    return (
+        f"{well} track {track_id}: prophase_frame {result['prophase_frame']} "
+        f"(score {result['score']:.2f}, DNA {result['dna']:.2f}x baseline), found by "
+        f"walking backward through {len(hops)} resolved predecessor hop(s) "
+        f"(chain {chain_ids}).\n"
+        f"Ranking signal, not a verdict, same as cond_f -- confirm on the pixels: "
+        f"follow_cells_over_time(track_id={chain_ids[-1]}, "
+        f"start_frame={result['prophase_frame'] - 4}, "
+        f"end_frame={result['prophase_frame'] + 4})."
+    )
+
+
 def _collapse_sites(well: str, rows, tracks) -> dict[int, list[int]]:
     """Group recorded divisions that are the SAME physical event.
 
@@ -382,11 +511,17 @@ _STUB_DAUGHTER_FRAMES = 5
 def _daughter_spans(rows, lin) -> tuple[list[str], list[float]]:
     """Per row: how long each recorded daughter lasted, and the shorter of the two.
 
-    Free -- already in lineage.csv. It is here because on the one sample where it
-    has been looked at, it separated the real divisions from the artifacts better
-    than any of the scored columns did: daughters that persisted (118/159, 77/77)
-    against stubs (6/10, 4/1, 1/2). n=5 and one cell line, so it is printed as a
-    fact about the tracking, not scored or sorted on.
+    Free -- already in lineage.csv. It separated the real divisions from the
+    artifacts better than any of the other scored columns on two independent
+    samples now: the original 5-case nTSC read (118/159, 77/77 real vs. 6/10,
+    4/1, 1/2 artifact) and a second nTSC session 2026-08-06 (divisions 77-159
+    frames, non-divisions 1-10). Two sessions, two cell lines' worth of looking,
+    same split -- promoted from "printed as a fact" to an actual
+    `find_candidates(sort_by="daughter_persistence")` sort on `dau_min`, this
+    function's `worst` return. Still topology, not morphology: it inherits the
+    same blind spot as fragment_like/dna_anomaly wherever the tracker fails
+    THROUGH a division (see `_condensation`'s own docstring) -- it just has not
+    been caught failing that way yet.
     """
     li = lin.set_index("track_id")
     dur = (li.last_frame - li.first_frame + 1).to_dict()
@@ -577,6 +712,8 @@ def _sort_candidates(rows, sort_by: str, pool: str, seed: int | None):
         return rows.sort_values("first_frame"), sort_by
     if sort_by == "condensation" and _has("cond"):
         return rows.sort_values("cond", ascending=False, na_position="last"), sort_by
+    if sort_by == "daughter_persistence" and _has("dau_min"):
+        return rows.sort_values("dau_min", ascending=False, na_position="last"), sort_by
     if sort_by == "random":
         # Shuffle the WHOLE surviving pool and let limit take the head, so the sample
         # is drawn from every row that qualifies rather than from the top of some
@@ -692,18 +829,36 @@ def find_candidates(
                      disagreed with on 7 of 11 BeWo cases. Reach for it when the
                      question is "did this cell divide" rather than "is this row
                      trustworthy".
-      duration       longest-lived first (division pool: the mother's lifetime).
+      duration       longest-lived first (division pool: the MOTHER's lifetime
+                     before the link -- not her daughters'. Do not confuse this
+                     with daughter_persistence below; a long-lived mother says
+                     nothing about whether her recorded daughters were real.)
+      daughter_persistence  longest surviving recorded daughter first (the
+                     SHORTER of the two, so a row only ranks well if BOTH held
+                     up). Division pool only. Reuses `dau_min`/`dau_frames`,
+                     already shown in every division row -- promoted to an actual
+                     sort 2026-08-06 after a second, independent session found the
+                     same split condensation misses: on nTSC, real divisions ran
+                     77-159-frame daughters, artifacts 1-10. `_daughter_spans`
+                     itself still calls this "not scored" in its own docstring
+                     from when n=5 was the only evidence -- that note is now
+                     stale, two sessions on two cell lines agree, but it is still
+                     TOPOLOGY (the tracker kept linking the id), same blind spot
+                     as fragment_like/dna_anomaly/duration: it fails exactly
+                     where the tracker fails through a division, which is why
+                     `condensation` (morphology, not topology) exists as a
+                     separate, independent sort rather than a replacement.
       frame          earliest first.
       random         a seeded shuffle -- THE ONLY SORT THAT MAY BE USED TO ESTIMATE
                      ANYTHING. Every other sort answers "show me the worst", which
                      is triage; a rate, a share, or a per-stratum true-positive rate
-                     needs a sample that represents its stratum. `duration` in
-                     particular is not neutral: it is measured in FRAMES, so it
-                     favours faster-sampled wells, and on a BeWo draw of 5
-                     `vanishing_daughter` cases it plausibly oversampled long-lived
-                     cells that never divided. Pass `seed` to make the draw
-                     reproducible and quotable; without one it is still random but
-                     nobody can redraw it.
+                     needs a sample that represents its stratum. `duration` and
+                     `daughter_persistence` are both measured in FRAMES, so both
+                     favour faster-sampled wells, and on a BeWo draw of 5
+                     `vanishing_daughter` cases `duration` plausibly oversampled
+                     long-lived cells that never divided. Pass `seed` to make the
+                     draw reproducible and quotable; without one it is still
+                     random but nobody can redraw it.
 
     The division pool also comes with a CENSUS: every recorded division is labelled
     with the first artifact class it trips, and the counts partition the pool. That
@@ -852,6 +1007,7 @@ def find_candidates(
 __all__ = [
     "_COND_BEFORE_MIN", "_COND_AFTER_MIN", "_COND_MARGIN_UM", "_COND_BASE_MIN",
     "_COND_DNA_MIN", "_COND_DNA_MAX", "_condensation",
+    "_prophase_onset", "find_prophase_onset",
     "_collapse_sites", "_SITE_RADIUS_UM", "_SITE_GAP_MIN", "_SITE_MAX_SPAN_MIN",
     "_STRATA", "_kid_ids", "_fmt2", "_fmt0", "_STUB_DAUGHTER_FRAMES",
     "_daughter_spans", "_division_strata",

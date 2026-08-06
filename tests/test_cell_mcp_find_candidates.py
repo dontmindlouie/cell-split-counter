@@ -230,3 +230,73 @@ def test_random_draw_covers_the_whole_pool_not_the_head_of_another_order(well):
                                        seed=s, limit=1)
         seen.update(l.split(" |")[0] for l in out.splitlines() if l and l[0].isdigit())
     assert seen == {"1", "4"}, f"only ever drew {seen}"
+
+
+# --- sort_by="daughter_persistence" ---------------------------------------------
+#
+# Promoted 2026-08-06 from _daughter_spans's "printed but not scored" column
+# (dau_min) to an actual sort, after a second independent session (nTSC,
+# 2026-08-06) found the same split as the original 5-case read: real divisions'
+# daughters ran 77-159 frames, artifacts' 1-10. `well`'s own fixture ties on
+# dau_min (both mothers' worst daughter is a 2-frame stub), so this needs its own
+# fixture with a genuine split.
+
+
+@pytest.fixture
+def persistence_well(tmp_path, monkeypatch):
+    d = tmp_path / "P"
+    d.mkdir()
+    pd.DataFrame([
+        # mother 1: both daughters persist -- a real division.
+        {"track_id": 1, "parent_id": "", "first_frame": 0, "last_frame": 10,
+         "n_daughters": 2, "daughter_ids": "2 3", "link_distance_px": "",
+         "dna_ratio": "", "size_ratio": ""},
+        {"track_id": 2, "parent_id": 1, "first_frame": 11, "last_frame": 110,
+         "n_daughters": 0, "daughter_ids": "", "link_distance_px": 5.0,
+         "dna_ratio": 0.98, "size_ratio": 0.90},
+        {"track_id": 3, "parent_id": 1, "first_frame": 11, "last_frame": 100,
+         "n_daughters": 0, "daughter_ids": "", "link_distance_px": 5.0,
+         "dna_ratio": 0.98, "size_ratio": 0.90},
+        # mother 4: one daughter is a short-lived stub -- the artifact shape.
+        {"track_id": 4, "parent_id": "", "first_frame": 0, "last_frame": 20,
+         "n_daughters": 2, "daughter_ids": "5 6", "link_distance_px": "",
+         "dna_ratio": "", "size_ratio": ""},
+        {"track_id": 5, "parent_id": 4, "first_frame": 21, "last_frame": 90,
+         "n_daughters": 0, "daughter_ids": "", "link_distance_px": 3.0,
+         "dna_ratio": 1.02, "size_ratio": 0.05},
+        {"track_id": 6, "parent_id": 4, "first_frame": 21, "last_frame": 23,
+         "n_daughters": 0, "daughter_ids": "", "link_distance_px": 3.0,
+         "dna_ratio": 1.02, "size_ratio": 0.05},
+    ]).to_csv(d / "lineage.csv", index=False)
+    monkeypatch.setattr(cell_mcp_server, "BUNDLE", tmp_path)
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda w: {
+        "n_frames": 200, "pixel_size_um": 0.5, "width_px": 512, "height_px": 512,
+        "lineage": {"source": "geometry"},
+    })
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda w: pd.DataFrame(
+        [{"track_id": t, "frame": 0, "cx": 256.0, "cy": 256.0} for t in range(1, 7)]))
+    return "P"
+
+
+def test_daughter_persistence_ranks_the_surviving_pair_first(persistence_well):
+    out = cell_mcp_server.find_candidates(persistence_well, pool="division",
+                                          sort_by="daughter_persistence")
+    body = [l for l in out.splitlines() if l and l[0].isdigit()]
+    assert body[0].startswith("1 |"), \
+        "mother 1's daughters (100, 90 frames) must outrank mother 4's (70, 3)"
+
+
+def test_daughter_persistence_sorts_by_the_shorter_daughter_not_the_longer(persistence_well):
+    """Ranking on the WORSE of the pair, not the better one, is the whole point --
+    a row only earns a high rank if BOTH daughters held up. Sorting on the max
+    would let mother 4's 70-frame daughter (5) hide its 3-frame stub sibling."""
+    out = cell_mcp_server.find_candidates(persistence_well, pool="division",
+                                          sort_by="daughter_persistence")
+    body = [l for l in out.splitlines() if l and l[0].isdigit()]
+    assert body[-1].startswith("4 |")
+
+
+def test_daughter_persistence_is_not_silently_downgraded(persistence_well):
+    out = cell_mcp_server.find_candidates(persistence_well, pool="division",
+                                          sort_by="daughter_persistence")
+    assert "sorted by daughter_persistence" in out
