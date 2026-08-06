@@ -17,3 +17,4 @@ scripts/eval_harness/*.log.err
 *.log
 
 .venv-mcp/
+.venv-mcp-mac/
