@@ -13,7 +13,7 @@ from .server import server
 from .io import _fresh, _edge_um, _SERVER_STAMP
 from .render import _colorize, _scale_bar, _encode
 
-import cell_mcp as _cm
+import cell_mcp_server as _cm
 
 # BUNDLE, _manifest, _tracks, _frame_png, _hours, and _lineage below go through
 # `_cm.` rather than a direct import -- see the note at the top of io.py.

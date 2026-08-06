@@ -10,7 +10,7 @@ import pandas as pd
 from .server import server
 from .io import _frame_at_offset_min, _minutes_between, _edge_um
 
-import cell_mcp as _cm
+import cell_mcp_server as _cm
 
 # BUNDLE, _manifest, and _tracks below go through `_cm.` rather than a direct
 # import -- see the note at the top of io.py.

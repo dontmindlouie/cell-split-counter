@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cell_mcp  # noqa: E402
+import cell_mcp_server  # noqa: E402
 
 
 @pytest.fixture
@@ -41,15 +41,15 @@ def fake(monkeypatch):
                      "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
         rows.append({"track_id": 3, "frame": f, "cx": 110.0 + drift, "cy": 100.0,
                      "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
-    monkeypatch.setattr(cell_mcp, "_manifest", lambda well: {
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda well: {
         "pixel_size_um": 0.5, "n_frames": 40, "width_px": 512, "height_px": 512,
         # 5 min per frame, so a window asked for in minutes has an exact frame answer.
         "frame_timestamps_ms": [f * 300_000 for f in range(40)],
     })
-    monkeypatch.setattr(cell_mcp, "_frame_png",
+    monkeypatch.setattr(cell_mcp_server, "_frame_png",
                         lambda well, f: np.full((512, 512), 40, dtype=np.uint8))
-    monkeypatch.setattr(cell_mcp, "_hours", lambda well, f: f * 0.1)
+    monkeypatch.setattr(cell_mcp_server, "_hours", lambda well, f: f * 0.1)
     return "fake"
 
 
@@ -67,10 +67,10 @@ def _strip(fake, ids, **kw):
     # tests asserted back when the window was counted in frames.
     kw = {"start_frame": None, "end_frame": None, "max_images": 12, "crop_um": None,
           "color": False, "scale_bar": False, "marker": False,
-          "before_min": 20.0, "after_min": 20.0, "stride_min": cell_mcp._STRIDE_MIN,
-          "cap": cell_mcp.MAX_IMAGES, "added": None, **kw}
+          "before_min": 20.0, "after_min": 20.0, "stride_min": cell_mcp_server._STRIDE_MIN,
+          "cap": cell_mcp_server.MAX_IMAGES, "added": None, **kw}
     start, end = kw.pop("start_frame"), kw.pop("end_frame")
-    return cell_mcp._family_filmstrip_frames(fake, ids, start, end, **kw)
+    return cell_mcp_server._family_filmstrip_frames(fake, ids, start, end, **kw)
 
 
 def test_window_is_chosen_around_the_membership_transition(fake):
@@ -84,7 +84,7 @@ def test_window_is_chosen_around_the_membership_transition(fake):
 def test_centre_follows_the_mother_then_the_daughters_midpoint(fake):
     """The handoff needs no special case -- f9 has only the mother, f10 only the
     daughters, and the mean of whoever is present does the switching."""
-    tracks = cell_mcp._tracks(fake)
+    tracks = cell_mcp_server._tracks(fake)
 
     def centre(f):
         rows = tracks[tracks.frame == f]
@@ -133,10 +133,10 @@ def test_it_names_the_tracks_that_would_fill_a_held_strip(fake, monkeypatch):
     """The daughters the tracker never linked are the usual reason a strip goes HELD,
     and they are sitting right there in the crop. Naming them turns a dead render into
     the next call."""
-    rows = cell_mcp._tracks(fake).to_dict("records")
+    rows = cell_mcp_server._tracks(fake).to_dict("records")
     rows += [{"track_id": 4, "frame": f, "cx": 140.0, "cy": 100.0, "area_px": 200.0,
               "n_masks_in_frame": 1, "intensity_mean": 100.0} for f in range(20, 30)]
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
     header, _ = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39, max_images=12)
     assert "WARNING" in header
     assert "NOT in this set" in header and "4 (" in header
@@ -154,7 +154,7 @@ def test_members_are_capped_and_chosen_once_by_lifetime(fake, monkeypatch):
     rows = [{"track_id": t, "frame": f, "cx": 100.0 + t, "cy": 100.0,
              "area_px": 500.0 - 10 * t, "n_masks_in_frame": 1, "intensity_mean": 100.0}
             for t in range(1, 12) for f in range(t % 5 + 1)]
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
     header, _ = _strip(fake, list(range(1, 12)), start_frame=0, end_frame=4)
     assert "dropped to keep the centre stable" in header
     assert "longest-lived" in header
@@ -189,11 +189,11 @@ def test_no_ring_by_default_and_the_header_says_why(fake):
 
 
 def test_a_lone_mother_expands_to_her_recorded_daughters(fake, monkeypatch):
-    monkeypatch.setattr(cell_mcp, "_lineage",
+    monkeypatch.setattr(cell_mcp_server, "_lineage",
                         lambda well: {1: {"daughters": [2, 3]}})
-    assert cell_mcp._resolve_family(fake, [1], include_nearby=False) == ([1, 2, 3], [])
+    assert cell_mcp_server._resolve_family(fake, [1], include_nearby=False) == ([1, 2, 3], [])
     # Explicit sets keep their recorded members -- the caller may be disputing the link.
-    assert cell_mcp._resolve_family(fake, [1, 2], include_nearby=False) == ([1, 2], [])
+    assert cell_mcp_server._resolve_family(fake, [1, 2], include_nearby=False) == ([1, 2], [])
 
 
 # --------------------------------------------------------------------- dropouts
@@ -209,19 +209,19 @@ def test_a_lone_mother_expands_to_her_recorded_daughters(fake, monkeypatch):
 def dropout(monkeypatch, fake):
     """Same family as `fake`, but daughter 2 is not segmented at f14 -- a one-frame
     segmentation dropout in the middle of her span, with her sister still present."""
-    rows = [r for r in cell_mcp._tracks(fake).to_dict("records")
+    rows = [r for r in cell_mcp_server._tracks(fake).to_dict("records")
             if not (r["track_id"] == 2 and r["frame"] == 14)]
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
     return fake
 
 
 def _centres(fake, ids, lo, hi):
-    tracks = cell_mcp._tracks(fake)
+    tracks = cell_mcp_server._tracks(fake)
     win = tracks[(tracks.track_id.isin(ids)) & (tracks.frame >= lo) & (tracks.frame <= hi)]
     pos = {}
     for r in win.itertuples():
         pos.setdefault(int(r.frame), []).append(r)
-    return cell_mcp._resolve_family_centres(win, pos, list(range(lo, hi + 1)))
+    return cell_mcp_server._resolve_family_centres(win, pos, list(range(lo, hi + 1)))
 
 
 def test_a_dropout_does_not_swing_the_centre_onto_the_remaining_member(dropout):
@@ -240,7 +240,7 @@ def test_a_dropout_does_not_swing_the_centre_onto_the_remaining_member(dropout):
     assert abs(x14 - expected) < 3.0, "held position lags by at most the member's drift"
 
     sister_only = float(
-        cell_mcp._tracks(dropout).query("track_id == 3 and frame == 14").cx.iloc[0])
+        cell_mcp_server._tracks(dropout).query("track_id == 3 and frame == 14").cx.iloc[0])
     assert abs(sister_only - expected) > 4 * abs(x14 - expected), "the swing it replaces"
 
 
@@ -286,7 +286,7 @@ def test_every_image_tool_discloses_that_brightness_is_not_comparable(fake):
     assert "0.5/99.5" in header and "NOT comparable" in header
     assert "get_track_profile" in header, "must point at where brightness IS reliable"
 
-    solo, _ = cell_mcp._filmstrip_frames(fake, 1, 0, 9, max_images=4, crop_um=40.0,
+    solo, _ = cell_mcp_server._filmstrip_frames(fake, 1, 0, 9, max_images=4, crop_um=40.0,
                                          color=False, scale_bar=False, marker=False)
     assert "0.5/99.5" in solo
 
@@ -295,12 +295,12 @@ def test_the_note_says_whether_this_bundle_can_undo_the_stretch(fake, monkeypatc
     """A bundle that recorded the per-frame window can be put on a common scale; one
     that did not is stuck. Saying only "not comparable" leaves a reader unable to tell
     which case they are in, and the answer differs per bundle."""
-    base = dict(cell_mcp._manifest(fake))
-    assert "cannot be undone" in cell_mcp._display_note(fake), "no window recorded"
+    base = dict(cell_mcp_server._manifest(fake))
+    assert "cannot be undone" in cell_mcp_server._display_note(fake), "no window recorded"
 
-    monkeypatch.setattr(cell_mcp, "_manifest",
+    monkeypatch.setattr(cell_mcp_server, "_manifest",
                         lambda w: {**base, "display_window": {"recorded": True}})
-    note = cell_mcp._display_note(fake)
+    note = cell_mcp_server._display_note(fake)
     assert "reversible" in note and "lo + png/255" in note
     assert "NOT comparable" in note, "still a caveat, just a recoverable one"
 
@@ -328,10 +328,10 @@ def test_window_is_measured_in_minutes_not_frames(fake):
 def test_window_reaches_much_further_forward_by_default(fake):
     """The transition is where the TRACKER stopped linking, not where the cell
     divided. Symmetric defaults are what hid the outcome."""
-    assert cell_mcp._WINDOW_AFTER_MIN > cell_mcp._WINDOW_BEFORE_MIN * 2
+    assert cell_mcp_server._WINDOW_AFTER_MIN > cell_mcp_server._WINDOW_BEFORE_MIN * 2
     header, _ = _strip(fake, [1, 2, 3],
-                       before_min=cell_mcp._WINDOW_BEFORE_MIN,
-                       after_min=cell_mcp._WINDOW_AFTER_MIN)
+                       before_min=cell_mcp_server._WINDOW_BEFORE_MIN,
+                       after_min=cell_mcp_server._WINDOW_AFTER_MIN)
     lo, hi = _window(header)
     assert hi - 10 > 10 - lo, "must look further past the transition than before it"
 
@@ -340,8 +340,8 @@ def test_a_minute_window_is_never_quietly_shorter_than_asked(fake):
     """Rounding inward would make a 90 min window mean 85 on some wells, silently."""
     header, _ = _strip(fake, [1, 2, 3], before_min=12.0, after_min=12.0)
     lo, hi = _window(header)
-    assert cell_mcp._minutes_between(fake, lo, 10) >= 12.0
-    assert cell_mcp._minutes_between(fake, 10, hi) >= 12.0
+    assert cell_mcp_server._minutes_between(fake, lo, 10) >= 12.0
+    assert cell_mcp_server._minutes_between(fake, 10, hi) >= 12.0
 
 
 def test_the_header_states_the_window_in_minutes(fake):
@@ -372,16 +372,16 @@ def test_a_long_window_is_thinned_by_time_and_says_the_spacing(fake):
     """Not by a frame count: a fixed count means different time resolution per well."""
     header, images = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39,
                             max_images=None, stride_min=10.0)
-    assert len(images) <= cell_mcp.MAX_IMAGES
+    assert len(images) <= cell_mcp_server.MAX_IMAGES
     assert "min apart" in header
 
 
 def test_a_page_may_show_more_frames_than_the_context_cap(fake):
     """Images on an HTML page cost no context -- they go to disk and to a human's
     browser -- so the model's token budget has no business shrinking them."""
-    assert cell_mcp.MAX_IMAGES_PAGE > cell_mcp.MAX_IMAGES
+    assert cell_mcp_server.MAX_IMAGES_PAGE > cell_mcp_server.MAX_IMAGES
     _, images = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39,
-                       max_images=None, cap=cell_mcp.MAX_IMAGES_PAGE)
+                       max_images=None, cap=cell_mcp_server.MAX_IMAGES_PAGE)
     assert len(images) == 40, "the whole range fits under the page cap"
 
 
@@ -396,7 +396,7 @@ def test_a_page_may_show_more_frames_than_the_context_cap(fake):
 def test_an_unlinked_sister_is_found_by_position(monkeypatch, fake):
     """A daughter the tracker never connected still has to APPEAR as a new object next
     to her mother. That is what makes her findable from geometry alone."""
-    rows = list(cell_mcp._tracks(fake).to_dict("records"))
+    rows = list(cell_mcp_server._tracks(fake).to_dict("records"))
     # Track 1 ends at f9 at (100, 100); 2 and 3 are her recorded daughters. Track 50
     # begins at f10 right beside her and is linked to nobody.
     for f in range(10, 20):
@@ -405,10 +405,10 @@ def test_an_unlinked_sister_is_found_by_position(monkeypatch, fake):
                      "area_um2": 50.0})
     for r in rows:
         r.setdefault("area_um2", r["area_px"] * 0.25)
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
-    monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda w: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
 
-    members, added = cell_mcp._resolve_family(fake, [1], include_nearby=True)
+    members, added = cell_mcp_server._resolve_family(fake, [1], include_nearby=True)
     assert 50 in members and added == [50]
 
 
@@ -416,31 +416,31 @@ def test_a_long_standing_neighbour_is_not_mistaken_for_a_daughter(monkeypatch, f
     """The discriminator is that a sister is NEW. A cell that has been on screen the
     whole time and merely happens to be close is a neighbour, and sweeping it in turns
     'the sister' into 'the neighbourhood'."""
-    rows = list(cell_mcp._tracks(fake).to_dict("records"))
+    rows = list(cell_mcp_server._tracks(fake).to_dict("records"))
     for f in range(0, 20):
         rows.append({"track_id": 60, "frame": f, "cx": 104.0, "cy": 100.0,
                      "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0,
                      "area_um2": 50.0})
     for r in rows:
         r.setdefault("area_um2", r["area_px"] * 0.25)
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
-    monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda w: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
 
-    members, added = cell_mcp._resolve_family(fake, [1], include_nearby=True)
+    members, added = cell_mcp_server._resolve_family(fake, [1], include_nearby=True)
     assert 60 not in members and added == []
 
 
 def test_the_header_says_a_member_is_there_by_position_not_lineage(monkeypatch, fake):
     """Showing an unrecorded object silently would be claiming the lineage vouches for
     it. It does not, and that is a different claim from a recorded daughter."""
-    rows = list(cell_mcp._tracks(fake).to_dict("records"))
+    rows = list(cell_mcp_server._tracks(fake).to_dict("records"))
     for f in range(10, 20):
         rows.append({"track_id": 50, "frame": f, "cx": 104.0, "cy": 100.0,
                      "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0,
                      "area_um2": 50.0})
     for r in rows:
         r.setdefault("area_um2", r["area_px"] * 0.25)
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda w: pd.DataFrame(rows))
     header, _ = _strip(fake, [1, 2, 3, 50], added=[50])
     assert "by POSITION" in header and "50" in header
 
@@ -460,8 +460,8 @@ def test_track_id_and_track_ids_are_not_interchangeable(monkeypatch, fake):
     pulling in daughters -- a reviewer asking to see ONE mask would get a crop that
     re-centres on objects the tracker chose for them.
     """
-    monkeypatch.setattr(cell_mcp, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
-    members, _ = cell_mcp._resolve_family(fake, [1])
+    monkeypatch.setattr(cell_mcp_server, "_lineage", lambda w: {1: {"daughters": [2, 3]}})
+    members, _ = cell_mcp_server._resolve_family(fake, [1])
     assert members == [1, 2, 3]
 
     seen = {}
@@ -474,23 +474,23 @@ def test_track_id_and_track_ids_are_not_interchangeable(monkeypatch, fake):
         seen["family"] = list(members)
         return "hdr", []
 
-    monkeypatch.setattr(cell_mcp, "_filmstrip_frames", spy_single)
-    monkeypatch.setattr(cell_mcp, "_family_filmstrip_frames", spy_family)
+    monkeypatch.setattr(cell_mcp_server, "_filmstrip_frames", spy_single)
+    monkeypatch.setattr(cell_mcp_server, "_family_filmstrip_frames", spy_family)
 
-    cell_mcp.follow_cells_over_time(fake, track_id=1)
+    cell_mcp_server.follow_cells_over_time(fake, track_id=1)
     assert seen == {"single": 1}
 
     seen.clear()
-    cell_mcp.follow_cells_over_time(fake, track_ids=[1])
+    cell_mcp_server.follow_cells_over_time(fake, track_ids=[1])
     assert seen == {"family": [1, 2, 3]}
 
 
 def test_neither_or_both_is_refused_rather_than_guessed(fake):
     """Picking one for the caller would pick the wrong backend half the time."""
     with pytest.raises(ValueError, match="exactly one"):
-        cell_mcp.follow_cells_over_time(fake)
+        cell_mcp_server.follow_cells_over_time(fake)
     with pytest.raises(ValueError, match="exactly one"):
-        cell_mcp.follow_cells_over_time(fake, track_id=1, track_ids=[1])
+        cell_mcp_server.follow_cells_over_time(fake, track_id=1, track_ids=[1])
 
 
 def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
@@ -503,6 +503,6 @@ def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
         seen["crop"] = crop_um
         return "hdr", []
 
-    monkeypatch.setattr(cell_mcp, "_filmstrip_frames", spy)
-    cell_mcp.follow_cells_over_time(fake, track_id=1)
+    monkeypatch.setattr(cell_mcp_server, "_filmstrip_frames", spy)
+    cell_mcp_server.follow_cells_over_time(fake, track_id=1)
     assert seen["crop"] == 60.0

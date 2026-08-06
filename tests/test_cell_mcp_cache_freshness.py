@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cell_mcp  # noqa: E402
+import cell_mcp_server  # noqa: E402
 
 
 @pytest.fixture
@@ -24,24 +24,24 @@ def bundle(tmp_path, monkeypatch):
     (w / "frames").mkdir(parents=True)
     (w / "manifest.json").write_text(json.dumps({"n_tracks": 100, "n_frames": 2}))
     pd.DataFrame([{"track_id": 1, "frame": 0}]).to_csv(w / "tracks.csv", index=False)
-    monkeypatch.setattr(cell_mcp, "BUNDLE", tmp_path)
-    cell_mcp._manifest.cache_clear()
-    cell_mcp._tracks.cache_clear()
+    monkeypatch.setattr(cell_mcp_server, "BUNDLE", tmp_path)
+    cell_mcp_server._manifest.cache_clear()
+    cell_mcp_server._tracks.cache_clear()
     return w
 
 
 def test_a_rebuilt_manifest_is_re_read_not_served_from_cache(bundle):
-    assert cell_mcp._manifest("W1")["n_tracks"] == 100
+    assert cell_mcp_server._manifest("W1")["n_tracks"] == 100
     (bundle / "manifest.json").write_text(json.dumps({"n_tracks": 111, "n_frames": 2}))
     import os
     st = (bundle / "manifest.json").stat()
     os.utime(bundle / "manifest.json", ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
-    assert cell_mcp._manifest("W1")["n_tracks"] == 111, "stale read: the 7/31 bug"
+    assert cell_mcp_server._manifest("W1")["n_tracks"] == 111, "stale read: the 7/31 bug"
 
 
 def test_an_unchanged_file_is_still_served_from_cache(bundle):
-    first = cell_mcp._tracks("W1")
-    assert cell_mcp._tracks("W1") is first, "must not re-parse a 500k-row csv per call"
+    first = cell_mcp_server._tracks("W1")
+    assert cell_mcp_server._tracks("W1") is first, "must not re-parse a 500k-row csv per call"
 
 
 def test_the_cache_stays_bounded(bundle, monkeypatch):
@@ -51,5 +51,5 @@ def test_the_cache_stays_bounded(bundle, monkeypatch):
         d.mkdir()
         pd.DataFrame([{"track_id": i, "frame": 0}]).to_csv(d / "tracks.csv", index=False)
     for i in range(1, 15):
-        cell_mcp._tracks(f"W{i}")
-    assert cell_mcp._tracks.cache_size() == 8, "14 wells read, 8 retained"
+        cell_mcp_server._tracks(f"W{i}")
+    assert cell_mcp_server._tracks.cache_size() == 8, "14 wells read, 8 retained"

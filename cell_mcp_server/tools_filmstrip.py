@@ -11,7 +11,7 @@ from .server import server, MAX_IMAGES, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _
 from .io import _frame_at_offset_min, _minutes_between
 from .render import _crop_tile, _stamp_tile, _encode, _display_note
 
-import cell_mcp as _cm
+import cell_mcp_server as _cm
 
 # _manifest, _tracks, _hours, _lineage, _filmstrip_frames, and _family_filmstrip_frames
 # below go through `_cm.` rather than a direct import -- see the note at the top of io.py.

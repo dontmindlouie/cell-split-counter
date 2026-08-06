@@ -10,16 +10,20 @@ import cv2
 import numpy as np
 import pandas as pd
 
-import cell_mcp as _cm
+import cell_mcp_server as _cm
 
 # Every reference to BUNDLE, _manifest, and _tracks below goes through `_cm.` rather
-# than a direct import. Tests monkeypatch these on the top-level `cell_mcp` module
-# (e.g. `monkeypatch.setattr(cell_mcp, "_manifest", ...)`), which only rewrites
-# cell_mcp's own namespace -- a function that captured `_manifest` via a normal
-# `from .io import _manifest` would keep calling the ORIGINAL, unpatched one. Routing
-# through `_cm.` re-reads the name from cell_mcp's namespace on every call, so a
-# patch takes effect everywhere, matching the single-module behaviour this package
-# was split out of.
+# than a direct import. Tests monkeypatch these on the `cell_mcp_server` package
+# (e.g. `monkeypatch.setattr(cell_mcp_server, "_manifest", ...)`), which only
+# rewrites cell_mcp_server's own namespace -- a function that captured `_manifest`
+# via a normal `from .io import _manifest` would keep calling the ORIGINAL,
+# unpatched one. Routing through `_cm.` re-reads the name from cell_mcp_server's
+# namespace on every call, so a patch takes effect everywhere, matching the
+# single-module behaviour this package was split out of.
+#
+# Self-importing `cell_mcp_server` here (rather than the flat top-level launcher
+# `cell_mcp.py`) is what makes this safe regardless of how that launcher is run or
+# renamed -- see the note at the top of cell_mcp_server/__init__.py.
 
 
 def _server_stamp() -> str:

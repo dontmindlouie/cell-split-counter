@@ -28,7 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cell_mcp  # noqa: E402
+import cell_mcp_server  # noqa: E402
 
 
 def _well(monkeypatch, mother_rows, extra_rows=(), n_frames=60):
@@ -40,8 +40,8 @@ def _well(monkeypatch, mother_rows, extra_rows=(), n_frames=60):
             rows.append({"track_id": 900 + k, "frame": f, "cx": 400.0 + 10 * k,
                          "cy": 400.0, "area_um2": 100.0, "area_px": 400.0,
                          "intensity_mean": 100.0, "intensity_integrated": 40000.0})
-    monkeypatch.setattr(cell_mcp, "_tracks", lambda w: pd.DataFrame(rows))
-    monkeypatch.setattr(cell_mcp, "_manifest", lambda w: {
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda w: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda w: {
         "pixel_size_um": 0.5, "n_frames": n_frames,
         "frame_timestamps_ms": [f * 300_000 for f in range(n_frames)],
     })
@@ -83,8 +83,8 @@ def _lin():
 def _score(fake, well_rows=None):
     lin = _lin()
     rows = lin[lin.n_daughters >= 2].copy()
-    s, f, d, a = cell_mcp._condensation(
-        fake, rows, lin, cell_mcp._tracks(fake), 0.5)
+    s, f, d, a = cell_mcp_server._condensation(
+        fake, rows, lin, cell_mcp_server._tracks(fake), 0.5)
     return s[0], f[0], d[0], a[0]
 
 
@@ -168,6 +168,6 @@ def test_too_short_a_mother_scores_nan_rather_than_guessing(monkeypatch):
     lin = pd.DataFrame([{"track_id": 1, "parent_id": "", "first_frame": 0,
                          "last_frame": 2, "n_daughters": 2, "daughter_ids": "2 3"}])
     fake = _well(monkeypatch, short, _tail("condensed", start=3))
-    s, f, d, a = cell_mcp._condensation(
-        fake, lin[lin.n_daughters >= 2].copy(), lin, cell_mcp._tracks(fake), 0.5)
+    s, f, d, a = cell_mcp_server._condensation(
+        fake, lin[lin.n_daughters >= 2].copy(), lin, cell_mcp_server._tracks(fake), 0.5)
     assert np.isnan(s[0]) and f[0] == -1

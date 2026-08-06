@@ -5,16 +5,19 @@ Split out of the original single-file cell_mcp.py's "tools" section.
 """
 
 import base64
+import json
+import os
 
 import cv2
 
 from .server import server, MAX_IMAGES_PAGE, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN, _HDR_SEP
 from .tools_filmstrip import _resolve_family
 
-import cell_mcp as _cm
+import cell_mcp_server as _cm
 
 # BUNDLE, _manifest, _filmstrip_frames, and _family_filmstrip_frames below go
-# through `_cm.` rather than a direct import -- see the note at the top of io.py.
+# through `_cm.` rather than a direct import -- see the note at the top of
+# __init__.py and io.py.
 
 @server.tool()
 def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:

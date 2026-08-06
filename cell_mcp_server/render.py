@@ -17,12 +17,12 @@ from mcp.types import ImageContent
 from .server import MAX_IMAGES, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN, _UPSCALE_TO, _HDR_SEP
 from .io import _frame_at_offset_min, _minutes_between, _pick_frames
 
-import cell_mcp as _cm
+import cell_mcp_server as _cm
 
 # BUNDLE, _manifest, _tracks, _frame_png, and _hours below go through `_cm.` rather
 # than a direct import -- see the note at the top of io.py. Tests monkeypatch these
-# on the top-level `cell_mcp` module, and only a call routed back through `cell_mcp`
-# at call time will observe the patch.
+# on the `cell_mcp_server` package, and only a call routed back through
+# `cell_mcp_server` at call time will observe the patch.
 
 
 def _colorize(grey: np.ndarray, well: str, color: bool) -> np.ndarray:
