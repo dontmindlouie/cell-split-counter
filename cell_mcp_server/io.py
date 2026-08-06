@@ -125,6 +125,16 @@ def _hours(well: str, frame: int) -> float:
     return (ts[frame] - ts[0]) / 3.6e6
 
 
+def _elapsed_str(well: str, frame: int) -> str:
+    """Elapsed time as '34h 03m' -- minutes zero-padded so a bare '3m' next to '34h'
+
+    never reads as a truncated number.
+    """
+    total_min = round(_hours(well, frame) * 60)
+    h, m = divmod(int(total_min), 60)
+    return f"{h}h {m:02d}m"
+
+
 def _frame_at_offset_min(well: str, frame: int, minutes: float) -> int:
     """The frame `minutes` of REAL TIME away from `frame` (negative = earlier).
 
@@ -218,6 +228,6 @@ def _edge_um(well: str, cx: float, cy: float) -> float:
 
 __all__ = [
     "_server_stamp", "_SERVER_STAMP", "_fresh", "_manifest", "_tracks",
-    "_frame_png", "_hours", "_frame_at_offset_min", "_minutes_between",
+    "_frame_png", "_hours", "_elapsed_str", "_frame_at_offset_min", "_minutes_between",
     "_pick_frames", "_edge_um",
 ]

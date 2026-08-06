@@ -89,6 +89,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     sections = []
     shared: list[str] = []
     lb_data = []
+    nav_items = []
     for i, ev in enumerate(events):
         if "track_id" not in ev and "track_ids" not in ev:
             raise ValueError(f"events[{i}] needs 'track_id' or 'track_ids': {ev!r}")
@@ -141,13 +142,19 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         if gen and gen not in shared:
             shared.append(gen)
         sections.append(
-            f"<section><h2>{i + 1}. {label}</h2>"
+            f"<section id=sec{i}><h2>{i + 1}. {label}</h2>"
             f"<p class=hdr>{spec}</p>"
             f"<div class=filmstrip>{''.join(tiles)}</div></section>"
         )
         lb_data.append({"label": label, "images": b64_list})
+        nav_items.append((i, label))
 
     lb_json = json.dumps(lb_data)
+    # A jump link per case, so getting from case 1 to case 2 is a click instead of
+    # scrolling past however many frames case 1 has.
+    nav_html = "".join(
+        f'<a href="#sec{i}">{i + 1}. {label}</a>' for i, label in nav_items
+    )
     # Collapsed by default: it is reference, not the task. Open once, then get out of
     # the way of the 14 cases the page actually exists for.
     note_html = f"<p class=task>{note}</p>" if note else ""
@@ -166,8 +173,27 @@ p.hdr {{ color: #999; font-size: 0.85rem; max-width: 60rem; }}
 p.task {{ color: #eee; font-size: 1rem; max-width: 60rem; background: #1d2a35; border-left: 3px solid #7aa7d0; padding: 0.7rem 1rem; }}
 details.howto {{ color: #888; font-size: 0.82rem; max-width: 60rem; margin-bottom: 1rem; }}
 details.howto summary {{ cursor: pointer; color: #7aa7d0; }}
-div.filmstrip {{ display: flex; flex-wrap: wrap; gap: 4px; }}
-div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+html {{ scroll-behavior: smooth; }}
+section {{ scroll-margin-top: 3.2rem; }}
+nav.track-nav {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 0.4rem;
+  overflow-x: auto; background: #111; border-bottom: 1px solid #333; padding: 0.6rem 0; margin-bottom: 0.5rem; }}
+nav.track-nav a {{ flex: 0 0 auto; color: #7aa7d0; font-size: 0.78rem; white-space: nowrap;
+  text-decoration: none; border: 1px solid #333; border-radius: 4px; padding: 0.25rem 0.6rem; }}
+nav.track-nav a:hover {{ background: #1d2a35; }}
+div.view-controls {{ flex: 0 0 auto; display: flex; align-items: center; gap: 0.9rem;
+  margin-left: auto; padding-left: 0.8rem; border-left: 1px solid #333; font-size: 0.78rem; color: #aaa; }}
+div.view-controls label {{ display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; cursor: pointer; }}
+div.filmstrip {{ display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; }}
+div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+/* The frame/time/coord label (top) and scale bar (bottom) are burned into the PNG
+   pixels, not drawn by CSS -- so "hiding" them for a clean figure means clipping
+   those strips off the rendered image rather than toggling a layer. Both bands are
+   now a single text line each (see _stamp_tile/_scale_bar in render.py), so top and
+   bottom take the same inset. Filmstrip and lightbox render the identical base64
+   PNG, just at different display sizes -- clip-path % is relative to the image's
+   own box either way, so they must use the same values or one under/over-trims. */
+body.figure-mode div.filmstrip img,
+body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
 .lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 20; }}
 .lightbox.open {{ display: flex; }}
 .lightbox img {{ max-width: 92vw; max-height: 88vh; }}
@@ -180,6 +206,9 @@ div.filmstrip img {{ image-rendering: pixelated; max-height: 260px; border: 1px 
 .lightbox-nav.next {{ right: 16px; }}
 </style></head><body>
 <h1>{well}</h1>
+<nav class="track-nav">{nav_html}<div class="view-controls">
+  <label><input type="checkbox" id="figureCtl" onchange="document.body.classList.toggle('figure-mode', this.checked)"> hide labels + scale bar (figures)</label>
+</div></nav>
 {note_html}
 {shared_html}
 {''.join(sections)}

@@ -80,19 +80,33 @@ def _display_note(well: str) -> str:
 
 
 def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0) -> np.ndarray:
-    """Burn a labelled scale bar into the bottom-right corner.
+    """Burn a labelled scale bar into the bottom-right corner, label to its left.
 
     This is the calibration check: the researcher compares it once against her
     own measurement of the same cell, rather than trusting a number in a file.
+
+    Label and bar sit side by side in one row (not stacked) so the burned-in
+    footer is a single text-line tall instead of two -- both because that is a
+    smaller bite out of the image and because it makes the crop that hides this
+    band for figures (see tools_output.py) a lot cheaper. Width is measured with
+    getTextSize and the whole thing is skipped, never truncated, if it wouldn't
+    fit -- a partially-drawn "10 u" reads as a rendering bug, not a narrow tile.
     """
     h, w = img.shape[:2]
-    px = int(round(target_um / um_per_px))
+    px = int(round(target_um / um_per_px / 4))
     if px < 5 or px > w - 20:
         return img
-    x1, y1 = w - 12, h - 14
-    cv2.rectangle(img, (x1 - px, y1), (x1, y1 + 5), (255, 255, 255), -1)
-    cv2.putText(img, f"{target_um:g} um", (x1 - px, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.4
+    text = f"{target_um:g} um"
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, 1)
+    margin, gap = 6, 5
+    if w - margin - px - gap - tw < 2:
+        return img
+    x1, y_base = w - margin, h - margin
+    bar_cy = y_base - th // 2
+    cv2.rectangle(img, (x1 - px, bar_cy - 2), (x1, bar_cy + 2), (255, 255, 255), -1)
+    cv2.putText(img, text, (x1 - px - gap - tw, y_base), font, scale,
+                (255, 255, 255), 1, cv2.LINE_AA)
     return img
 
 
@@ -366,7 +380,7 @@ def _filmstrip_frames(
                 for a in range(0, 360, 30):  # dashed
                     cv2.ellipse(img, (int(cx_crop), int(cy_crop)), (int(r_px), int(r_px)),
                                 0, a, a + 15, ring, 1, cv2.LINE_AA)
-        label = f"f{int(f)} t={_cm._hours(well, int(f)):.1f}h"
+        label = f"f{int(f)} t={_cm._elapsed_str(well, int(f))} @({cx:.0f}, {cy:.0f})"
         if on_track:
             if row.n_masks_in_frame > 1:
                 label += f" [{int(row.n_masks_in_frame)} masks]"
@@ -699,15 +713,13 @@ def _family_filmstrip_frames(
                 rad = float(np.sqrt(max(float(r.area_px), 1.0) / np.pi)) * 1.9 * s
                 rad = float(np.clip(rad, 8, min(img.shape[:2]) / 2 - 2))
                 cv2.circle(img, (int(rx), int(ry)), int(rad), (255, 255, 255), 1, cv2.LINE_AA)
-        label = f"f{int(f)} t={_cm._hours(well, int(f)):.1f}h"
+        label = f"f{int(f)} t={_cm._elapsed_str(well, int(f))} @({cx_f:.0f}, {cy_f:.0f})"
         if f in held:
             label += " HELD"
         elif n_gap:
             # Name the missing ones: "1 seen" alone would read as a cell having gone,
             # which is the misreading this whole mechanism exists to prevent.
             label += (f" [{n_present} seen, gap {','.join(str(t) for t in gapped[f])}]")
-        else:
-            label += f" [{n_present} member{'s' if n_present != 1 else ''}]"
         images.append(_stamp_tile(tile, label, um_px, scale_bar))
     return header, images
 

@@ -167,8 +167,8 @@ def watch_location_over_time(
         lines.append(f"  f{int(f)} ({_cm._hours(well, int(f)):.2f} h): {note}")
         corner = (f"~{near[0]} @{near[1]:.0f}um"
                   if near is not None and near[1] < crop_um else None)
-        images.append(_stamp_tile(tile, f"f{int(f)} t={_cm._hours(well, int(f)):.1f}h",
-                                  um_px, scale_bar, corner=corner))
+        label = f"f{int(f)} t={_cm._elapsed_str(well, int(f))} @({ccx:.0f}, {ccy:.0f})"
+        images.append(_stamp_tile(tile, label, um_px, scale_bar, corner=corner))
 
     lines.append(
         "\nA nearest cell many microns away means the thing at this position is NOT "
