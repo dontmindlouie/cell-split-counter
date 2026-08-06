@@ -21,6 +21,18 @@ that reach into private helpers (e.g. cell_mcp._manifest) are unaffected.
 
 import sys
 
+# Run directly (as the MCP launcher does: `python cell_mcp.py`), this module loads
+# as `__main__`, not `cell_mcp` -- so cell_mcp_server/io.py's `import cell_mcp as _cm`
+# (needed so tests can monkeypatch cell_mcp._manifest etc. and have it take effect
+# everywhere) finds nothing cached under that name and re-executes this whole file as
+# a second, independent module. That second execution re-enters this same import
+# chain and hits render.py's `from .io import _frame_at_offset_min` while io.py is
+# still mid-import -- a circular-import crash that only shows up when run as a script,
+# never when imported normally (e.g. by tests). Registering the real name up front
+# lets io.py's import find this module instead of re-running it.
+if __name__ == "__main__":
+    sys.modules.setdefault("cell_mcp", sys.modules[__name__])
+
 from cell_mcp_server.server import (
     server, BUNDLE, MAX_IMAGES, MAX_IMAGES_PAGE,
     _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN, _UPSCALE_TO, _HDR_SEP,

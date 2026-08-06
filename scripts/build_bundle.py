@@ -118,8 +118,8 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
         if len(timestamps) > 1 and not np.all(np.diff(timestamps) > 0):
             raise CalibrationError(f"{nd2_path.name}: timestamps are not strictly increasing")
 
+        n_channels = sizes.get("C", 1)
         ch = f.metadata.channels[0]
-        color = getattr(ch.channel, "color", None)
         scope = ch.microscope
         info = f.text_info or {}
         desc = info.get("description", "")
@@ -127,6 +127,23 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
         def _grab(pattern):
             m = re.search(pattern, desc)
             return m.group(1).strip() if m else None
+
+        if n_channels == 1:
+            color = getattr(ch.channel, "color", None)
+            channel_name = ch.channel.name
+            display_color_rgb = [color.r, color.g, color.b] if color else None
+            excitation_nm = getattr(ch.channel, "excitationLambdaNm", None)
+            emission_nm = getattr(ch.channel, "emissionLambdaNm", None)
+        else:
+            # Segmentation/intensity now run on a per-pixel max combine of all
+            # channels (src/ingest.py, scripts/build_bundle.py write_labels_and_tracks,
+            # 2026-08-03/04) -- no single channel's name/LUT/wavelength describes
+            # the combined image honestly, so record the full list instead of
+            # channel 0's alone.
+            channel_name = "+".join(c.channel.name for c in f.metadata.channels) + " (combined, max-projection)"
+            display_color_rgb = None
+            excitation_nm = [getattr(c.channel, "excitationLambdaNm", None) for c in f.metadata.channels]
+            emission_nm = [getattr(c.channel, "emissionLambdaNm", None) for c in f.metadata.channels]
 
         attrs = f.attributes
         cal = {
@@ -136,14 +153,15 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
             "height_px": attrs.heightPx,
             "width_px": attrs.widthPx,
             "bits_significant": attrs.bitsPerComponentSignificant,
-            "channel_name": ch.channel.name,
+            "channel_name": channel_name,
             # The ND2's own display LUT. NIS writes it from the acquisition preset;
             # reproducing it is what makes a rendered frame match what she sees in
-            # Fiji, instead of us picking a colormap by taste.
-            "display_color_rgb": [color.r, color.g, color.b] if color else None,
+            # Fiji, instead of us picking a colormap by taste. None on multi-channel
+            # wells -- see the branch above.
+            "display_color_rgb": display_color_rgb,
             "emission_range": _grab(r"Emission Range:\s*(.+)"),
-            "excitation_nm": getattr(ch.channel, "excitationLambdaNm", None),
-            "emission_nm": getattr(ch.channel, "emissionLambdaNm", None),
+            "excitation_nm": excitation_nm,
+            "emission_nm": emission_nm,
             "objective": scope.objectiveName,
             "numerical_aperture": scope.objectiveNumericalAperture,
             "objective_magnification": scope.objectiveMagnification,
@@ -162,8 +180,13 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
     }
     cal["duration_hours"] = (timestamps[-1] - timestamps[0]) / 3.6e6
     # Nyquist wants ~2.3 samples across the resolution limit; report the shortfall
-    # rather than making the reader recompute it.
-    em_nm = cal["emission_nm"] or 610.0
+    # rather than making the reader recompute it. Multi-channel wells carry a list
+    # of per-channel wavelengths (see the branch above) -- use the longest, since
+    # that's the channel with the coarsest (worst-case) resolution limit.
+    em_nm = cal["emission_nm"]
+    if isinstance(em_nm, list):
+        em_nm = max((v for v in em_nm if v), default=None)
+    em_nm = em_nm or 610.0
     na = cal["numerical_aperture"]
     if na:
         res_um = (em_nm / 1000.0) / (2.0 * na)
@@ -480,6 +503,19 @@ def write_labels_and_tracks(
     t0 = ts[0]
 
     with nd2.ND2File(str(nd2_path)) as f:
+        n_channels = f.sizes.get("C", 1)
+        # f.read_frame()'s flat sequence index does not follow simple t*C+c
+        # arithmetic for multi-channel acquisitions (see the matching note in
+        # src/ingest.py, confirmed 2026-08-03), and returns a (C, Y, X) array
+        # instead of (Y, X) -- which crashed regionprops_table's shape check
+        # against the 2D label mask for every multi-channel well (2026-08-04).
+        # nd2.imread(dask=True) resolves T/C coordinates correctly instead.
+        # Channels are combined by raw per-pixel max (no percentile rescale,
+        # unlike the ingest display path) so intensity_mean stays in real ADU
+        # units for the bleach curve, at the cost of not being any single
+        # marker's true signal at pixels where the other channel is brighter.
+        t_arr = nd2.imread(str(nd2_path), dask=True) if n_channels > 1 else None
+
         for i, (kept, raw_idx) in enumerate(pairs):
             lab = np.asarray(tracked[kept]).astype(_LABEL_DTYPE)
             ok, buf = cv2.imencode(".png", lab)
@@ -487,7 +523,11 @@ def write_labels_and_tracks(
                 raise RuntimeError(f"failed to PNG-encode label map for frame {kept}")
             (labels_dir / f"frame_{kept:05d}.png").write_bytes(buf.tobytes())
 
-            img = np.array(f.read_frame(int(raw_idx)), copy=True)
+            if n_channels > 1:
+                channels = np.asarray(t_arr[int(raw_idx)])  # (C, Y, X)
+                img = np.max(channels, axis=0)
+            else:
+                img = np.array(f.read_frame(int(raw_idx)), copy=True)
 
             if lab.max() == 0:
                 if bleach_curve:
@@ -622,6 +662,17 @@ def main() -> None:
     for p in sorted((run_dir / "frames").glob("frame_*_raw*.png")):
         m = _FRAME_RE.search(p.name)
         shutil.copy2(p, frames_out / f"frame_{int(m.group(1)):05d}.png")
+
+    # Multi-channel wells only (src/ingest.py's display/ composite, 2026-08-05):
+    # a true multi-color render, kept separate from the grayscale segmentation
+    # frames above so this display-only addition can't touch tracking/masks.
+    display_src = run_dir / "frames" / "display"
+    if display_src.is_dir():
+        display_out = out_run / "frames_display"
+        display_out.mkdir(exist_ok=True)
+        for p in sorted(display_src.glob("frame_*_raw*.png")):
+            m = _FRAME_RE.search(p.name)
+            shutil.copy2(p, display_out / f"frame_{int(m.group(1)):05d}.png")
 
     # summary.json is NOT copied (2026-07-31). It was the detector's tally, and it
     # counted rows rather than events -- split rows are one per daughter, deaths one

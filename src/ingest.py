@@ -151,10 +151,31 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
     kept_index = 0
     with nd2.ND2File(config.video_path) as f:
         n_channels = f.sizes.get("C", 1)
-        color = getattr(f.metadata.channels[0].channel, "color", None)
-        display_color_rgb = [color.r, color.g, color.b] if color else None
+        if n_channels == 1:
+            color = getattr(f.metadata.channels[0].channel, "color", None)
+            display_color_rgb = [color.r, color.g, color.b] if color else None
+            channel_colors = None
+        else:
+            # The segmentation-input frame (frame_*.png, below) is a per-pixel max
+            # of all channels with no color info -- no single channel's LUT
+            # describes THAT image honestly, so display_color_rgb stays null for
+            # it. But we also render a true multi-color composite for display
+            # (display/*.png, one real LUT tint per channel, kept as a SEPARATE
+            # file so segmentation/tracking never sees it) -- channel_colors here
+            # is what that composite was built from, in channel order.
+            display_color_rgb = None
+            channel_colors = [
+                ([c.channel.color.r, c.channel.color.g, c.channel.color.b]
+                 if getattr(c.channel, "color", None) else None)
+                for c in f.metadata.channels
+            ]
         (out_dir / _DISPLAY_COLOR_FILENAME).write_text(
-            json.dumps({"display_color_rgb": display_color_rgb})
+            json.dumps({
+                "display_color_rgb": display_color_rgb,
+                "channel_colors": channel_colors,
+                "channel_names": ([c.channel.name for c in f.metadata.channels]
+                                   if n_channels > 1 else None),
+            })
         )
         read_display_color.cache_clear()  # out_dir may reuse a path from an earlier run
 
@@ -187,6 +208,18 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
             # averaging one down. This is not losslessly reversible to raw the way the
             # single-channel path is, so the per-channel windows are recorded for
             # provenance only, not as an inverse transform.
+            # Display composite: each channel tinted with its OWN LUT color (not
+            # segmentation's flat grayscale), combined by per-color-plane max so
+            # both markers stay visible rather than one washing the other out.
+            # Written to a SEPARATE display/ dir from the segmentation frame above
+            # on purpose -- segment.py always reads frame_*.png as grayscale, so
+            # keeping the composite out of that file means this display-only
+            # change cannot silently alter what Cellpose sees.
+            display_dir = out_dir / "display"
+            any_color = channel_colors is not None and any(c is not None for c in channel_colors)
+            if any_color:
+                display_dir.mkdir(parents=True, exist_ok=True)
+
             t_arr = nd2.imread(config.video_path, dask=True)
             for raw_index in range(total_t):
                 if raw_index % config.frame_step != 0:
@@ -206,6 +239,20 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
                 out_path = out_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
                 cv2.imwrite(str(out_path), frame_gray)
                 paths.append(out_path)
+
+                if any_color:
+                    composite = np.zeros((*frame_gray.shape, 3), dtype=np.float32)
+                    for gray, color in zip(per_channel_gray, channel_colors):
+                        if color is None:
+                            continue
+                        r, g, b = (v / 255.0 for v in color)
+                        tinted = np.stack(
+                            [gray * b, gray * g, gray * r], axis=-1  # BGR, matching cv2/colorize()
+                        ).astype(np.float32)
+                        composite = np.maximum(composite, tinted)
+                    disp_path = display_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
+                    cv2.imwrite(str(disp_path), composite.astype(np.uint8))
+
                 kept_index += 1
 
     (out_dir / _DISPLAY_WINDOW_FILENAME).write_text(json.dumps(

@@ -27,7 +27,15 @@ import cell_mcp as _cm
 
 def _colorize(grey: np.ndarray, well: str, color: bool) -> np.ndarray:
     """Apply the acquisition's own display LUT, so renders match what the
-    researcher sees in Fiji rather than a colormap we invented."""
+    researcher sees in Fiji rather than a colormap we invented.
+
+    Multi-channel wells' frame is already a pre-tinted multi-color composite
+    (io._frame_png prefers frames_display/ when it exists, see src/ingest.py,
+    2026-08-05) -- it arrives here 3-channel BGR, already carrying both markers'
+    real colors, so it passes through untouched rather than being tinted again.
+    """
+    if grey.ndim == 3:
+        return grey if color else cv2.cvtColor(cv2.cvtColor(grey, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
     if not color:
         return cv2.cvtColor(grey, cv2.COLOR_GRAY2BGR)
     rgb = _cm._manifest(well).get("display_color_rgb") or [255, 255, 255]
@@ -119,7 +127,7 @@ def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
     tracking error.
     """
     grey = _cm._frame_png(well, int(frame))
-    h, w = grey.shape
+    h, w = grey.shape[:2]  # grey may be (h, w) grayscale or (h, w, 3) multi-channel composite
     cxi, cyi = int(round(cx)), int(round(cy))
     x0, x1 = max(0, cxi - half), min(w, cxi + half)
     y0, y1 = max(0, cyi - half), min(h, cyi + half)

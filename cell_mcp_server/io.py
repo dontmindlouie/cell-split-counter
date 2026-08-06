@@ -105,6 +105,14 @@ def _frame_png(well: str, frame: int) -> np.ndarray:
     if not p.is_file():
         n = _cm._manifest(well)["n_frames"]
         raise ValueError(f"frame {frame} not in {well} (has frames 0-{n - 1})")
+    # Multi-channel wells (src/ingest.py's display/ composite, 2026-08-05) carry a
+    # separate true multi-color render alongside the grayscale segmentation frame
+    # -- prefer it here so display shows both markers' real colors, not one flat
+    # tint. Falls back to the grayscale frame for single-channel wells and any
+    # bundle built before this composite existed.
+    disp = _cm.BUNDLE / well / "frames_display" / f"frame_{frame:05d}.png"
+    if disp.is_file():
+        return cv2.imread(str(disp), cv2.IMREAD_COLOR)
     return cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
 
 

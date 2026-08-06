@@ -25,7 +25,7 @@ WELLS = [
 ]
 
 BUNDLE_OUT = ROOT / "data" / "bundle"
-ARCHIVE = Path(r"D:\cell-split-counter-output-archive")
+ARCHIVE = Path(r"H:\cell-split-counter-output-archive")
 
 
 def main() -> None:
@@ -36,8 +36,9 @@ def main() -> None:
         out_dir = ROOT / "data" / "output" / stem
         print(f"\n{'='*70}\n>>> RUN {stem} (multi-channel, no vision review)\n{'='*70}", flush=True)
 
-        run_cmd = [str(PY), str(ROOT / "main.py"), str(nd2_path),
-                   "--no-review-splits", "--no-review-deaths"]
+        # No vision review: no longer needs the flags below since main.py's default
+        # flipped to OFF 2026-08-05 -- kept as a no-op explicit statement of intent.
+        run_cmd = [str(PY), str(ROOT / "main.py"), str(nd2_path)]
         p = subprocess.run(run_cmd, cwd=str(ROOT))
         if p.returncode != 0:
             print(f"!!! main.py FAILED for {stem}", flush=True)

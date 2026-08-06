@@ -99,12 +99,17 @@ def build_main_args(config: dict, output_dir: Path) -> list[str]:
         args += ["--gpt-reasoning-effort", config["gpt_reasoning_effort"]]
     if "min_gpt_confidence" in config:
         args += ["--min-gpt-confidence", str(config["min_gpt_confidence"])]
-    # Default OFF: scorer.py never scores death rows (golden_set.py's keys are all
-    # split events), so reviewing deaths on every sweep config would just re-pay for
-    # ~1457 API calls per config with zero effect on the score. Opt back in with
-    # {"review_deaths": true} in a config dict if a future scorer extension needs it.
-    if not config.get("review_deaths"):
-        args.append("--no-review-deaths")
+    # Splits review is what the harness scores -- main.py's default flipped to OFF
+    # 2026-08-05 (MCP-only delivery doesn't consume it), so the sweep must ask for
+    # it explicitly or every config would silently score against unreviewed data.
+    args.append("--review-splits")
+    # Deaths default OFF: scorer.py never scores death rows (golden_set.py's keys
+    # are all split events), so reviewing deaths on every sweep config would just
+    # re-pay for ~1457 API calls per config with zero effect on the score. Opt in
+    # with {"review_deaths": true} in a config dict if a future scorer extension
+    # needs it.
+    if config.get("review_deaths"):
+        args.append("--review-deaths")
     return args
 
 
