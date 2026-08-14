@@ -327,8 +327,14 @@ def test_window_is_measured_in_minutes_not_frames(fake):
 
 def test_window_reaches_much_further_forward_by_default(fake):
     """The transition is where the TRACKER stopped linking, not where the cell
-    divided. Symmetric defaults are what hid the outcome."""
-    assert cell_mcp_server._WINDOW_AFTER_MIN > cell_mcp_server._WINDOW_BEFORE_MIN * 2
+    divided. Symmetric defaults are what hid the outcome.
+
+    The exact ratio isn't load-bearing (widened 2026-08-13 on TSC_batch2_M13_WGD
+    evidence that BEFORE also needed real headroom -- a real prophase landed 195 min
+    before the transition, 6.5x the old 30-min default), just that AFTER stays
+    bigger than BEFORE -- the visible outcome reliably lands soon after the
+    transition on every line checked so far, which the old *2 factor overstated."""
+    assert cell_mcp_server._WINDOW_AFTER_MIN > cell_mcp_server._WINDOW_BEFORE_MIN
     header, _ = _strip(fake, [1, 2, 3],
                        before_min=cell_mcp_server._WINDOW_BEFORE_MIN,
                        after_min=cell_mcp_server._WINDOW_AFTER_MIN)

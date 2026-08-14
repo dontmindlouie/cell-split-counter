@@ -10,7 +10,7 @@ import os
 
 import cv2
 
-from .server import server, MAX_IMAGES_PAGE, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN, _HDR_SEP
+from .server import server, MAX_IMAGES_PAGE, _STRIDE_MIN, _HDR_SEP
 from .tools_filmstrip import _resolve_family
 
 import cell_mcp_server as _cm
@@ -18,6 +18,18 @@ import cell_mcp_server as _cm
 # BUNDLE, _manifest, _filmstrip_frames, and _family_filmstrip_frames below go
 # through `_cm.` rather than a direct import -- see the note at the top of
 # __init__.py and io.py.
+
+# Deliberately NOT importing server.py's _WINDOW_BEFORE_MIN/_WINDOW_AFTER_MIN --
+# those are the DISCOVERY defaults for investigation tools (follow_cells_over_time
+# etc.), widened 2026-08-13 to be generous about how far back a real division's
+# staging can start. This tool is for showing a specific, already-identified event
+# cleanly in a report/figure, not for searching -- so it keeps its own, narrower
+# default (the pre-2026-08-13 values) unless a caller deliberately widens one page's
+# before_min/after_min. A report page auto-inheriting the wide discovery window
+# would default to showing hours of mostly-irrelevant lead-up around the one event
+# the reader actually wants to see.
+_REPORT_WINDOW_BEFORE_MIN = 30.0
+_REPORT_WINDOW_AFTER_MIN = 90.0
 
 # _UPSCALE_TO (server.py, 312) is sized for MCP tools that return ImageContent
 # inline -- follow_cells_over_time, watch_location_over_time, list_nearby_tracks --
@@ -116,8 +128,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 max_images=None if mx is None else int(mx),
                 crop_um=None if crop is None else float(crop),
                 color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
-                before_min=float(ev.get("before_min", _WINDOW_BEFORE_MIN)),
-                after_min=float(ev.get("after_min", _WINDOW_AFTER_MIN)),
+                before_min=float(ev.get("before_min", _REPORT_WINDOW_BEFORE_MIN)),
+                after_min=float(ev.get("after_min", _REPORT_WINDOW_AFTER_MIN)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE, added=added,
                 centre_frame=(None if ev.get("centre_frame") is None

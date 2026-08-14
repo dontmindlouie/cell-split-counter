@@ -86,11 +86,36 @@ MAX_IMAGES_PAGE = 60
 #
 # Frames made it worse: +10 frames is 49 min on RUES2 (4.9 min/frame) and only 30 min
 # on BeWo (3.0 min/frame), so the line whose tracker fails hardest got the SHORTEST
-# real-time look. Minutes are the units the biology is in -- mitosis runs ~30-60 min
-# start to finish -- so the window is stated in minutes and converted per well from
-# its own timestamps. Asymmetric on purpose: the interesting half is after.
-_WINDOW_BEFORE_MIN = 30.0
-_WINDOW_AFTER_MIN = 90.0
+# real-time look. Minutes are the units the biology is in, converted per well from its
+# own timestamps.
+#
+# BEFORE_MIN was 30.0 until 2026-08-13, on the assumption "mitosis runs ~30-60 min
+# start to finish" -- true for BeWo, false for TSC_batch2_M13_WGD (whole-genome-
+# duplicated line, evidently much slower/more irregular): a real division there had
+# prophase (f458) 195 minutes before the tracker's own transition frame (f484,
+# confirmed by human review), 6.5x past the old window. A short/late-starting mother
+# track is NOT evidence against division on this line -- it can mean the object
+# simply wasn't segmented/tracked under any id that early, not that nothing happened.
+#
+# Widened both, kept AFTER_MIN > BEFORE_MIN (the still-valid part of the original
+# reasoning -- the visible OUTCOME reliably lands soon after the transition, on
+# every line checked so far) without stretching the default alone to cover the full
+# 195-minute WGD outlier -- that would 6x the default window for every well to fix
+# one cell line's worst case. Catching THAT case is what the mandatory
+# find_prophase_onset + wide watch_location_over_time escalation is for (see the
+# AOAI-prelim-verification backlog): defaults handle the common case, the explicit
+# escalation tools exist precisely because no fixed default covers every outlier.
+#
+# These are the DISCOVERY defaults, used by the investigation tools
+# (follow_cells_over_time, find_prophase_onset's confirm-on-pixels step) --
+# deliberately generous, since missing a real division here is the expensive
+# direction of error. The separate, narrower _REPORT_WINDOW_BEFORE/AFTER_MIN in
+# tools_output.py govern show_cells_in_browser's default instead: report/figure
+# pages are built to show a specific, already-identified event cleanly, not to
+# search for one, so they keep the old tight default unless a caller deliberately
+# widens a specific page.
+_WINDOW_BEFORE_MIN = 120.0
+_WINDOW_AFTER_MIN = 180.0
 
 # Frames are sampled at this spacing when the caller does not pin max_images, so a
 # strip's time resolution stays the same whether the well runs at 3.0 or 4.9 min per
