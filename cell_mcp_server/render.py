@@ -79,7 +79,7 @@ def _display_note(well: str) -> str:
     )
 
 
-def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0) -> np.ndarray:
+def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0, k: float = 1.0) -> np.ndarray:
     """Burn a labelled scale bar into the bottom-right corner, label to its left.
 
     This is the calibration check: the researcher compares it once against her
@@ -91,22 +91,29 @@ def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0) -> np
     band for figures (see tools_output.py) a lot cheaper. Width is measured with
     getTextSize and the whole thing is skipped, never truncated, if it wouldn't
     fit -- a partially-drawn "10 u" reads as a rendering bug, not a narrow tile.
+
+    `k` scales the text/bar/margins up with the tile's own resolution (see
+    _stamp_tile) -- at the base 312px render this is 1.0 (unchanged), but a
+    900px figure-mode render has ~3x the pixels and the same absolute-pixel
+    text/bar was reading as tiny relative to the image (2026-08-13 feedback).
     """
     h, w = img.shape[:2]
     px = int(round(target_um / um_per_px / 4))
     if px < 5 or px > w - 20:
         return img
-    font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.4
+    font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.4 * k
+    thickness = max(1, round(k))
     text = f"{target_um:g} um"
-    (tw, th), baseline = cv2.getTextSize(text, font, scale, 1)
-    margin, gap = 6, 5
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
+    margin, gap = round(6 * k), round(5 * k)
     if w - margin - px - gap - tw < 2:
         return img
     x1, y_base = w - margin, h - margin
     bar_cy = y_base - th // 2
-    cv2.rectangle(img, (x1 - px, bar_cy - 2), (x1, bar_cy + 2), (255, 255, 255), -1)
+    bar_half_h = round(2 * k)
+    cv2.rectangle(img, (x1 - px, bar_cy - bar_half_h), (x1, bar_cy + bar_half_h), (255, 255, 255), -1)
     cv2.putText(img, text, (x1 - px - gap - tw, y_base), font, scale,
-                (255, 255, 255), 1, cv2.LINE_AA)
+                (255, 255, 255), thickness, cv2.LINE_AA)
     return img
 
 
@@ -174,15 +181,23 @@ def _stamp_tile(tile: _Tile, label: str, um_px: float, scale_bar: bool,
     frame -- hence crop_h / current height. Getting that ratio wrong mislabels the
     bar by the upscale factor, and the bar is the calibration check a researcher
     trusts over the numbers, so it is computed in exactly one place.
+
+    All burned-in text/bar sizing scales with `k = img_height / _UPSCALE_TO`, not a
+    fixed pixel size -- 1.0 at the base 312px render (unchanged from before), but a
+    900px figure-mode render (show_cells_in_browser's lightbox) has ~3x the linear
+    resolution, and fixed-size overlays were reading as tiny against it (2026-08-13
+    feedback, same session as the lightbox resolution bump itself).
     """
     img = tile.img
-    cv2.putText(img, label, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                (255, 255, 255), 1, cv2.LINE_AA)
+    k = img.shape[0] / _UPSCALE_TO
+    thickness = max(1, round(k))
+    cv2.putText(img, label, (round(4 * k), round(14 * k)), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4 * k, (255, 255, 255), thickness, cv2.LINE_AA)
     if corner:
-        cv2.putText(img, corner, (4, img.shape[0] - 6), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.35, corner_color, 1, cv2.LINE_AA)
+        cv2.putText(img, corner, (round(4 * k), img.shape[0] - round(6 * k)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35 * k, corner_color, thickness, cv2.LINE_AA)
     if scale_bar:
-        img = _scale_bar(img, um_px * (tile.crop_h / img.shape[0]), target_um=10.0)
+        img = _scale_bar(img, um_px * (tile.crop_h / img.shape[0]), target_um=10.0, k=k)
     return img
 
 
