@@ -182,14 +182,18 @@ def _stamp_tile(tile: _Tile, label: str, um_px: float, scale_bar: bool,
     bar by the upscale factor, and the bar is the calibration check a researcher
     trusts over the numbers, so it is computed in exactly one place.
 
-    All burned-in text/bar sizing scales with `k = img_height / _UPSCALE_TO`, not a
-    fixed pixel size -- 1.0 at the base 312px render (unchanged from before), but a
-    900px figure-mode render (show_cells_in_browser's lightbox) has ~3x the linear
-    resolution, and fixed-size overlays were reading as tiny against it (2026-08-13
-    feedback, same session as the lightbox resolution bump itself).
+    All burned-in text/bar sizing scales with the tile's own resolution, not a fixed
+    pixel size -- 1.0 at the base 312px render (unchanged from before). A 900px
+    figure-mode render (show_cells_in_browser's lightbox) has ~2.9x the linear
+    resolution; scaling the full ratio read as too big (2026-08-13 feedback, right
+    after the first fix -- fixed-size overlays had read as too SMALL against it
+    before that), so only half the excess is applied (~1.9x at 900px, closer to the
+    "twice as big" originally asked for) -- text needs to grow with the image, but
+    not linearly, or it starts to dominate a crop meant to show the cell.
     """
     img = tile.img
-    k = img.shape[0] / _UPSCALE_TO
+    ratio = img.shape[0] / _UPSCALE_TO
+    k = 1.0 + (ratio - 1.0) * 0.5
     thickness = max(1, round(k))
     cv2.putText(img, label, (round(4 * k), round(14 * k)), cv2.FONT_HERSHEY_SIMPLEX,
                 0.4 * k, (255, 255, 255), thickness, cv2.LINE_AA)
