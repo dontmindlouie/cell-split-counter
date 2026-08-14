@@ -31,6 +31,16 @@ import cell_mcp_server as _cm
 _REPORT_WINDOW_BEFORE_MIN = 30.0
 _REPORT_WINDOW_AFTER_MIN = 90.0
 
+# Same reasoning as the window split above, applied to _family_filmstrip_frames's
+# auto-fit crop sizing: its default floor (25um) is tuned for the 312px inline-tool
+# render (~5.4x upscale at ACTB's pixel size), but at this tool's 900px figure
+# render the same 25um crop is a ~15.6x stretch -- visibly grainy (Lanczos
+# amplifying noise at that ratio), not just soft. Reported 2026-08-13, same
+# session as the resolution bump. 60.0 matches the reference case _FIGURE_UPSCALE_TO
+# below was already reasoned against ("a 60um crop is ~104px natively"), giving a
+# consistent ~8.6x stretch instead.
+_REPORT_MIN_CROP_UM = 60.0
+
 # _UPSCALE_TO (server.py, 312) is sized for MCP tools that return ImageContent
 # inline -- follow_cells_over_time, watch_location_over_time, list_nearby_tracks --
 # where every pixel is a token in this conversation. This tool writes an HTML file
@@ -143,7 +153,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             # worse artifact (aliasing/moire) than the softness this was fixing.
             header, thumb_images = _cm._family_filmstrip_frames(well, members, **common)
             _, lb_images = _cm._family_filmstrip_frames(
-                well, members, **common, upscale_to=_FIGURE_UPSCALE_TO)
+                well, members, **common, upscale_to=_FIGURE_UPSCALE_TO,
+                min_crop_um=_REPORT_MIN_CROP_UM)
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:
             track_id = int(ev["track_id"])
