@@ -26,6 +26,7 @@ the launcher is called or how it's invoked.
 from . import server as _server_mod, io as _io_mod, render as _render_mod
 from . import tools_browse as _tools_browse_mod, tools_candidates as _tools_candidates_mod
 from . import tools_filmstrip as _tools_filmstrip_mod, tools_output as _tools_output_mod
+from . import tools_fiji as _tools_fiji_mod
 
 from .server import *
 from .io import *
@@ -34,8 +35,10 @@ from .tools_browse import *
 from .tools_candidates import *
 from .tools_filmstrip import *
 from .tools_output import *
+from .tools_fiji import *
 
 __all__ = (
     _server_mod.__all__ + _io_mod.__all__ + _render_mod.__all__ + _tools_browse_mod.__all__
     + _tools_candidates_mod.__all__ + _tools_filmstrip_mod.__all__ + _tools_output_mod.__all__
+    + _tools_fiji_mod.__all__
 )
