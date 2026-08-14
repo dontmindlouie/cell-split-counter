@@ -48,7 +48,7 @@ _REPORT_MIN_CROP_UM = 60.0
 # inline -- follow_cells_over_time, watch_location_over_time, list_nearby_tracks --
 # where every pixel is a token in this conversation. This tool writes an HTML file
 # to disk and returns only its path, never the pixels themselves, so that
-# constraint does not apply here. Reported 2026-08-13 (Olivia, ACTB_M2): crops she
+# constraint does not apply here. Reported 2026-08-13 (researcher, ACTB_M2): crops
 # pulled into presentation/report figures looked visibly softer than an ND2 opened
 # directly in Fiji and screenshotted -- the default 312px render, stretched further
 # by the browser to fill the lightbox, was the ceiling. This is still Lanczos

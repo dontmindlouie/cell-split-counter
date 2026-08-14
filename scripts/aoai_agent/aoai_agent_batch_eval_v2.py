@@ -1,12 +1,13 @@
-"""Batch-run the multi-turn gpt-5 verification agent against Olivia's real ground-truth
-split events (TSC_batch2_M13_WGD, 18 events, from
-researcher_notes_olivia_2026-07-15_TSC_batch2_M13_WGD.csv).
+"""Batch-run the multi-turn gpt-5 verification agent against a researcher's real
+ground-truth split events (TSC_batch2_M13_WGD, 18 events, from
+researcher_notes_2026-07-15_TSC_batch2_M13_WGD.csv).
 
-Her CSV has no explicit real/false_positive column -- all 18 rows are her annotations
-(interest level, ACD type, anomaly flags) on candidates she was reviewing as real splits,
-not a true/false grading pass. So this run is a recall-style sanity check: does the agent
-call "real" on cases a domain expert was already treating as real, and how much does its
-confidence/characterization line up with hers (acd_division_type, anomaly notes)? Any
+That CSV has no explicit real/false_positive column -- all 18 rows are the
+researcher's annotations (interest level, ACD type, anomaly flags) on candidates
+they were reviewing as real splits, not a true/false grading pass. So this run is a
+recall-style sanity check: does the agent call "real" on cases a domain expert was
+already treating as real, and how much does its confidence/characterization line up
+with theirs (acd_division_type, anomaly notes)? Any
 "false_positive" from the agent here is a genuine disagreement worth flagging, same as the
 earlier M4 case.
 """
@@ -40,7 +41,7 @@ client = AzureOpenAI(
 )
 
 WELL = "TSC_batch2_M13_WGD"
-GT_PATH = HUMAN_REVIEW_DIR / "researcher_notes_olivia_2026-07-15_TSC_batch2_M13_WGD.csv"
+GT_PATH = HUMAN_REVIEW_DIR / "researcher_notes_2026-07-15_TSC_batch2_M13_WGD.csv"
 LINEAGE_PATH = "data/bundle/TSC_batch2_M13_WGD/lineage.csv"
 
 TOOLS = [
