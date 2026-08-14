@@ -128,7 +128,7 @@ class _Tile(NamedTuple):
 
 
 def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
-               color: bool) -> "_Tile | None":
+               color: bool, *, upscale_to: int = _UPSCALE_TO) -> "_Tile | None":
     """Cut a 2*half crop around (cx, cy), apply the display LUT, upscale small crops.
 
     Returns None when the box misses the field entirely, which every caller treats
@@ -139,6 +139,13 @@ def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
     that goes with it was the part getting copied: an overlay drawn at pre-upscale
     coordinates lands at a quarter of the way into the image and looks like a
     tracking error.
+
+    upscale_to defaults to _UPSCALE_TO (the size tuned for MCP tools that return
+    ImageContent inline, where every pixel is a token in this conversation) but is
+    overridable per call -- show_cells_in_browser passes a much larger target
+    (_FIGURE_UPSCALE_TO in tools_output.py) because that tool writes an HTML file
+    to disk instead of returning images inline, so a bigger render costs disk space
+    and browser paint time, not context tokens.
     """
     grey = _cm._frame_png(well, int(frame))
     h, w = grey.shape[:2]  # grey may be (h, w) grayscale or (h, w, 3) multi-channel composite
@@ -151,8 +158,8 @@ def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
     img = _colorize(crop, well, color)
     cx_crop, cy_crop = float(cxi - x0), float(cyi - y0)
     s = 1.0
-    if img.shape[0] < _UPSCALE_TO:
-        s = _UPSCALE_TO / img.shape[0]
+    if img.shape[0] < upscale_to:
+        s = upscale_to / img.shape[0]
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
         cx_crop, cy_crop = cx_crop * s, cy_crop * s
     return _Tile(img, cx_crop, cy_crop, s, int(crop.shape[0]), int(x0), int(y0))
@@ -265,6 +272,7 @@ def _filmstrip_frames(
     max_images: int | None, crop_um: float,
     color: bool, scale_bar: bool, marker: bool,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
+    upscale_to: int = _UPSCALE_TO,
 ) -> tuple[str, list[np.ndarray]]:
     """Shared by follow_cells_over_time (MCP images) and show_cells_in_browser (HTML page).
 
@@ -356,7 +364,7 @@ def _filmstrip_frames(
             cx, cy, walk_resolved = walked.get(f, (row.cx, row.cy, False))
         # Where the cell lands in the crop is not always its centre pixel: the crop
         # is clipped at the field edge.
-        tile = _crop_tile(well, int(f), cx, cy, half, color)
+        tile = _crop_tile(well, int(f), cx, cy, half, color, upscale_to=upscale_to)
         if tile is None:
             continue
         img, cx_crop, cy_crop, s = tile.img, tile.cx, tile.cy, tile.scale
@@ -465,6 +473,7 @@ def _family_filmstrip_frames(
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
     added: list[int] | None = None, centre_frame: int | None = None,
+    upscale_to: int = _UPSCALE_TO,
 ) -> tuple[str, list[np.ndarray]]:
     """Crop centred on a SET of tracks, resolved per frame from whoever is present.
 
@@ -701,7 +710,7 @@ def _family_filmstrip_frames(
     images: list[np.ndarray] = []
     for f in picks:
         cx_f, cy_f, n_present, n_gap = centres[f]
-        tile = _crop_tile(well, int(f), cx_f, cy_f, half, color)
+        tile = _crop_tile(well, int(f), cx_f, cy_f, half, color, upscale_to=upscale_to)
         if tile is None:
             continue
         img, s = tile.img, tile.scale

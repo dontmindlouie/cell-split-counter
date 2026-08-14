@@ -19,6 +19,20 @@ import cell_mcp_server as _cm
 # through `_cm.` rather than a direct import -- see the note at the top of
 # __init__.py and io.py.
 
+# _UPSCALE_TO (server.py, 312) is sized for MCP tools that return ImageContent
+# inline -- follow_cells_over_time, watch_location_over_time, list_nearby_tracks --
+# where every pixel is a token in this conversation. This tool writes an HTML file
+# to disk and returns only its path, never the pixels themselves, so that
+# constraint does not apply here. Reported 2026-08-13 (Olivia, ACTB_M2): crops she
+# pulled into presentation/report figures looked visibly softer than an ND2 opened
+# directly in Fiji and screenshotted -- the default 312px render, stretched further
+# by the browser to fill the lightbox, was the ceiling. This is still Lanczos
+# upscaling of the same native pixels (a 60 um crop is ~104 px natively regardless
+# of target size -- see the comment on _UPSCALE_TO), not new detail, but a bigger
+# target means less additional stretching happens client-side in the browser on
+# top of it, which is where most of the visible softness was coming from.
+_FIGURE_UPSCALE_TO = 900
+
 @server.tool()
 def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
@@ -97,9 +111,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])
             crop = ev.get("crop_um")
             mx = ev.get("max_images")
-            header, images = _cm._family_filmstrip_frames(
-                well, members,
-                ev.get("start_frame"), ev.get("end_frame"),
+            common = dict(
+                start_frame=ev.get("start_frame"), end_frame=ev.get("end_frame"),
                 max_images=None if mx is None else int(mx),
                 crop_um=None if crop is None else float(crop),
                 color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
@@ -110,26 +123,42 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 centre_frame=(None if ev.get("centre_frame") is None
                               else int(ev["centre_frame"])),
             )
+            # Two separate renders, not one shared image at the bigger size: the
+            # filmstrip's `image-rendering: pixelated` CSS is only correct when the
+            # browser is upscaling a small source (it deliberately avoids blurring
+            # tiny native crops) -- fed a 900px source and displayed at 260px, that
+            # same rule would nearest-neighbor DOWNSCALE it instead, which is a
+            # worse artifact (aliasing/moire) than the softness this was fixing.
+            header, thumb_images = _cm._family_filmstrip_frames(well, members, **common)
+            _, lb_images = _cm._family_filmstrip_frames(
+                well, members, **common, upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:
             track_id = int(ev["track_id"])
             mx = ev.get("max_images")
-            header, images = _cm._filmstrip_frames(
-                well, track_id,
-                ev.get("start_frame"), ev.get("end_frame"),
+            common = dict(
+                start_frame=ev.get("start_frame"), end_frame=ev.get("end_frame"),
                 max_images=None if mx is None else int(mx),
                 crop_um=float(ev.get("crop_um", 60.0)),
                 color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,
             )
+            header, thumb_images = _cm._filmstrip_frames(well, track_id, **common)
+            _, lb_images = _cm._filmstrip_frames(
+                well, track_id, **common, upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"track {track_id}"
-        b64_list = []
-        for img in images:
-            ok, buf = cv2.imencode(".png", img)
-            if not ok:
-                continue
-            b64_list.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+
+        def _b64_all(imgs):
+            out = []
+            for img in imgs:
+                ok, buf = cv2.imencode(".png", img)
+                if ok:
+                    out.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+            return out
+
+        b64_list = _b64_all(thumb_images)      # filmstrip thumbnails -- small, pixelated-upscale OK
+        lb_b64_list = _b64_all(lb_images)      # lightbox only -- large, smooth-scaled
         tiles = [
             f'<img src="data:image/png;base64,{b64}" loading="lazy" '
             f'onclick="openLightbox({i},{j})">'
@@ -146,7 +175,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             f"<p class=hdr>{spec}</p>"
             f"<div class=filmstrip>{''.join(tiles)}</div></section>"
         )
-        lb_data.append({"label": label, "images": b64_list})
+        lb_data.append({"label": label, "images": lb_b64_list})
         nav_items.append((i, label))
 
     lb_json = json.dumps(lb_data)
