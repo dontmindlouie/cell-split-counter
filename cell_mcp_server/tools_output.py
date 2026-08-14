@@ -33,12 +33,15 @@ _REPORT_WINDOW_AFTER_MIN = 90.0
 
 # Same reasoning as the window split above, applied to _family_filmstrip_frames's
 # auto-fit crop sizing: its default floor (25um) is tuned for the 312px inline-tool
-# render (~5.4x upscale at ACTB's pixel size), but at this tool's 900px figure
-# render the same 25um crop is a ~15.6x stretch -- visibly grainy (Lanczos
-# amplifying noise at that ratio), not just soft. Reported 2026-08-13, same
-# session as the resolution bump. 60.0 matches the reference case _FIGURE_UPSCALE_TO
-# below was already reasoned against ("a 60um crop is ~104px natively"), giving a
-# consistent ~8.6x stretch instead.
+# render sent into a conversation (~5.4x upscale on ACTB), where a tight crop is a
+# reasonable cost/context tradeoff. On THIS tool's report page -- both the
+# filmstrip thumbnail and the 900px lightbox, since a report page is scanned by
+# eye, not token-budgeted -- the same 25um floor read as "massively overzoomed" on
+# a multi-candidate page (2026-08-13 spot-check feedback) and, at the 900px
+# lightbox specifically, as visibly grainy too (Lanczos amplifying noise at the
+# resulting ~15.6x stretch). Applied to BOTH tiers here, not just the lightbox.
+# 60.0 matches the reference case _FIGURE_UPSCALE_TO below was already reasoned
+# against ("a 60um crop is ~104px natively").
 _REPORT_MIN_CROP_UM = 60.0
 
 # _UPSCALE_TO (server.py, 312) is sized for MCP tools that return ImageContent
@@ -151,7 +154,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             # tiny native crops) -- fed a 900px source and displayed at 260px, that
             # same rule would nearest-neighbor DOWNSCALE it instead, which is a
             # worse artifact (aliasing/moire) than the softness this was fixing.
-            header, thumb_images = _cm._family_filmstrip_frames(well, members, **common)
+            header, thumb_images = _cm._family_filmstrip_frames(
+                well, members, **common, min_crop_um=_REPORT_MIN_CROP_UM)
             _, lb_images = _cm._family_filmstrip_frames(
                 well, members, **common, upscale_to=_FIGURE_UPSCALE_TO,
                 min_crop_um=_REPORT_MIN_CROP_UM)
