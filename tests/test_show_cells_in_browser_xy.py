@@ -1,4 +1,4 @@
-"""Tests for show_cells_in_browser's x/y event shape.
+"""Tests for show_cells_in_browser's x/y (kind="point") event shape.
 
 Added 2026-08-15 (researcher feedback): the tool previously accepted only
 track_id/track_ids, forcing every "just show me this raw clicked point" request
@@ -6,6 +6,12 @@ through a track-snapping detour -- which is exactly how a neighbour mix-up
 happened (a calm, correctly-snapped-but-irrelevant track got rendered instead
 of the real event). x/y renders the same fixed-point crop
 watch_location_over_time already does, as an alternative event shape.
+
+Updated 2026-08-16: every event now declares its shape with a required `kind`
+key ("track"/"family"/"point") instead of it being inferred from whichever
+other keys happen to be present, so a wrong or missing id key fails with
+"kind='point' but no 'x'/'y' given" instead of a generic "needs
+track_id/track_ids/x/y" that doesn't say which one was intended.
 """
 
 import sys
@@ -40,38 +46,56 @@ def fake(monkeypatch):
     return "fake"
 
 
-def test_xy_event_renders_a_page(fake, tmp_path, monkeypatch):
+def test_point_event_renders_a_page(fake, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     out = cell_mcp_server.show_cells_in_browser(
-        fake, events=[{"x": 100.0, "y": 100.0, "start_frame": 0, "end_frame": 1}])
+        fake, events=[{"kind": "point", "x": 100.0, "y": 100.0,
+                       "start_frame": 0, "end_frame": 1}])
     path = out.splitlines()[0]
     html = Path(path).read_text(encoding="utf-8")
     assert "fixed at (100, 100)" in html
     assert "(100, 100)" in html  # default label falls back to the coordinate
 
 
-def test_xy_event_requires_both_coordinates(fake):
-    with pytest.raises(ValueError, match="only one of x/y"):
+def test_point_event_requires_both_coordinates(fake):
+    with pytest.raises(ValueError, match="no 'x'/'y' given"):
         cell_mcp_server.show_cells_in_browser(
-            fake, events=[{"x": 100.0, "start_frame": 0, "end_frame": 1}])
+            fake, events=[{"kind": "point", "x": 100.0, "start_frame": 0, "end_frame": 1}])
 
 
-def test_xy_event_requires_a_frame_window(fake):
+def test_point_event_requires_a_frame_window(fake):
     with pytest.raises(ValueError, match="needs start_frame and end_frame"):
         cell_mcp_server.show_cells_in_browser(
-            fake, events=[{"x": 100.0, "y": 100.0}])
+            fake, events=[{"kind": "point", "x": 100.0, "y": 100.0}])
 
 
-def test_missing_shape_still_rejected(fake):
-    with pytest.raises(ValueError, match="needs 'track_id', 'track_ids', or 'x'/'y'"):
+def test_missing_kind_is_rejected(fake):
+    with pytest.raises(ValueError, match="needs a 'kind' of 'track', 'family', or 'point'"):
         cell_mcp_server.show_cells_in_browser(fake, events=[{"label": "nothing"}])
 
 
-def test_custom_label_used_for_xy_event(fake, tmp_path, monkeypatch):
+def test_unknown_kind_is_rejected(fake):
+    with pytest.raises(ValueError, match="needs a 'kind' of 'track', 'family', or 'point'"):
+        cell_mcp_server.show_cells_in_browser(
+            fake, events=[{"kind": "coordinate", "x": 100.0, "y": 100.0,
+                           "start_frame": 0, "end_frame": 1}])
+
+
+def test_kind_track_without_track_id_is_rejected(fake):
+    with pytest.raises(ValueError, match="kind='track' but no 'track_id' given"):
+        cell_mcp_server.show_cells_in_browser(fake, events=[{"kind": "track"}])
+
+
+def test_kind_family_without_track_ids_is_rejected(fake):
+    with pytest.raises(ValueError, match="kind='family' but no 'track_ids' given"):
+        cell_mcp_server.show_cells_in_browser(fake, events=[{"kind": "family"}])
+
+
+def test_custom_label_used_for_point_event(fake, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     out = cell_mcp_server.show_cells_in_browser(
-        fake, events=[{"x": 100.0, "y": 100.0, "start_frame": 0, "end_frame": 1,
-                       "label": "researcher click #4"}])
+        fake, events=[{"kind": "point", "x": 100.0, "y": 100.0, "start_frame": 0,
+                       "end_frame": 1, "label": "researcher click #4"}])
     path = out.splitlines()[0]
     html = Path(path).read_text(encoding="utf-8")
     assert "researcher click #4" in html

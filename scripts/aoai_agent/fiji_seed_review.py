@@ -344,7 +344,7 @@ def main():
                      f"human-flagged @({x:.0f},{y:.0f}) f{frame} -> track {track_id}"
                      + (f" -- {note}" if note else ""))
             events_by_well.setdefault(well, []).append({
-                "track_id": track_id, "label": label,
+                "kind": "track", "track_id": track_id, "label": label,
                 "centre_frame": parsed.get("metaphase_frame") or frame,
             })
 

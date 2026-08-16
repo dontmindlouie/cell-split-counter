@@ -86,28 +86,33 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             is a task rather than a report. A reviewer opening 14 filmstrips a day
             later has the labels but not the question, and asking again costs them
             more than writing it costs you.
-        events: one dict per cell to show, each with EITHER
-            track_id: ONE mask, rendered as follow_cells_over_time(track_id=...)
-                does it, OR
-            track_ids: a member set, as follow_cells_over_time(track_ids=[...]) -- use
-                this for divisions, so the strip follows the mother and then the
-                daughters' midpoint in one row instead of losing them at the handoff.
-                A single id here expands to that track plus its recorded daughters,
-                the window defaults to 30 min before / 90 min after the membership
-                transition (`before_min`/`after_min` keys), and crop_um defaults to
-                auto-fit rather than 60, OR
-            x, y (both required together): a fixed PLACE, rendered as
+        events: one dict per cell to show. Each MUST have a `kind` key naming which
+            of the three shapes below it is -- this is a declaration, not inferred
+            from whichever other keys happen to be present, so a wrong or missing
+            id key fails with "kind='track' but no track_id given" instead of a
+            generic "needs track_id/track_ids/x/y" that doesn't say which you meant:
+            kind="track": ONE mask, rendered as follow_cells_over_time(track_id=...)
+                does it. Requires `track_id`.
+            kind="family": a member set, as follow_cells_over_time(track_ids=[...])
+                does it -- use this for divisions, so the strip follows the mother
+                and then the daughters' midpoint in one row instead of losing them
+                at the handoff. Requires `track_ids`. A single id here expands to
+                that track plus its recorded daughters, the window defaults to 30
+                min before / 90 min after the membership transition
+                (`before_min`/`after_min` keys), and crop_um defaults to auto-fit
+                rather than 60.
+            kind="point": a fixed PLACE, rendered as
                 watch_location_over_time(x=..., y=...) does it -- no mask, no
                 re-centring, just the raw clicked/reported point. Use this for a
                 researcher's raw coordinate before it has been snapped to a track,
-                or for anything the segmenter never caught. start_frame and
-                end_frame are REQUIRED with x/y (there is no track lifetime to
-                default a window from). crop_um defaults to 90.0, wider than the
-                track_id default, because a fixed point has no re-centring to save
-                it if the crop is too tight and something relevant drifts to the
-                edge.
-            start_frame, end_frame (optional with track_id/track_ids, REQUIRED with
-                x/y): as in follow_cells_over_time -- may fall outside
+                or for anything the segmenter never caught. Requires `x`, `y`,
+                `start_frame`, and `end_frame` -- all four, since there is no track
+                lifetime to default a window from. crop_um defaults to 90.0, wider
+                than kind="track"'s default, because a fixed point has no
+                re-centring to save it if the crop is too tight and something
+                relevant drifts to the edge.
+            start_frame, end_frame (optional with kind="track"/"family", REQUIRED
+                with kind="point"): as in follow_cells_over_time -- may fall outside
                 the track's own lifetime, e.g. to show a division just past its end.
             label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
                 309/319/321". Defaults to "track <track_id>".
@@ -141,15 +146,21 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     lb_data = []
     nav_items = []
     for i, ev in enumerate(events):
-        if "track_id" not in ev and "track_ids" not in ev and "x" not in ev and "y" not in ev:
-            raise ValueError(f"events[{i}] needs 'track_id', 'track_ids', or 'x'/'y': {ev!r}")
-        if "x" in ev or "y" in ev:
+        kind = ev.get("kind")
+        if kind not in ("track", "family", "point"):
+            raise ValueError(
+                f"events[{i}] needs a 'kind' of 'track', 'family', or 'point' "
+                f"(got {kind!r}) -- declare the shape, don't rely on it being "
+                f"guessed from whichever other keys are present: {ev!r}")
+        if kind == "point":
             if "x" not in ev or "y" not in ev:
-                raise ValueError(f"events[{i}] gave only one of x/y -- both are required: {ev!r}")
+                raise ValueError(
+                    f"events[{i}] has kind='point' but no 'x'/'y' given: {ev!r}")
             if ev.get("start_frame") is None or ev.get("end_frame") is None:
                 raise ValueError(
-                    f"events[{i}] uses x/y and needs start_frame and end_frame too -- "
-                    f"there is no track lifetime to default a window from: {ev!r}")
+                    f"events[{i}] has kind='point' and needs start_frame and "
+                    f"end_frame too -- there is no track lifetime to default a "
+                    f"window from: {ev!r}")
             mx = ev.get("max_images")
             common = dict(
                 max_images=None if mx is None else int(mx),
@@ -164,7 +175,10 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             _, lb_images = _cm._fixed_point_frames(
                 *args, **common, upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"({ev['x']:.0f}, {ev['y']:.0f})"
-        elif "track_ids" in ev:
+        elif kind == "family":
+            if "track_ids" not in ev:
+                raise ValueError(
+                    f"events[{i}] has kind='family' but no 'track_ids' given: {ev!r}")
             members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])
             crop = ev.get("crop_um")
             mx = ev.get("max_images")
@@ -192,7 +206,10 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 well, members, **common, upscale_to=_FIGURE_UPSCALE_TO,
                 min_crop_um=_REPORT_MIN_CROP_UM)
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
-        else:
+        else:  # kind == "track"
+            if "track_id" not in ev:
+                raise ValueError(
+                    f"events[{i}] has kind='track' but no 'track_id' given: {ev!r}")
             track_id = int(ev["track_id"])
             mx = ev.get("max_images")
             common = dict(
