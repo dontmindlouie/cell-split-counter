@@ -742,12 +742,17 @@ def follow_cells_over_time(
             along, since separation grows as the daughters move apart.
         color: apply the microscope's own display colour.
         scale_bar: burn in a labelled scale bar.
-        marker: draw a thin ring around the tracked cell -- with track_ids, rings
-            every member present in each frame or none at all. Off by default
-            because the ring is one more shape in an image whose shapes are the
-            evidence. Turn it on for wide crops, where "the one in the middle" stops
-            being obvious. Forced on for OFF-TRACK frames, where the ring marks the
-            held position rather than a detected cell.
+        marker: draw a thin ring around the tracked cell. OFF BY DEFAULT and should
+            STAY off for ordinary review -- the ring is one more shape in an image
+            whose shapes ARE the evidence, and adding it out of habit is how a real
+            feature (a fold, a neighbouring blob) gets mistaken for an annotation.
+            Reach for this only in the narrow case where you need to POINT OUT one
+            specific cell among several similar-looking ones in a crowded or wide
+            crop -- e.g. handing a page to someone else with no other way to say
+            "this one, not that one". With track_ids, rings every member present in
+            each frame or none at all. Forced on for OFF-TRACK frames regardless of
+            this flag, where the ring marks the held position rather than a
+            detected cell.
     """
     if (track_id is None) == (track_ids is None):
         raise ValueError(

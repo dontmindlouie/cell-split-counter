@@ -126,8 +126,13 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             before_min, after_min, stride_min (optional): window and sampling in
                 MINUTES, as in follow_cells_over_time.
             crop_um (optional, default 60.0): crop width in micrometres.
-            marker (optional, default False): ring the tracked cell -- with
-                track_ids, rings every member present or none.
+            marker (optional, default False): ring the tracked cell. Leave it OFF
+                for ordinary review -- the ring is one more shape in an image whose
+                shapes ARE the evidence. Turn it on only for the narrow case of
+                pointing out one specific cell among several similar-looking ones
+                in a crowded or wide crop, e.g. a page someone else will read with
+                no other way to say "this one, not that one". With track_ids, rings
+                every member present or none.
 
     Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
     the user BOTH, verbatim, each on its own line -- terminals and chat clients
@@ -137,6 +142,13 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     Images are embedded as base64, so the
     file is portable on its own -- open it directly, or serve it
     (`python -m http.server`) if file:// is blocked in the browser being used.
+
+    Running inside the VS Code extension: tell the user to open the path in their
+    regular desktop browser (Chrome, etc.), NOT VS Code's own built-in preview --
+    confirmed working end to end via a real desktop browser (2026-08-16); the
+    built-in preview's webview sandbox is a different, untested rendering path for
+    a self-contained page this size with inline JS (lightbox navigation, the
+    figure-mode toggle).
     """
     if not events:
         raise ValueError("events is empty -- nothing to render.")
