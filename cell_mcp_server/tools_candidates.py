@@ -4,6 +4,8 @@ grouping, division strata, sort/pool helpers, and the notes appended to output.
 Split out of the original single-file cell_mcp.py's "tools" section.
 """
 
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 
@@ -14,6 +16,15 @@ import cell_mcp_server as _cm
 
 # BUNDLE, _manifest, and _tracks below go through `_cm.` rather than a direct
 # import -- see the note at the top of io.py.
+
+# Literal (not bare str) so an invalid pool/sort_by is rejected by the MCP schema
+# itself before find_candidates' body ever runs, rather than silently falling
+# through _sort_candidates' unrecognized-value branch -- which used to apply a
+# default sort and report it as "this pool carries no link scores", a misleading
+# explanation for what was actually just a typo.
+_Pool = Literal["division", "track_end", "contested"]
+_SortBy = Literal["fragment_like", "dna_anomaly", "condensation", "duration",
+                  "daughter_persistence", "frame", "random"]
 
 _COND_BEFORE_MIN = 20.0
 _COND_AFTER_MIN = 60.0
@@ -659,7 +670,7 @@ _NOT_DEATHS_NOTE = (
 )
 
 
-def _candidate_pool(well: str, lin, pool: str, n_frames: int, m: dict):
+def _candidate_pool(well: str, lin, pool: _Pool, n_frames: int, m: dict):
     """The rows of one pool, or a string explaining why there are none.
 
     Returning text rather than raising: an empty or unavailable pool is an answer
@@ -690,7 +701,7 @@ def _candidate_pool(well: str, lin, pool: str, n_frames: int, m: dict):
     return rows
 
 
-def _sort_candidates(rows, sort_by: str, pool: str, seed: int | None):
+def _sort_candidates(rows, sort_by: _SortBy, pool: _Pool, seed: int | None):
     """Order the pool, returning (rows, the sort ACTUALLY applied).
 
     A score-based sort on a pool that carries no scores would silently return the
@@ -785,8 +796,8 @@ def _birth_table(shown, pool: str) -> list[str]:
 @server.tool()
 def find_candidates(
     well: str,
-    pool: str = "division",
-    sort_by: str = "fragment_like",
+    pool: _Pool = "division",
+    sort_by: _SortBy = "fragment_like",
     limit: int = 20,
     exclude_near_edge: bool = True,
     stratum: str | None = None,

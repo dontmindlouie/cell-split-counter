@@ -80,6 +80,26 @@ def test_it_never_claims_a_sort_it_did_not_apply(well, monkeypatch):
     assert "asked for fragment_like" in out and "sorted by frame" in out
 
 
+def test_pool_and_sort_by_are_closed_enums_in_the_mcp_schema(well):
+    """2026-08-16: pool/sort_by used to be bare str -- an unrecognized sort_by
+    silently fell through to a default sort with a misleading "this pool carries
+    no link scores" note, even when the real problem was a typo (e.g. "Duration"
+    instead of "duration"). Literal types make the MCP layer reject that before
+    find_candidates' body ever runs, with a message that names the typo."""
+    import asyncio
+    from cell_mcp_server.server import server
+
+    async def _call(**kw):
+        return await server.call_tool("find_candidates", {"well": well, **kw})
+
+    with pytest.raises(Exception, match="sort_by"):
+        asyncio.run(_call(sort_by="Duration"))
+    with pytest.raises(Exception, match="pool"):
+        asyncio.run(_call(pool="Division"))
+    # A valid call still goes through the same path without raising.
+    asyncio.run(_call(sort_by="duration", pool="division"))
+
+
 def _rows(out: str) -> list[str]:
     return [l for l in out.splitlines() if l and l[0].isdigit() and " | " in l]
 
