@@ -610,3 +610,76 @@ def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
     monkeypatch.setattr(cell_mcp_server, "_filmstrip_frames", spy)
     cell_mcp_server.follow_cells_over_time(fake, track_id=1)
     assert seen["crop"] == 60.0
+
+
+@pytest.fixture
+def fake_with_vanishing_member(monkeypatch, fake):
+    """Same family as `fake`, plus a fourth member (4) far away in y that is only
+    present at f10-11 and then genuinely ends -- not a mid-span gap."""
+    rows = cell_mcp_server._tracks(fake).to_dict("records")
+    for f in (10, 11):
+        rows.append({"track_id": 4, "frame": f, "cx": 100.0, "cy": 300.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
+    return fake
+
+
+def test_hold_centre_after_member_end_keeps_contributing_last_position(fake_with_vanishing_member):
+    """2026-08-16 field feedback: once a member's span genuinely ends, the mean
+    silently re-centres onto whoever remains, which can be a large jump if the
+    vanished member was far away. hold_after_end=True keeps it in the mean at its
+    last measured position instead, same treatment as a mid-span gap."""
+    tracks = cell_mcp_server._tracks(fake_with_vanishing_member)
+    win = tracks[(tracks.track_id.isin([1, 2, 3, 4])) & (tracks.frame >= 10) & (tracks.frame <= 15)]
+    pos = {}
+    for r in win.itertuples():
+        pos.setdefault(int(r.frame), []).append(r)
+    picks = list(range(10, 16))
+
+    centres_off, _, gapped_off = cell_mcp_server._resolve_family_centres(
+        win, pos, picks, hold_after_end=False)
+    centres_on, _, gapped_on = cell_mcp_server._resolve_family_centres(
+        win, pos, picks, hold_after_end=True)
+
+    assert gapped_off == {}, "default: member 4 just drops out once its span ends"
+    assert gapped_on.get(12) == [4], "held: member 4 keeps contributing past its own end"
+    assert centres_on[12][1] > centres_off[12][1], (
+        "holding 4's last position (cy=300, far from 2/3's cy=100) pulls the mean "
+        "toward where it was instead of snapping fully onto the survivors")
+
+
+def test_auto_fit_crop_covers_the_full_window_not_just_sampled_frames():
+    """2026-08-16 field feedback: auto-fit crop used to sample only the ~12 rendered
+    frames, so a family's widest separation could fall on a frame that was never
+    checked and get cropped out. Two members spike far apart for ONE frame in the
+    middle of a longer window; forcing heavy subsampling (max_images=2) so that
+    frame is not among the rendered picks must not shrink the crop below what's
+    needed to have covered it."""
+    rows = []
+    spread = {0: 4.0, 1: 100.0, 2: 4.0, 3: 4.0}
+    for f, gap in spread.items():
+        rows.append({"track_id": 2, "frame": f, "cx": 100.0 - gap / 2, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
+        rows.append({"track_id": 3, "frame": f, "cx": 100.0 + gap / 2, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
+    well = "spike"
+    import cell_mcp_server as _cm
+    orig_tracks, orig_manifest, orig_png = _cm._tracks, _cm._manifest, _cm._frame_png
+    _cm._tracks = lambda w: pd.DataFrame(rows)
+    _cm._manifest = lambda w: {
+        "pixel_size_um": 0.5, "n_frames": 40, "width_px": 512, "height_px": 512,
+        "frame_timestamps_ms": [f * 300_000 for f in range(40)],
+    }
+    _cm._frame_png = lambda w, f: np.full((512, 512), 40, dtype=np.uint8)
+    try:
+        header, _ = cell_mcp_server._family_filmstrip_frames(
+            well, [2, 3], 0, 3, max_images=2, crop_um=None,
+            color=False, scale_bar=False, marker=False,
+            stride_min=cell_mcp_server._STRIDE_MIN, cap=cell_mcp_server.MAX_IMAGES)
+        width = float(header.split("Crop ")[1].split(" um")[0])
+        # 100 px spike * 0.5 um/px = 50 um separation; a crop scanning only the
+        # sampled picks (which skip the spike frame) would auto-fit to the 4 px
+        # (2 um) baseline separation instead and come back far too small.
+        assert width > 20.0, f"crop {width}um does not account for the 50um spike frame"
+    finally:
+        _cm._tracks, _cm._manifest, _cm._frame_png = orig_tracks, orig_manifest, orig_png

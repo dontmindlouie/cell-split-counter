@@ -133,6 +133,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 in a crowded or wide crop, e.g. a page someone else will read with
                 no other way to say "this one, not that one". With track_ids, rings
                 every member present or none.
+            hold_centre_after_member_end (optional, default False, kind="family"
+                only): freeze a member's last position into the crop's mean once
+                its span ends, instead of letting the mean jump to whoever
+                remains. Turn on only once you've confirmed (via
+                watch_location_over_time) the member genuinely vanished and you
+                want the framing to hold rather than snap to the survivors.
 
     Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
     the user BOTH, verbatim, each on its own line -- terminals and chat clients
@@ -204,6 +210,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 cap=MAX_IMAGES_PAGE, added=added,
                 centre_frame=(None if ev.get("centre_frame") is None
                               else int(ev["centre_frame"])),
+                hold_centre_after_member_end=bool(
+                    ev.get("hold_centre_after_member_end", False)),
             )
             # Two separate renders, not one shared image at the bigger size: the
             # filmstrip's `image-rendering: pixelated` CSS is only correct when the

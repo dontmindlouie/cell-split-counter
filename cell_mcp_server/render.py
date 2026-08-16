@@ -550,7 +550,7 @@ _FAMILY_LEAD_IN_CAP_MIN = 300.0
 
 
 def _resolve_family_centres(
-    win, pos: dict[int, list], picks: list[int],
+    win, pos: dict[int, list], picks: list[int], *, hold_after_end: bool = False,
 ) -> tuple[dict[int, tuple[float, float, int, int]], set[int], dict[int, list[int]]]:
     """One crop centre per sampled frame, plus which frames are gap-filled or held.
 
@@ -567,6 +567,18 @@ def _resolve_family_centres(
 
     Strictly inside its span: a member never contributes before its first appearance
     or after its last, because there is nothing measured to hold there.
+
+    hold_after_end changes that last rule: once True, a member whose span has
+    genuinely ended keeps contributing its LAST measured position forever after,
+    same as a mid-span gap. 2026-08-16 field feedback: with several members in a
+    family, a member's span ending (not just a mid-span gap) silently re-centres
+    the crop onto whichever members remain, which can be a large jump if the
+    vanished member was spatially far from the survivors -- a real correction cost
+    on three separate events in one session. Off by default because most callers
+    DO want the mean to move on once a member is confirmed gone (that's the whole
+    point of the handoff, mother to daughters); this is for the case where the
+    caller wants the framing to hold still on a spot a member left rather than
+    snap onto whoever's left.
     """
     mspan = {int(t): (int(g.frame.min()), int(g.frame.max()))
              for t, g in win.groupby("track_id")}
@@ -584,7 +596,11 @@ def _resolve_family_centres(
         here = {int(r.track_id) for r in rows_f}
         gap_ids, gap_pts = [], []
         for t, (a, b) in sorted(mspan.items()):
-            if t in here or not (a < f < b):
+            if t in here:
+                continue
+            in_span = a < f < b
+            past_end = hold_after_end and f >= b
+            if not (in_span or past_end):
                 continue
             earlier = [g for g in seen_at[t] if g < f]
             if earlier:
@@ -620,6 +636,7 @@ def _family_filmstrip_frames(
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
     added: list[int] | None = None, centre_frame: int | None = None,
     upscale_to: int = _UPSCALE_TO, min_crop_um: float = 25.0,
+    hold_centre_after_member_end: bool = False,
 ) -> tuple[str, list[np.ndarray]]:
     """Crop centred on a SET of tracks, resolved per frame from whoever is present.
 
@@ -753,12 +770,20 @@ def _family_filmstrip_frames(
     for r in win.itertuples():
         pos.setdefault(int(r.frame), []).append(r)
 
-    centres, held, gapped = _resolve_family_centres(win, pos, picks)
+    centres, held, gapped = _resolve_family_centres(
+        win, pos, picks, hold_after_end=hold_centre_after_member_end)
 
-    # Auto-fit ONE crop width: the 90th percentile over sampled frames of the radius
-    # needed to contain every present member (centroid distance plus that member's own
-    # radius). A percentile, not the max, because one fragment drifting away would
-    # otherwise zoom the whole strip out to the size of the field.
+    # Auto-fit ONE crop width: the 90th percentile, over EVERY frame in the window
+    # (not just the sampled `picks`), of the radius needed to contain every present
+    # member (centroid distance plus that member's own radius). A percentile, not
+    # the max, because one fragment drifting away would otherwise zoom the whole
+    # strip out to the size of the field. Sampling only `picks` used to miss the
+    # widest-separation frame entirely when it fell between stride-sampled picks --
+    # 2026-08-16 field feedback: a family of two daughters 70+ um apart auto-fit to
+    # a crop that only showed one, because the frame where they were furthest apart
+    # wasn't one of the ~12 rendered. `pos` already covers every frame in [lo, hi]
+    # (it's the same dict _resolve_family_centres uses), so this costs nothing extra
+    # to compute over the full range instead of the subsample.
     #
     # min_crop_um is the floor of that clip -- 25.0 by default, sized for the 312px
     # inline-tool render (25um is ~58px natively on ACTB, upscaled ~5.4x to 312, a
@@ -769,11 +794,11 @@ def _family_filmstrip_frames(
     auto = crop_um is None
     if auto:
         radii = []
-        for f in picks:
-            rows_f = pos.get(f, [])
+        for rows_f in pos.values():
             if not rows_f:
                 continue
-            cx, cy = centres[f][0], centres[f][1]
+            cx = float(np.mean([r.cx for r in rows_f]))
+            cy = float(np.mean([r.cy for r in rows_f]))
             radii.append(max(
                 float(np.hypot(r.cx - cx, r.cy - cy))
                 + float(np.sqrt(max(float(r.area_px), 1.0) / np.pi))

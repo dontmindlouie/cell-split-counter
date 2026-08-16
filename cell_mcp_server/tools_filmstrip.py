@@ -94,7 +94,9 @@ _CHAIN_AMBIGUOUS_RATIO = 1.3
 
 
 def _walk_chain(well: str, track_id: int, direction: str = "forward",
-                max_hops: int = 6, seen: set[int] | None = None) -> list[dict]:
+                max_hops: int = 6, seen: set[int] | None = None,
+                *, first=None, last=None, med_area=None, um_px: float | None = None,
+                ) -> list[dict]:
     """Walk a chain of id hops from `track_id` -- the same physical object losing and
     regaining its id (segmentation wobble), not a division.
 
@@ -114,16 +116,23 @@ def _walk_chain(well: str, track_id: int, direction: str = "forward",
     Returns hops in walk order (excluding the seed), each:
         {track_id, frames: (lo, hi), gap_frames, dist_um, size_ratio}
     Empty if no hop resolves.
+
+    first/last/med_area/um_px: pass these through when the caller already has
+    them (they're all a sort_values+groupby over the whole tracks table).
+    trace_division calls this repeatedly per generation, and re-deriving them
+    from scratch every time was showing up as real, avoidable cost on a large
+    well -- None (default) computes them here as before.
     """
-    df = _cm._tracks(well)
-    if df.empty:
-        return []
-    um_px = _cm._manifest(well)["pixel_size_um"]
-    srt = df.sort_values("frame")
-    first = srt.groupby("track_id").first()
-    last = srt.groupby("track_id").last()
-    has_area = "area_um2" in srt.columns
-    med_area = srt.groupby("track_id").area_um2.median() if has_area else None
+    if first is None or last is None or um_px is None:
+        df = _cm._tracks(well)
+        if df.empty:
+            return []
+        um_px = _cm._manifest(well)["pixel_size_um"]
+        srt = df.sort_values("frame")
+        first = srt.groupby("track_id").first()
+        last = srt.groupby("track_id").last()
+        has_area = "area_um2" in srt.columns
+        med_area = srt.groupby("track_id").area_um2.median() if has_area else None
 
     seen = set(seen) if seen else set()
     seen.add(int(track_id))
@@ -364,6 +373,257 @@ def _new_starts_near(
     return ids, spans
 
 
+def _split_candidates(
+    well: str, end_id: int, *, before_min: float, after_min: float,
+    radius_um: float | None, max_hops: int,
+    first, last, med, um_px: float, seen: set[int],
+) -> dict:
+    """One generation of resolve_division's own logic, factored out so
+    trace_division can call it repeatedly without re-deriving track_id's
+    position/window bookkeeping each time.
+
+    `seen` is mutated with every id absorbed into a candidate's own chain walk
+    (mirrors resolve_division's own `seen` set) so a caller looping across
+    generations never re-offers an id already claimed by an earlier one.
+
+    Returns a dict: {"daughters": [...] or None (terminal -- no split here),
+    "chains": {cand: [chain]}, "spans": {...}, "lo", "hi", "r_um",
+    "n_checked", "extra_groups": [...], "leftover": [...]}.
+    """
+    x0, y0 = float(last.loc[end_id, "cx"]), float(last.loc[end_id, "cy"])
+    f0 = int(last.loc[end_id, "frame"])
+    a0 = float(med.loc[end_id]) if med is not None and end_id in med.index else 0.0
+    r_um = radius_um if radius_um else float(np.sqrt(max(a0, 1.0) / np.pi)) + _FAMILY_NEARBY_UM
+    lo = _frame_at_offset_min(well, f0, -before_min)
+    hi = _frame_at_offset_min(well, f0, after_min)
+    ids, spans = _new_starts_near(first, last, um_px, x0, y0, r_um, lo, hi)
+    ids = [t for t in ids if t not in seen]
+
+    result = dict(daughters=None, chains={}, spans=spans, lo=lo, hi=hi, r_um=r_um,
+                  n_checked=len(ids), extra_groups=[], leftover=[], ambiguous={})
+    if not ids:
+        return result
+
+    chains: dict[int, list[int]] = {}
+    absorbed: set[int] = set()
+    for t in sorted(ids, key=lambda t: spans[t][0]):
+        if t in absorbed:
+            continue
+        hops = _walk_chain(well, t, direction="forward", max_hops=max_hops, seen=set(seen),
+                           first=first, last=last, med_area=med, um_px=um_px)
+        full = [t, *(h["track_id"] for h in hops)]
+        chains[t] = full
+        seen.update(full)
+        absorbed.update(full[1:])
+        if hops:
+            spans[t] = (spans[t][0], hops[-1]["frames"][1])
+    ids = [t for t in ids if t not in absorbed]
+
+    parent = {t: t for t in ids}
+
+    def _find(t: int) -> int:
+        while parent[t] != t:
+            parent[t] = parent[parent[t]]
+            t = parent[t]
+        return t
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for a, b in itertools.combinations(ids, 2):
+        (a_lo, a_hi), (b_lo, b_hi) = spans[a], spans[b]
+        if a_lo <= b_hi and b_lo <= a_hi:
+            _union(a, b)
+
+    groups: dict[int, list[int]] = {}
+    for t in ids:
+        groups.setdefault(_find(t), []).append(t)
+    siblings = [g for g in groups.values() if len(g) >= 2]
+    if not siblings:
+        result["leftover"] = ids
+        return result
+
+    best = max(siblings, key=len)
+    result["daughters"] = sorted(best)
+    result["chains"] = chains
+    result["extra_groups"] = [g for g in siblings if g is not best]
+    result["leftover"] = [t for t in ids if not any(t in c for c in siblings)]
+
+    ended_nearby = last[(last.frame >= lo) & (last.frame <= hi)]
+    own_chain = {m for t in best for m in chains[t]} | {end_id}
+    ambiguous: dict[int, list[tuple[int, float]]] = {}
+    for t in sorted(best):
+        fx, fy = float(first.loc[t, "cx"]), float(first.loc[t, "cy"])
+        for other_id, row in ended_nearby.iterrows():
+            oid = int(other_id)
+            # Anything already in `seen` is either this branch's own hop-chain
+            # ancestry (the id-hops that led here) or another sibling already
+            # absorbed elsewhere in the same trace -- not an independent track a
+            # daughter could actually be confused with, so flagging it is just
+            # noise. Real ambiguity is a track this call has never touched.
+            if oid == end_id or oid in own_chain or oid in seen:
+                continue
+            d_um = float(np.hypot(row.cx - fx, row.cy - fy)) * um_px
+            if d_um <= r_um:
+                ambiguous.setdefault(t, []).append((oid, d_um))
+    result["ambiguous"] = ambiguous
+    return result
+
+
+@server.tool()
+def trace_division(
+    well: str, track_id: int,
+    before_min: float = _FAMILY_NEARBY_BEFORE_MIN, after_min: float = _FAMILY_NEARBY_AFTER_MIN,
+    radius_um: float | None = None, max_hops: int = 6, max_generations: int = 6,
+    short_lived_frames: int = 3,
+) -> str:
+    """Walk a division through EVERY hop/fragment generation, not just one --
+    resolve_division's own multi-generation extension. Free: no images.
+
+    resolve_division answers "who coexists with THIS track's end" for one hop. On
+    a real 2026-08-16 field case that was not enough: track 12's own id wobbled
+    through a chain of re-acquisitions (12->554->561->558->562->...->800) before
+    the real split into two daughters happened, and only at 800 does
+    resolve_division(800) find them. Calling resolve_division on 12, 554, or 561
+    either finds nothing or -- worse -- resolves the WRONG thing (an earlier
+    re-acquisition mistaken for a sibling pair). Finding the real split by hand
+    took 5-8 hops of get_lineage, and even then a short-lived side branch (one
+    frame, easy to miss) almost got silently dropped.
+
+    This tool repeats resolve_division's own coexistence+distance+size test
+    generation after generation: collapse the current track's hop chain, look for
+    a real split at its end, and if one resolves, repeat the same test from EACH
+    daughter. Stops a branch when no split resolves there (a genuine terminal --
+    the branch is still alive, tracked, or dead, not necessarily missing) or
+    max_generations is hit.
+
+    Every terminal branch is returned, including short-lived ones (fewer than
+    `short_lived_frames` frames after its own chain collapses) -- flagged as
+    LIKELY FRAGMENT but never silently dropped, because a fragment/micronucleus
+    daughter carrying part of the outcome is exactly what got missed by hand.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the track to trace forward from -- usually a mother, or any
+            point earlier in a known hop chain.
+        before_min, after_min: how far either side of each generation's end
+            frame to look for daughters, in minutes. Same defaults as
+            resolve_division.
+        radius_um: search radius per generation. None = each track's own
+            radius + 14 um.
+        max_hops: cap on each candidate's own hop-chain walk, per generation.
+        max_generations: cap on how many real-split generations to walk forward
+            before stopping regardless of what is still splitting -- a runaway
+            fragmenting cell (necrosis) could otherwise keep "splitting" for a
+            very long chain.
+        short_lived_frames: a terminal branch with fewer frames than this (after
+            its own chain collapses) is flagged LIKELY FRAGMENT rather than
+            reported as an ordinary terminal.
+    """
+    df = _cm._tracks(well)
+    if df.empty or track_id not in df.track_id.values:
+        raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
+
+    um_px = _cm._manifest(well)["pixel_size_um"]
+    srt = df.sort_values("frame")
+    first = srt.groupby("track_id").first()
+    last = srt.groupby("track_id").last()
+    has_area = "area_um2" in srt.columns
+    med = srt.groupby("track_id").area_um2.median() if has_area else None
+
+    seen = {int(track_id)}
+    # Collapse the seed's own hop chain first, same as resolve_division does.
+    hops0 = _walk_chain(well, track_id, direction="forward", max_hops=max_hops, seen=set(seen),
+                        first=first, last=last, med_area=med, um_px=um_px)
+    chain0 = [int(track_id), *(h["track_id"] for h in hops0)]
+    seen.update(chain0)
+
+    generations: list[list[dict]] = []  # per generation: list of split-event dicts
+    terminals: list[tuple[int, list[int], tuple[int, int]]] = []  # (parent_end, chain, span)
+    frontier = [(int(track_id), chain0)]
+    gen = 0
+    while frontier and gen < max_generations:
+        gen += 1
+        next_frontier: list[tuple[int, list[int]]] = []
+        gen_events: list[dict] = []
+        for parent, chain in frontier:
+            # A daughter found in the PREVIOUS generation is only chain-collapsed as
+            # far as it was walked when first discovered as a sibling candidate --
+            # if it then keeps wobbling through further solo re-acquisitions (no
+            # coexistence, so _split_candidates alone would call it terminal after
+            # one hop), extend it again here before testing for a real split. This
+            # is what lets a long id-hop run (562->...->800 on ACTB track 12) get
+            # walked all the way to its real split instead of stopping at the first
+            # single hop past the previous generation's candidate search.
+            more_hops = _walk_chain(well, chain[-1], direction="forward",
+                                     max_hops=max_hops, seen=set(seen),
+                                     first=first, last=last, med_area=med, um_px=um_px)
+            if more_hops:
+                chain = [*chain, *(h["track_id"] for h in more_hops)]
+                seen.update(h["track_id"] for h in more_hops)
+            end_id = chain[-1]
+            res = _split_candidates(
+                well, end_id, before_min=before_min, after_min=after_min,
+                radius_um=radius_um, max_hops=max_hops,
+                first=first, last=last, med=med, um_px=um_px, seen=seen,
+            )
+            if not res["daughters"]:
+                terminals.append((parent, chain, (int(first.loc[end_id, "frame"]),
+                                                    int(last.loc[end_id, "frame"]))))
+                continue
+            gen_events.append({"parent": parent, "end": end_id, **res})
+            for d in res["daughters"]:
+                next_frontier.append((d, res["chains"][d]))
+        if gen_events:
+            generations.append(gen_events)
+        frontier = next_frontier
+    for parent, chain in frontier:  # hit max_generations while still splitting
+        end_id = chain[-1]
+        terminals.append((parent, chain, (int(first.loc[end_id, "frame"]),
+                                            int(last.loc[end_id, "frame"]))))
+
+    lines = [f"{well} track {track_id}: traced {len(generations)} generation(s) of "
+             f"real splits, {len(terminals)} terminal branch(es)."]
+    for g, events in enumerate(generations, 1):
+        lines.append(f"\nGeneration {g}:")
+        for ev in events:
+            who = ", ".join(str(d) for d in ev["daughters"])
+            lines.append(f"  {ev['parent']} (via chain end {ev['end']}) -> {who}")
+            for d in ev["daughters"]:
+                chain_note = (f" (chain: {ev['chains'][d]})" if len(ev["chains"][d]) > 1 else "")
+                sp = ev["spans"][d]
+                lines.append(f"    {d}: f{sp[0]}-{sp[1]}{chain_note}")
+            if ev["extra_groups"]:
+                lines.append(f"    {len(ev['extra_groups'])} further coexisting group(s) "
+                              f"nearby but not included: "
+                              + "; ".join(str(sorted(c)) for c in ev["extra_groups"]) + ".")
+            if ev["ambiguous"]:
+                for t, others in ev["ambiguous"].items():
+                    near = ", ".join(f"track {o} ({d:.0f} um away)" for o, d in others)
+                    lines.append(f"    OWNERSHIP AMBIGUITY: {t} is also within "
+                                  f"{ev['r_um']:.0f} um of {near}'s last position -- "
+                                  f"could belong to that track instead of {ev['parent']}.")
+
+    lines.append(f"\nTerminal branches ({len(terminals)}):")
+    for parent, chain, span in sorted(terminals, key=lambda x: x[1][-1]):
+        n_frames = span[1] - span[0] + 1
+        chain_note = f" (chain: {chain})" if len(chain) > 1 else ""
+        flag = " -- LIKELY FRAGMENT, verify before trusting" if n_frames < short_lived_frames else ""
+        lines.append(f"  {chain[-1]}: f{span[0]}-{span[1]}, {n_frames} frame(s){chain_note}{flag}")
+
+    # `seen` already accumulates every id this walk ever touched -- each generation's
+    # candidate chain-collapse updates it regardless of which candidates end up
+    # chosen as daughters -- so it's already the full set, no need to re-derive it
+    # by re-walking terminals/generations/chains.
+    all_members = sorted(seen)
+    lines.append(f"\nAll members traced: {all_members}. This is bookkeeping, not a judgement "
+                 f"that a division happened at each step -- confirm on the pixels via "
+                 f"follow_cells_over_time(track_ids={all_members}).")
+    return "\n".join(lines)
+
+
 @server.tool()
 def resolve_division(
     well: str, track_id: int,
@@ -395,6 +655,13 @@ def resolve_division(
     itself the signature of an id hop, and resolve_lineage_chain is the right tool
     for it instead.
 
+    Also flags OWNERSHIP AMBIGUITY: a resolved daughter that sits within this same
+    search radius of some OTHER track's last position in the window too. On
+    2026-08-16 field feedback a real division 40-50 um from one track's last spot
+    actually belonged to a different nearby track's granddaughter, and the mixup
+    was only caught by a slow manual watch_location_over_time verification loop.
+    When this fires, confirm ownership before trusting the attribution.
+
     Args:
         well: well name from list_wells().
         track_id: the track whose split you want resolved -- usually a mother
@@ -418,103 +685,63 @@ def resolve_division(
     has_area = "area_um2" in srt.columns
     med = srt.groupby("track_id").area_um2.median() if has_area else None
 
-    x0, y0 = float(last.loc[track_id, "cx"]), float(last.loc[track_id, "cy"])
-    f0 = int(last.loc[track_id, "frame"])
-    a0 = float(med.loc[track_id]) if med is not None and track_id in med.index else 0.0
+    seen = {track_id}
+    res = _split_candidates(
+        well, track_id, before_min=before_min, after_min=after_min,
+        radius_um=radius_um, max_hops=max_hops,
+        first=first, last=last, med=med, um_px=um_px, seen=seen,
+    )
+    lo, hi, r_um = res["lo"], res["hi"], res["r_um"]
 
-    r_um = radius_um if radius_um else float(np.sqrt(max(a0, 1.0) / np.pi)) + _FAMILY_NEARBY_UM
-    lo = _frame_at_offset_min(well, f0, -before_min)
-    hi = _frame_at_offset_min(well, f0, after_min)
-    ids, spans = _new_starts_near(first, last, um_px, x0, y0, r_um, lo, hi)
-    ids = [t for t in ids if t != track_id]
-
-    if not ids:
+    if res["n_checked"] == 0:
+        f0 = int(last.loc[track_id, "frame"])
         return (f"{well} track {track_id}: nothing new starts within {r_um:.0f} um of "
                 f"its last position (f{f0}) in f{lo}-{hi}. No split resolves here -- if "
                 f"the track just loses its id and comes back, try "
                 f"resolve_lineage_chain(track_id={track_id}) instead.")
 
-    # Collapse each candidate's own forward hop chain into one physical object first,
-    # so a daughter that itself wobbles mid-life (segmentation re-acquiring IT, or
-    # even re-acquiring INTO another one of our own candidates -- BeWo 969's exact
-    # failure mode) is not mistaken for a second, separate daughter. Processed
-    # earliest-first so a hop target that is itself one of our candidates gets
-    # absorbed into the chain that reaches it, rather than also starting its own.
-    # Extend the surviving candidate's span to cover the whole chain, since the
-    # coexistence test below needs the full lifetime.
-    seen = {track_id}
-    chains: dict[int, list[int]] = {}
-    absorbed: set[int] = set()
-    for t in sorted(ids, key=lambda t: spans[t][0]):
-        if t in absorbed:
-            continue
-        hops = _walk_chain(well, t, direction="forward", max_hops=max_hops, seen=set(seen))
-        full = [t, *(h["track_id"] for h in hops)]
-        chains[t] = full
-        seen.update(full)
-        absorbed.update(full[1:])
-        if hops:
-            spans[t] = (spans[t][0], hops[-1]["frames"][1])
-    ids = [t for t in ids if t not in absorbed]
-
-    # THE TEST: two candidates are siblings only if they COEXIST. A run of candidates
-    # at one spot whose spans never overlap is one object being repeatedly
-    # re-acquired, not two daughters -- BeWo 969's exact failure mode. Union-find
-    # over every coexisting pair, one pass, rather than repeatedly rescanning the
-    # cluster list from scratch after each merge.
-    parent = {t: t for t in ids}
-
-    def _find(t: int) -> int:
-        while parent[t] != t:
-            parent[t] = parent[parent[t]]
-            t = parent[t]
-        return t
-
-    def _union(a: int, b: int) -> None:
-        ra, rb = _find(a), _find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    for a, b in itertools.combinations(ids, 2):
-        (a_lo, a_hi), (b_lo, b_hi) = spans[a], spans[b]
-        if a_lo <= b_hi and b_lo <= a_hi:
-            _union(a, b)
-
-    groups: dict[int, list[int]] = {}
-    for t in ids:
-        groups.setdefault(_find(t), []).append(t)
-    siblings = [g for g in groups.values() if len(g) >= 2]
-    if not siblings:
+    if not res["daughters"]:
+        checked = sorted(set(res["leftover"]))
         return (
-            f"{well} track {track_id}: {len(ids)} candidate(s) start nearby "
-            f"({', '.join(str(t) for t in ids)}) in f{lo}-{hi}, but none of them "
+            f"{well} track {track_id}: {res['n_checked']} candidate(s) start nearby "
+            f"({', '.join(str(t) for t in checked)}) in f{lo}-{hi}, but none of them "
             f"COEXIST with each other -- that pattern is one object being "
             f"re-acquired, not a split. Try "
             f"resolve_lineage_chain(track_id={track_id}) instead, or inspect by "
             f"hand with list_nearby_tracks(track_id={track_id})."
         )
 
-    best = max(siblings, key=len)
+    best, chains = res["daughters"], res["chains"]
     members = [int(track_id), *sorted(m for t in best for m in chains[t])]
+
     lines = [
         f"{well} track {track_id}: resolved as a split into "
-        f"{len(best)} coexisting daughter(s), from {len(ids)} candidate(s) checked."
+        f"{len(best)} coexisting daughter(s), from {res['n_checked']} candidate(s) checked."
     ]
     for t in sorted(best):
         chain_note = (f" (chain: {chains[t]})" if len(chains[t]) > 1 else "")
-        lines.append(f"  {t}: f{spans[t][0]}-{spans[t][1]}{chain_note}")
-    extra = [c for c in siblings if c is not best]
-    if extra:
+        lines.append(f"  {t}: f{res['spans'][t][0]}-{res['spans'][t][1]}{chain_note}")
+    if res["ambiguous"]:
         lines.append(
-            f"\n{len(extra)} further coexisting group(s) also found nearby but not "
-            f"included -- likely unrelated neighbours dividing in the same window: "
-            + "; ".join(str(sorted(c)) for c in extra) + "."
+            "\nOWNERSHIP AMBIGUITY -- verify before attributing these to "
+            f"{track_id}:")
+        for t, others in res["ambiguous"].items():
+            near = ", ".join(f"track {o} ({d:.0f} um away)" for o, d in others)
+            lines.append(
+                f"  {t} is also within {r_um:.0f} um of {near}'s last position in "
+                f"f{lo}-{hi} -- could belong to that track instead. Check with "
+                f"get_lineage(track_id={t}) or resolve_division on the other "
+                f"track before trusting this attribution.")
+    if res["extra_groups"]:
+        lines.append(
+            f"\n{len(res['extra_groups'])} further coexisting group(s) also found nearby "
+            f"but not included -- likely unrelated neighbours dividing in the same window: "
+            + "; ".join(str(sorted(c)) for c in res["extra_groups"]) + "."
         )
-    leftover = [t for t in ids if not any(t in c for c in siblings)]
-    if leftover:
+    if res["leftover"]:
         lines.append(
-            f"{len(leftover)} candidate(s) did not coexist with anything and were "
-            f"dropped: {', '.join(str(t) for t in leftover)}."
+            f"{len(res['leftover'])} candidate(s) did not coexist with anything and were "
+            f"dropped: {', '.join(str(t) for t in res['leftover'])}."
         )
     lines.append(
         f"\nStitched set: {members}. This is bookkeeping, not a judgement that a "
@@ -659,6 +886,7 @@ def follow_cells_over_time(
     max_images: int | None = None, stride_min: float = _STRIDE_MIN,
     crop_um: float | None = None,
     color: bool = True, scale_bar: bool = True, marker: bool = False,
+    hold_centre_after_member_end: bool = False,
 ) -> list:
     """Follow one cell, or a mother and her daughters, over time as close-up images.
 
@@ -753,6 +981,15 @@ def follow_cells_over_time(
             each frame or none at all. Forced on for OFF-TRACK frames regardless of
             this flag, where the ring marks the held position rather than a
             detected cell.
+        hold_centre_after_member_end: with a member set, freeze that member's LAST
+            position into the crop's mean forever after its span ends, instead of
+            dropping it and letting the mean jump to whoever remains. OFF by
+            default -- most callers want the mean to move on once a member is
+            confirmed gone, e.g. the mother-to-daughters handoff. Turn this on when
+            you have already confirmed (via watch_location_over_time) that a member
+            genuinely vanished and you want the framing to hold on the spot it left
+            rather than snap to the survivors, which otherwise reads as an
+            unexplained jump. Member sets only.
     """
     if (track_id is None) == (track_ids is None):
         raise ValueError(
@@ -772,6 +1009,7 @@ def follow_cells_over_time(
             color=color, scale_bar=scale_bar, marker=marker,
             before_min=before_min, after_min=after_min, stride_min=stride_min,
             cap=MAX_IMAGES, added=added, centre_frame=centre_frame,
+            hold_centre_after_member_end=hold_centre_after_member_end,
         )
     else:
         header, images = _cm._filmstrip_frames(
@@ -792,6 +1030,6 @@ __all__ = [
     "_CHAIN_GAP_MIN", "_CHAIN_MARGIN_UM", "_CHAIN_AMBIGUOUS_RATIO",
     "_nearest_detection", "watch_location_over_time", "_resolve_family",
     "_walk_chain", "resolve_lineage_chain",
-    "_new_starts_near", "resolve_division",
+    "_new_starts_near", "resolve_division", "_split_candidates", "trace_division",
     "list_nearby_tracks", "follow_cells_over_time",
 ]
