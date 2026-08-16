@@ -74,11 +74,17 @@ def _strip(fake, ids, **kw):
 
 
 def test_window_is_chosen_around_the_membership_transition(fake):
-    """Not the members' full span: that would open the mother's whole lifetime, which
-    on a real well is hundreds of frames of nothing happening."""
+    """Not an UNBOUNDED extension to the members' full span -- that would open a
+    real mother's whole lifetime, which can be hundreds of frames of nothing (see
+    test_lead_in_extension_is_capped_for_a_long_lived_mother below). This fixture's
+    mother (f0-9) is short enough that her whole life fits inside the lead-in cap,
+    so the window reaches all the way back to it rather than stopping at the fixed
+    before_min=20min/4-frame default (2026-08-16: verified on ACTB track 2, a
+    similarly short-lived mother, before_min was silently cutting off 140 min of
+    real interphase that was right there in tracks.csv)."""
     header, images = _strip(fake, [1, 2, 3])
     assert "transition at f10" in header
-    assert "frames 6-14" in header
+    assert "frames 0-14" in header
 
 
 def test_centre_follows_the_mother_then_the_daughters_midpoint(fake):
@@ -139,8 +145,36 @@ def test_auto_window_does_not_run_far_past_a_fully_known_member_set(fake):
     not continue at the full discovery-search horizon."""
     header, _ = _strip(fake, [1, 2, 3], after_min=180.0)
     lo, hi = _window(header)
-    assert hi == 25, "last member (2, 3) ends at f19; clipped to +30min = +6 frames"
+    assert hi == 21, "last member (2, 3) ends at f19; clipped to +6min buffer"
     assert "WARNING" not in header
+
+
+def test_lead_in_extension_is_capped_for_a_long_lived_mother(monkeypatch):
+    """The lead-in extension (test above) must not reopen "the mother's entire
+    lifetime, hundreds of frames of nothing" for a mother who really has been
+    alive that long -- only a short, affordable gap gets pulled in. Independent
+    fixture (1 min/frame): mother track 1 lives f0-2009, daughters 2/3 start at
+    f2010 -- a 2010-minute gap back to the mother's real start, far past
+    _FAMILY_LEAD_IN_CAP_MIN (300 min)."""
+    rows = [{"track_id": 1, "frame": f, "cx": 100.0, "cy": 100.0, "area_px": 400.0,
+             "n_masks_in_frame": 1, "intensity_mean": 100.0} for f in range(2010)]
+    for f in range(2010, 2020):
+        drift = 4.0 * (f - 2010)
+        rows.append({"track_id": 2, "frame": f, "cx": 90.0 + drift, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
+        rows.append({"track_id": 3, "frame": f, "cx": 110.0 + drift, "cy": 100.0,
+                     "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0})
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda well: {
+        "pixel_size_um": 0.5, "n_frames": 2020, "width_px": 512, "height_px": 512,
+        "frame_timestamps_ms": [f * 60_000 for f in range(2020)],
+    })
+    monkeypatch.setattr(cell_mcp_server, "_frame_png",
+                        lambda well, f: np.full((512, 512), 40, dtype=np.uint8))
+    monkeypatch.setattr(cell_mcp_server, "_hours", lambda well, f: f * 0.1)
+    header, _ = _strip("fake", [1, 2, 3], before_min=20.0, after_min=20.0)
+    lo, hi = _window(header)
+    assert lo == 1990, "before_min's own fixed default (20 min = 20 frames back), NOT the mother's real f0 start"
 
 
 def test_auto_window_clip_does_not_apply_to_a_lone_mother_still_being_searched(fake):
@@ -379,11 +413,14 @@ def test_the_note_says_whether_this_bundle_can_undo_the_stretch(fake, monkeypatc
 def test_window_is_measured_in_minutes_not_frames(fake):
     """20 min on this fake's 5 min cadence is 4 frames. The same 20 min on a well
     shot every 3 min must be ~7 frames -- that is the whole point, and it is why a
-    frame count gave BeWo the shortest look at the line that needed the longest."""
+    frame count gave BeWo the shortest look at the line that needed the longest.
+    Both auto lo values below land before the mother's own f0 start, so the
+    lead-in extension pulls them both back to 0 -- the minutes-vs-frames point
+    is still pinned by the (unaffected) hi side of each call."""
     header, _ = _strip(fake, [1, 2, 3], before_min=20.0, after_min=20.0)
-    assert "frames 6-14" in header
+    assert "frames 0-14" in header
     header2, _ = _strip(fake, [1, 2, 3], before_min=10.0, after_min=40.0)
-    assert "frames 8-18" in header2
+    assert "frames 0-18" in header2
 
 
 def test_window_reaches_much_further_forward_by_default(fake):

@@ -528,10 +528,25 @@ def _fixed_point_frames(
 _FAMILY_MAX_MEMBERS = 6
 
 # How far past a fully-known member set's own last frame to keep rendering, once
-# there's nothing left in the set to show -- a handful of confirmation frames of
-# the settled daughters, not the full forward-discovery horizon (_WINDOW_AFTER_MIN,
+# there's nothing left in the set to show -- a couple of confirmation frames of the
+# settled daughters, not the full forward-discovery horizon (_WINDOW_AFTER_MIN,
 # ~180 min) that exists to search for a daughter that might not have appeared yet.
-_FAMILY_TAIL_BUFFER_MIN = 30.0
+# 2026-08-16 (researcher feedback on ACTB track 2->387+388, daughters end f100/f104
+# at ~3 min/frame): "holding for too long, the mitosis is long done -- I'd cap it at
+# frame 104, could go 105 106", i.e. essentially zero slack, a frame or two at most.
+_FAMILY_TAIL_BUFFER_MIN = 6.0
+
+# The mirror problem on the FRONT of the window: before_min (a fixed default, ~120
+# min) can stop well short of an anchor member's own real tracked history even
+# though that history is right there and cheap to show -- on the same ACTB case,
+# the mother (track 2) is tracked all the way back to f0 (the very start of the
+# recording), 264 min before the transition, but before_min=120 only reached back
+# to f47, silently cutting ~140 min of real interphase lead-in. Extending to the
+# earliest known member's own first frame is capped by this constant so a mother
+# alive for days doesn't reopen "hundreds of frames of nothing" (the failure mode
+# _WINDOW_BEFORE_MIN's fixed default exists to avoid in the first place) --
+# generous enough to reach this case's 264 min gap, bounded everywhere else.
+_FAMILY_LEAD_IN_CAP_MIN = 300.0
 
 
 def _resolve_family_centres(
@@ -673,10 +688,20 @@ def _family_filmstrip_frames(
     starts = sorted(spans.items(), key=lambda kv: kv[1][0])
     transition = (int(centre_frame) if centre_frame is not None
                   else (starts[1][1][0] if len(starts) > 1 else starts[0][1][0]))
+    known = [t for t in ids if t in spans]
     lo = (_frame_at_offset_min(well, transition, -before_min)
           if start_frame is None else max(0, int(start_frame)))
     hi = (_frame_at_offset_min(well, transition, after_min)
           if end_frame is None else min(n_frames - 1, int(end_frame)))
+    # Don't stop short of real, already-tracked history that before_min's fixed
+    # default happens not to reach -- extend lo back to the earliest known member's
+    # own first frame (typically the mother) when that's before the auto lo,
+    # capped so a long-lived mother doesn't reopen an unbounded lead-in. See
+    # _FAMILY_LEAD_IN_CAP_MIN.
+    if start_frame is None and known:
+        first_start = min(spans[t][0] for t in known)
+        if first_start < lo and _minutes_between(well, first_start, transition) <= _FAMILY_LEAD_IN_CAP_MIN:
+            lo = first_start
     # Once the full cast is already known (2+ members -- not a lone mother still
     # being searched for a daughter, which is exactly the case the forward-heavy
     # after_min above exists for) and every member's own span already ends well
@@ -688,7 +713,6 @@ def _family_filmstrip_frames(
     # SAME target stride_min, rather than diluting them across a mostly-empty
     # window. Only touches the auto path -- pass end_frame explicitly to look
     # further than a known member's own lifetime on purpose.
-    known = [t for t in ids if t in spans]
     if end_frame is None and len(known) > 1:
         last_end = max(spans[t][1] for t in known)
         hi = min(hi, _frame_at_offset_min(well, last_end, _FAMILY_TAIL_BUFFER_MIN))
