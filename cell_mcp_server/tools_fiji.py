@@ -227,6 +227,11 @@ def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float,
     best_label, (best_id, best_dist) = candidates[0]
     rest = candidates[1:]
     same_track = len(rest) == 1 and rest[0][1][0] == best_id
+    # The best-matching unit reading, converted to pixels -- reused by every fallback
+    # message below that points at watch_location_over_time/show_cells_in_browser,
+    # both of which take full-frame PIXEL coordinates regardless of which unit Fiji
+    # happened to report x/y in.
+    px_x, px_y = (float(x), float(y)) if best_label == "pixels" else (float(x) / um_px, float(y) / um_px)
 
     lines = [f"{well} f{frame} (Fiji frame {fiji_frame}, x={x}, y={y}):"]
     if best_dist > _SNAP_UM:
@@ -235,7 +240,14 @@ def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float,
             f"(read as {best_label}), farther than the {_SNAP_UM} um snap radius. "
             f"The click likely missed, or fiji_frame/units are off. Try "
             f"list_nearby_tracks(well={well!r}, x=..., y=..., frame={frame}) with a "
-            f"few candidate readings before trusting this."
+            f"few candidate readings before trusting this -- or, since there is no "
+            f"track to anchor on at all, look at the raw point directly: "
+            f"watch_location_over_time(well={well!r}, x={px_x:.0f}, y={px_y:.0f}, "
+            f"start_frame={max(0, frame - 10)}, end_frame={frame + 10}) for a quick "
+            f"in-chat look, or show_cells_in_browser(well={well!r}, events=[{{'kind': "
+            f"'point', 'x': {px_x:.0f}, 'y': {px_y:.0f}, 'start_frame': "
+            f"{max(0, frame - 10)}, 'end_frame': {frame + 10}}}]) for a page to hand "
+            f"off -- both work on the coordinate alone, no track needed."
         )
     elif same_track:
         lines.append(f"  -> track {best_id}, {best_dist:.1f} um away "
@@ -276,10 +288,14 @@ def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float,
                         + (" (its recorded mother-link is that old too)" if has_parent else "")
                         + f". A track this settled by the clicked frame may just be "
                         f"idling nearby rather than the thing that happened here -- "
-                        f"widen watch_location_over_time(x={x}, y={y}, "
-                        f"start_frame={max(0, frame - 10)}, end_frame={frame + 10}) to "
-                        f"look for a closer, more recently-active candidate before "
-                        f"investigating track {best_id} further."
+                        f"widen watch_location_over_time(well={well!r}, x={px_x:.0f}, "
+                        f"y={px_y:.0f}, start_frame={max(0, frame - 10)}, "
+                        f"end_frame={frame + 10}) for a quick in-chat look, or "
+                        f"show_cells_in_browser(well={well!r}, events=[{{'kind': "
+                        f"'point', 'x': {px_x:.0f}, 'y': {px_y:.0f}, 'start_frame': "
+                        f"{max(0, frame - 10)}, 'end_frame': {frame + 10}}}]) for a page "
+                        f"to hand off, to look for a closer, more recently-active "
+                        f"candidate before investigating track {best_id} further."
                     )
     lines.append(
         f"\nNext: find_prophase_onset({best_id}), then "
