@@ -12,6 +12,23 @@ _DISPLAY_COLOR_FILENAME = "_display_color.json"
 _DISPLAY_WINDOW_FILENAME = "_display_windows.json"
 
 
+def resolve_channel_index(channel_names: list[str | None], requested: str, source: str) -> int:
+    """Case-insensitive substring match of `requested` against `channel_names`.
+
+    Shared by src/ingest.py's segmentation-channel selection and
+    scripts/build_bundle.py's calibration/intensity measurement, so "how a channel
+    name resolves to an index" and "what happens on 0 or >1 matches" can't drift
+    between the two -- a mismatch there would silently measure intensity on a
+    different channel than the one actually segmented.
+    """
+    matches = [i for i, n in enumerate(channel_names) if requested.lower() in (n or "").lower()]
+    if len(matches) != 1:
+        raise ValueError(
+            f"nucleus_channel {requested!r} matched {len(matches)} of {channel_names} "
+            f"in {source} (need exactly 1)")
+    return matches[0]
+
+
 @dataclass
 class IngestConfig:
     video_path: Path
@@ -159,10 +176,19 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
     with nd2.ND2File(config.video_path) as f:
         n_channels = f.sizes.get("C", 1)
         if n_channels == 1:
+            if config.nucleus_channel is not None:
+                print(f"  WARNING: nucleus_channel={config.nucleus_channel!r} was requested "
+                      f"but {config.video_path.name} is single-channel -- ignored, has no effect.")
             color = getattr(f.metadata.channels[0].channel, "color", None)
             display_color_rgb = [color.r, color.g, color.b] if color else None
             channel_colors = None
         else:
+            if config.nucleus_channel is None:
+                print(f"  WARNING: {config.video_path.name} has {n_channels} channels and no "
+                      f"nucleus_channel was given -- falling back to a max-projection of ALL "
+                      f"channels for segmentation. This is WRONG if any channel is a "
+                      f"membrane/actin/mito marker rather than a second nuclear signal (see "
+                      f"2026-08-14 ACTB/Tom20 fix). Pass --nucleus-channel if that's the case here.")
             # The segmentation-input frame (frame_*.png, below) is a per-pixel max
             # of all channels with no color info -- no single channel's LUT
             # describes THAT image honestly, so display_color_rgb stays null for
@@ -231,14 +257,8 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
             channel_names = [c.channel.name for c in f.metadata.channels]
             nucleus_idx = None
             if config.nucleus_channel is not None:
-                matches = [i for i, n in enumerate(channel_names)
-                           if config.nucleus_channel.lower() in (n or "").lower()]
-                if len(matches) != 1:
-                    raise ValueError(
-                        f"nucleus_channel {config.nucleus_channel!r} matched "
-                        f"{len(matches)} of {channel_names} in {config.video_path.name} "
-                        "(need exactly 1)")
-                nucleus_idx = matches[0]
+                nucleus_idx = resolve_channel_index(
+                    channel_names, config.nucleus_channel, config.video_path.name)
                 nucleus_channel_name = channel_names[nucleus_idx]
 
             display_dir = out_dir / "display"

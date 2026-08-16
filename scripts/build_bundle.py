@@ -49,6 +49,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.ingest import resolve_channel_index  # noqa: E402
 from src.lineage import _build_tracking_index, _open_tracked_masks  # noqa: E402
 
 _FRAME_RE = re.compile(r"frame_(\d+)_raw(\d+)\.png$")
@@ -140,12 +141,10 @@ def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: st
             # n_channels==1 branch. Other channel(s) are display-only; noted in the
             # name so a reader isn't misled into thinking this is a combined image.
             names = [c.channel.name for c in f.metadata.channels]
-            matches = [i for i, n in enumerate(names) if nucleus_channel.lower() in (n or "").lower()]
-            if len(matches) != 1:
-                raise CalibrationError(
-                    f"{nd2_path.name}: nucleus_channel {nucleus_channel!r} matched "
-                    f"{len(matches)} of {names} (need exactly 1)")
-            idx = matches[0]
+            try:
+                idx = resolve_channel_index(names, nucleus_channel, nd2_path.name)
+            except ValueError as exc:
+                raise CalibrationError(str(exc)) from exc
             nuc_ch = f.metadata.channels[idx]
             other = [n for i, n in enumerate(names) if i != idx]
             color = getattr(nuc_ch.channel, "color", None)
@@ -343,7 +342,22 @@ def display_windows(run_dir: Path, n_frames: int) -> dict:
     d = json.loads(p.read_text(encoding="utf-8"))
     w = d.get("windows") or []
     return {"recorded": True, "note": d.get("note", ""),
-            "complete": len(w) == n_frames, "n": len(w), "windows": w}
+            "complete": len(w) == n_frames, "n": len(w), "windows": w,
+            "segmentation_channel": d.get("segmentation_channel")}
+
+
+def recorded_segmentation_channel(run_dir: Path) -> str | None:
+    """The channel name ingest actually segmented on, straight from its own record.
+
+    None means either a single-channel well, a multi-channel well ingested with no
+    --nucleus-channel (old max-projection-of-all-channels behaviour), or a run that
+    predates this field entirely -- all three are indistinguishable from this file
+    alone, which is fine: in every case there's no single channel to defer to.
+    """
+    p = run_dir / "frames" / "_display_windows.json"
+    if not p.is_file():
+        return None
+    return json.loads(p.read_text(encoding="utf-8")).get("segmentation_channel")
 
 
 def provenance(run_dir: Path) -> dict:
@@ -526,12 +540,7 @@ def write_labels_and_tracks(
         nucleus_idx = None
         if n_channels > 1 and nucleus_channel is not None:
             names = [c.channel.name for c in f.metadata.channels]
-            matches = [i for i, n in enumerate(names) if nucleus_channel.lower() in (n or "").lower()]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"nucleus_channel {nucleus_channel!r} matched {len(matches)} of "
-                    f"{names} in {nd2_path.name} (need exactly 1)")
-            nucleus_idx = matches[0]
+            nucleus_idx = resolve_channel_index(names, nucleus_channel, nd2_path.name)
         # f.read_frame()'s flat sequence index does not follow simple t*C+c
         # arithmetic for multi-channel acquisitions (see the matching note in
         # src/ingest.py, confirmed 2026-08-03), and returns a (C, Y, X) array
@@ -639,7 +648,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run_dir", type=Path, help="a pipeline output run directory")
     ap.add_argument("--nd2", type=Path, required=True, help="source ND2 (read for calibration only)")
-    ap.add_argument("--nucleus-channel", type=str, default=None, help="multi-channel ND2 only: substring match against a channel name (e.g. AF555, AF647, mCherry). Must match the --nucleus-channel passed to main.py for this run, if any -- calibration/intensity are measured on that one channel instead of a max-projection of all channels.")
+    ap.add_argument("--nucleus-channel", type=str, default=None, help="Usually unnecessary -- auto-detected from the channel ingest actually segmented on (recorded in <run_dir>/frames/_display_windows.json by main.py's --nucleus-channel). Only needed to build from a run that predates that recording. If passed AND a recorded value exists, they must match exactly or the build is refused.")
     ap.add_argument("--out", type=Path, default=Path("data/bundle"), help="bundle root")
     ap.add_argument("--candidates", type=Path, default=Path("data/candidates"),
                     help="where the detector's candidates.csv goes -- deliberately NOT "
@@ -666,8 +675,26 @@ def main() -> None:
     pairs = frame_index_pairs(run_dir)
     print(f"  frames: {len(pairs)}")
 
+    # The channel actually used for segmentation is recorded by ingest itself
+    # (src/ingest.py's _display_windows.json), which is the only source of truth for
+    # what Cellpose actually saw -- --nucleus-channel here is an override/verification,
+    # not the primary signal. Trusting the flag alone would let this script and
+    # main.py's ingest run silently diverge (segment on one channel, measure
+    # intensity on another) with nothing to catch it.
+    recorded = recorded_segmentation_channel(run_dir)
+    channels_agree = (recorded and args.nucleus_channel and
+                       (args.nucleus_channel.lower() in recorded.lower()
+                        or recorded.lower() in args.nucleus_channel.lower()))
+    if args.nucleus_channel and recorded and not channels_agree:
+        sys.exit(
+            f"  --nucleus-channel {args.nucleus_channel!r} does not match the channel "
+            f"ingest actually segmented on ({recorded!r}, from "
+            f"{run_dir}/frames/_display_windows.json). Refusing to build a bundle whose "
+            f"intensity measurements would come from a different channel than its masks.")
+    nucleus_channel = args.nucleus_channel or recorded
+
     try:
-        cal = read_calibration(args.nd2, [r for _, r in pairs], nucleus_channel=args.nucleus_channel)
+        cal = read_calibration(args.nd2, [r for _, r in pairs], nucleus_channel=nucleus_channel)
     except CalibrationError as exc:
         sys.exit(f"  CALIBRATION FAILED: {exc}\n  Refusing to write a bundle with fabricated units.")
     iv = cal["interval_ms"]
@@ -677,7 +704,7 @@ def main() -> None:
     print("  encoding labels + measuring tracks...")
     extra, rows = write_labels_and_tracks(
         run_dir, out_run, pairs, args.nd2, cal, not args.no_intensity_curve,
-        nucleus_channel=args.nucleus_channel,
+        nucleus_channel=nucleus_channel,
     )
 
     tracks_csv = out_run / "tracks.csv"
