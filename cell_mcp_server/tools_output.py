@@ -144,7 +144,6 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     sections = []
     shared: list[str] = []
     lb_data = []
-    nav_items = []
     for i, ev in enumerate(events):
         kind = ev.get("kind")
         if kind not in ("track", "family", "point"):
@@ -252,14 +251,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             f"<div class=filmstrip>{''.join(tiles)}</div></section>"
         )
         lb_data.append({"label": label, "images": lb_b64_list})
-        nav_items.append((i, label))
 
     lb_json = json.dumps(lb_data)
-    # A jump link per case, so getting from case 1 to case 2 is a click instead of
-    # scrolling past however many frames case 1 has.
-    nav_html = "".join(
-        f'<a href="#sec{i}">{i + 1}. {label}</a>' for i, label in nav_items
-    )
     # Collapsed by default: it is reference, not the task. Open once, then get out of
     # the way of the 14 cases the page actually exists for.
     note_html = f"<p class=task>{note}</p>" if note else ""
@@ -286,10 +279,6 @@ div.view-controls {{ display: flex; align-items: center; gap: 0.9rem;
   padding: 0 0 0.5rem; margin-bottom: 0.5rem; border-bottom: 1px solid #222;
   font-size: 0.78rem; color: #aaa; }}
 div.view-controls label {{ display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; cursor: pointer; }}
-div.chip-row {{ display: flex; align-items: center; gap: 0.4rem; overflow-x: auto; }}
-div.chip-row a {{ flex: 0 0 auto; color: #7aa7d0; font-size: 0.78rem; white-space: nowrap;
-  text-decoration: none; border: 1px solid #333; border-radius: 4px; padding: 0.25rem 0.6rem; }}
-div.chip-row a:hover {{ background: #1d2a35; }}
 div.filmstrip {{ display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; }}
 div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
 /* The frame/time/coord label (top) and scale bar (bottom) are burned into the PNG
@@ -317,7 +306,6 @@ body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
 <div class="view-controls">
   <label><input type="checkbox" id="figureCtl" onchange="document.body.classList.toggle('figure-mode', this.checked)"> hide labels + scale bar (figures)</label>
 </div>
-<div class="chip-row">{nav_html}</div>
 </nav>
 {note_html}
 {shared_html}
