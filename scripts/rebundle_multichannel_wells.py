@@ -14,11 +14,11 @@ ARCHIVE = Path(r"D:\cell-split-counter-output-archive")
 BUNDLE_OUT = ROOT / "data" / "bundle"
 
 WELLS = [
-    (ARCHIVE / "nTSC_ZO1_1-4_M1", r"G:\Projects\ZO1_nTSC\nTSC_ZO1_1-4_M1.nd2"),
-    (ARCHIVE / "nTSC_ZO1_1-4_M2", r"G:\Projects\ZO1_nTSC\nTSC_ZO1_1-4_M2.nd2"),
-    (ARCHIVE / "nTSC_ZO1_1-4_M3", r"G:\Projects\ZO1_nTSC\nTSC_ZO1_1-4_M3.nd2"),
-    (ARCHIVE / "nTSC_ZO1_1-4_M4", r"G:\Projects\ZO1_nTSC\nTSC_ZO1_1-4_M4.nd2"),
-    (ARCHIVE / "20251016_ACTB_M3", r"G:\Projects\2025_1016_TSC_ACTB_Tom20\20251016_ACTB_M3.nd2"),
+    (ARCHIVE / "nTSC_ZO1_1-4_M1", r"G:\Projects\nd2_raw\ZO1_nTSC\nTSC_ZO1_1-4_M1.nd2"),
+    (ARCHIVE / "nTSC_ZO1_1-4_M2", r"G:\Projects\nd2_raw\ZO1_nTSC\nTSC_ZO1_1-4_M2.nd2"),
+    (ARCHIVE / "nTSC_ZO1_1-4_M3", r"G:\Projects\nd2_raw\ZO1_nTSC\nTSC_ZO1_1-4_M3.nd2"),
+    (ARCHIVE / "nTSC_ZO1_1-4_M4", r"G:\Projects\nd2_raw\ZO1_nTSC\nTSC_ZO1_1-4_M4.nd2"),
+    (ARCHIVE / "20251016_ACTB_M3", r"G:\Projects\nd2_raw\2025_1016_TSC_ACTB_Tom20\20251016_ACTB_M3.nd2"),
 ]
 
 

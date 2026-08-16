@@ -14,15 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 PY = ROOT / ".venv" / "Scripts" / "python.exe"
 
 WELLS = [
-    (r"G:\Projects\2025_1016_TSC_ACTB_Tom20\20251016_ACTB_M2_red.nd2", None),
-    (r"G:\Projects\2025_1016_TSC_ACTB_Tom20\20251016_Tom20_cy5.nd2", None),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M9_size medium.nd2", "nTSC"),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M10_size medium.nd2", "nTSC"),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M11_size medium.nd2", "nTSC"),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M12_size medium.nd2", "nTSC"),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M13_size medium.nd2", "nTSC"),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M14_size medium.nd2", "nTSC"),
-    (r"G:\Projects\nTSC_living image\TSC size cherry_Live Imaging4min002_M15_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\2025_1016_TSC_ACTB_Tom20\20251016_ACTB_M2_red.nd2", None),
+    (r"G:\Projects\nd2_raw\2025_1016_TSC_ACTB_Tom20\20251016_Tom20_cy5.nd2", None),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M9_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M10_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M11_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M12_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M13_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M14_size medium.nd2", "nTSC"),
+    (r"G:\Projects\nd2_raw\nTSC_living image\TSC size cherry_Live Imaging4min002_M15_size medium.nd2", "nTSC"),
 ]
 
 BUNDLE_OUT = ROOT / "data" / "bundle"

@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = ROOT / ".venv" / "Scripts" / "python.exe"
-RAW = ROOT.parent / "2025_1016_TSC_ACTB_Tom20"
+RAW = ROOT.parent / "nd2_raw" / "2025_1016_TSC_ACTB_Tom20"
 
 WELLS = [
     # (nd2 path, canonical bundle name, nucleus channel substring, cell_line, stale bundle it supersedes)
