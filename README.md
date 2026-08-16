@@ -82,6 +82,16 @@ she copied a bundle, opens Claude Code in the repo root, and approves the MCP se
 once. `UV_PROJECT_ENVIRONMENT=.venv-mcp` is pinned in `.mcp.json` so `uv run` never
 touches a full pipeline `.venv` if one happens to exist on the same machine.
 
+If the MCP server connects fine from the Claude Code CLI but never comes up in the
+Claude Code VS Code extension (silently, with no error) -- that mismatch means `uv`
+resolves on PATH for a normal shell/terminal but the VS Code extension's spawned
+subprocess doesn't inherit that PATH, so `.mcp.json`'s `"command": "uv"` can't be
+found. Fix: replace `"uv"` in `.mcp.json`'s `command` with `uv`'s absolute path on
+that machine (`where uv` on Windows / `which uv` on macOS/Linux, e.g.
+`C:\Users\<you>\AppData\Local\Microsoft\WinGet\Packages\astral-sh.uv_...\uv.exe` for
+a winget install). That edit is machine-specific, so keep it local (uncommitted)
+rather than pushing your own path into the shared `.mcp.json`.
+
 **Tools** (`cell_mcp.py`, 13 total — docstrings are written as the model-facing schema,
 see the file itself for full argument docs):
 - `list_wells()` / `list_tracks(well, filters...)` — orientation, the `ls`.
