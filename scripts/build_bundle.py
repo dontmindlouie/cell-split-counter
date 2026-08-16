@@ -80,7 +80,7 @@ def frame_index_pairs(run_dir: Path) -> list[tuple[int, int]]:
     return pairs
 
 
-def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
+def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: str | None = None) -> dict:
     """Pull everything the bundle needs out of the ND2. Hard-fails on absence.
 
     Deliberately reads acquisition parameters (objective/NA/emission/bit depth)
@@ -134,8 +134,27 @@ def read_calibration(nd2_path: Path, raw_indices: list[int]) -> dict:
             display_color_rgb = [color.r, color.g, color.b] if color else None
             excitation_nm = getattr(ch.channel, "excitationLambdaNm", None)
             emission_nm = getattr(ch.channel, "emissionLambdaNm", None)
+        elif nucleus_channel is not None:
+            # Segmentation/intensity run on ONE selected channel (2026-08-14) --
+            # its own name/LUT/wavelength describe the image honestly, same as the
+            # n_channels==1 branch. Other channel(s) are display-only; noted in the
+            # name so a reader isn't misled into thinking this is a combined image.
+            names = [c.channel.name for c in f.metadata.channels]
+            matches = [i for i, n in enumerate(names) if nucleus_channel.lower() in (n or "").lower()]
+            if len(matches) != 1:
+                raise CalibrationError(
+                    f"{nd2_path.name}: nucleus_channel {nucleus_channel!r} matched "
+                    f"{len(matches)} of {names} (need exactly 1)")
+            idx = matches[0]
+            nuc_ch = f.metadata.channels[idx]
+            other = [n for i, n in enumerate(names) if i != idx]
+            color = getattr(nuc_ch.channel, "color", None)
+            channel_name = f"{names[idx]} (nucleus, segmentation+intensity source; display-only: {'+'.join(other)})"
+            display_color_rgb = [color.r, color.g, color.b] if color else None
+            excitation_nm = getattr(nuc_ch.channel, "excitationLambdaNm", None)
+            emission_nm = getattr(nuc_ch.channel, "emissionLambdaNm", None)
         else:
-            # Segmentation/intensity now run on a per-pixel max combine of all
+            # Segmentation/intensity run on a per-pixel max combine of all
             # channels (src/ingest.py, scripts/build_bundle.py write_labels_and_tracks,
             # 2026-08-03/04) -- no single channel's name/LUT/wavelength describes
             # the combined image honestly, so record the full list instead of
@@ -442,7 +461,7 @@ def write_lineage(run_dir: Path, out_run: Path) -> dict:
 
 def write_labels_and_tracks(
     run_dir: Path, out_run: Path, pairs: list[tuple[int, int]],
-    nd2_path: Path, cal: dict, bleach_curve: bool,
+    nd2_path: Path, cal: dict, bleach_curve: bool, nucleus_channel: str | None = None,
 ) -> tuple[dict, list[dict]]:
     """Re-encode label maps as PNG-16 and build the per-frame track table.
 
@@ -504,15 +523,26 @@ def write_labels_and_tracks(
 
     with nd2.ND2File(str(nd2_path)) as f:
         n_channels = f.sizes.get("C", 1)
+        nucleus_idx = None
+        if n_channels > 1 and nucleus_channel is not None:
+            names = [c.channel.name for c in f.metadata.channels]
+            matches = [i for i, n in enumerate(names) if nucleus_channel.lower() in (n or "").lower()]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"nucleus_channel {nucleus_channel!r} matched {len(matches)} of "
+                    f"{names} in {nd2_path.name} (need exactly 1)")
+            nucleus_idx = matches[0]
         # f.read_frame()'s flat sequence index does not follow simple t*C+c
         # arithmetic for multi-channel acquisitions (see the matching note in
         # src/ingest.py, confirmed 2026-08-03), and returns a (C, Y, X) array
         # instead of (Y, X) -- which crashed regionprops_table's shape check
         # against the 2D label mask for every multi-channel well (2026-08-04).
         # nd2.imread(dask=True) resolves T/C coordinates correctly instead.
-        # Channels are combined by raw per-pixel max (no percentile rescale,
-        # unlike the ingest display path) so intensity_mean stays in real ADU
-        # units for the bleach curve, at the cost of not being any single
+        # With nucleus_idx set (2026-08-14): intensity is measured on that ONE raw
+        # channel, so it's that marker's true signal, not a cross-channel max.
+        # Without it: channels are combined by raw per-pixel max (no percentile
+        # rescale, unlike the ingest display path) so intensity_mean stays in real
+        # ADU units for the bleach curve, at the cost of not being any single
         # marker's true signal at pixels where the other channel is brighter.
         t_arr = nd2.imread(str(nd2_path), dask=True) if n_channels > 1 else None
 
@@ -525,7 +555,7 @@ def write_labels_and_tracks(
 
             if n_channels > 1:
                 channels = np.asarray(t_arr[int(raw_idx)])  # (C, Y, X)
-                img = np.max(channels, axis=0)
+                img = channels[nucleus_idx] if nucleus_idx is not None else np.max(channels, axis=0)
             else:
                 img = np.array(f.read_frame(int(raw_idx)), copy=True)
 
@@ -609,6 +639,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run_dir", type=Path, help="a pipeline output run directory")
     ap.add_argument("--nd2", type=Path, required=True, help="source ND2 (read for calibration only)")
+    ap.add_argument("--nucleus-channel", type=str, default=None, help="multi-channel ND2 only: substring match against a channel name (e.g. AF555, AF647, mCherry). Must match the --nucleus-channel passed to main.py for this run, if any -- calibration/intensity are measured on that one channel instead of a max-projection of all channels.")
     ap.add_argument("--out", type=Path, default=Path("data/bundle"), help="bundle root")
     ap.add_argument("--candidates", type=Path, default=Path("data/candidates"),
                     help="where the detector's candidates.csv goes -- deliberately NOT "
@@ -636,7 +667,7 @@ def main() -> None:
     print(f"  frames: {len(pairs)}")
 
     try:
-        cal = read_calibration(args.nd2, [r for _, r in pairs])
+        cal = read_calibration(args.nd2, [r for _, r in pairs], nucleus_channel=args.nucleus_channel)
     except CalibrationError as exc:
         sys.exit(f"  CALIBRATION FAILED: {exc}\n  Refusing to write a bundle with fabricated units.")
     iv = cal["interval_ms"]
@@ -645,7 +676,8 @@ def main() -> None:
 
     print("  encoding labels + measuring tracks...")
     extra, rows = write_labels_and_tracks(
-        run_dir, out_run, pairs, args.nd2, cal, not args.no_intensity_curve
+        run_dir, out_run, pairs, args.nd2, cal, not args.no_intensity_curve,
+        nucleus_channel=args.nucleus_channel,
     )
 
     tracks_csv = out_run / "tracks.csv"

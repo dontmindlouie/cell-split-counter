@@ -17,6 +17,12 @@ class IngestConfig:
     video_path: Path
     frame_step: int  # take every Nth raw frame; acquisition rate is fixed by the microscope, not video fps
     roi: tuple[int, int, int, int] | None  # x, y, w, h; None = full frame
+    nucleus_channel: str | None = None  # multi-channel ND2 only: substring match against each
+    # channel's f.metadata.channels[i].channel.name (e.g. "AF555", "mCherry"). When set, THIS
+    # channel alone (not a max-projection of all channels) becomes the segmentation input --
+    # mixing in a membrane/actin/mito marker inflates the mask past the nucleus. The multi-color
+    # display composite still uses every channel regardless. None (default) keeps the old
+    # max-projection-of-all-channels behaviour, for reproducing pre-2026-08-14 bundles.
 
 
 def get_pixel_size_um(video_path: Path) -> float | None:
@@ -149,6 +155,7 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
     paths = []
     windows: list[list[tuple[float, float]]] = []  # one window per channel, per kept frame
     kept_index = 0
+    nucleus_channel_name = None  # set below on the multi-channel path, if config.nucleus_channel matched
     with nd2.ND2File(config.video_path) as f:
         n_channels = f.sizes.get("C", 1)
         if n_channels == 1:
@@ -175,6 +182,7 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
                 "channel_colors": channel_colors,
                 "channel_names": ([c.channel.name for c in f.metadata.channels]
                                    if n_channels > 1 else None),
+                "nucleus_channel_requested": config.nucleus_channel,
             })
         )
         read_display_color.cache_clear()  # out_dir may reuse a path from an earlier run
@@ -203,18 +211,36 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
             # nd2.imread(dask=True), which resolves T/C coordinates correctly and only
             # materializes the slice actually requested. Each channel is independently
             # percentile-rescaled to uint8 BEFORE combining (not after), so one
-            # channel's absolute intensity scale can't wash out a dimmer one -- then
-            # combined by per-pixel max, which keeps both markers' signal rather than
-            # averaging one down. This is not losslessly reversible to raw the way the
-            # single-channel path is, so the per-channel windows are recorded for
-            # provenance only, not as an inverse transform.
+            # channel's absolute intensity scale can't wash out a dimmer one.
+            #
+            # config.nucleus_channel set: segmentation input is THAT channel alone --
+            # reversible to raw the same way the single-channel path is (2026-08-14,
+            # see IngestConfig). config.nucleus_channel None: falls back to the old
+            # per-pixel max of all channels, which keeps both markers' signal but is
+            # NOT losslessly reversible, so the per-channel windows are provenance
+            # only there, not an inverse transform.
+            #
             # Display composite: each channel tinted with its OWN LUT color (not
             # segmentation's flat grayscale), combined by per-color-plane max so
             # both markers stay visible rather than one washing the other out.
             # Written to a SEPARATE display/ dir from the segmentation frame above
             # on purpose -- segment.py always reads frame_*.png as grayscale, so
             # keeping the composite out of that file means this display-only
-            # change cannot silently alter what Cellpose sees.
+            # change cannot silently alter what Cellpose sees. Uses every channel
+            # regardless of nucleus_channel, so the researcher still sees both markers.
+            channel_names = [c.channel.name for c in f.metadata.channels]
+            nucleus_idx = None
+            if config.nucleus_channel is not None:
+                matches = [i for i, n in enumerate(channel_names)
+                           if config.nucleus_channel.lower() in (n or "").lower()]
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"nucleus_channel {config.nucleus_channel!r} matched "
+                        f"{len(matches)} of {channel_names} in {config.video_path.name} "
+                        "(need exactly 1)")
+                nucleus_idx = matches[0]
+                nucleus_channel_name = channel_names[nucleus_idx]
+
             display_dir = out_dir / "display"
             any_color = channel_colors is not None and any(c is not None for c in channel_colors)
             if any_color:
@@ -234,7 +260,8 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
                     gray, window = _rescale_to_uint8(channels[c])
                     per_channel_gray.append(gray)
                     frame_windows.append(window)
-                frame_gray = np.maximum.reduce(per_channel_gray)
+                frame_gray = (per_channel_gray[nucleus_idx] if nucleus_idx is not None
+                              else np.maximum.reduce(per_channel_gray))
                 windows.append(frame_windows)
                 out_path = out_dir / f"frame_{kept_index:05d}_raw{raw_index:05d}.png"
                 cv2.imwrite(str(out_path), frame_gray)
@@ -256,12 +283,17 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
                 kept_index += 1
 
     (out_dir / _DISPLAY_WINDOW_FILENAME).write_text(json.dumps(
-        {"note": "per-frame, per-channel 0.5/99.5 percentile window(s) used to make the "
-                 "8-bit PNGs. Single-channel: raw ~= lo + png/255 * (hi - lo), so "
-                 "brightness is reversible. Multi-channel: each channel was rescaled "
-                 "independently then combined by per-pixel max, so the windows below "
-                 "are provenance only, not an inverse transform.",
+        {"note": ("per-frame, per-channel 0.5/99.5 percentile window(s) used to make the "
+                  "8-bit PNGs. Single-channel: raw ~= lo + png/255 * (hi - lo), so "
+                  "brightness is reversible. Multi-channel with a nucleus_channel selected: "
+                  "the segmentation frame is that one channel's own window, also reversible. "
+                  "Multi-channel with no nucleus_channel: channels were combined by per-pixel "
+                  "max, so the windows below are provenance only, not an inverse transform.")
+                 if n_channels > 1 else
+                 ("per-frame 0.5/99.5 percentile window used to make the 8-bit PNGs; "
+                  "raw ~= lo + png/255 * (hi - lo)."),
          "n_channels": n_channels,
+         "segmentation_channel": nucleus_channel_name,  # None = max-projection of all channels
          "windows": [[[round(lo, 2), round(hi, 2)] for lo, hi in frame_windows]
                      for frame_windows in windows]}))
     return paths
