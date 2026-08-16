@@ -4,6 +4,8 @@ follow_cells_over_time, and the family-resolution helper they share.
 Split out of the original single-file cell_mcp.py's "tools" section.
 """
 
+import itertools
+
 import numpy as np
 
 from .server import server, MAX_IMAGES, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN
@@ -342,31 +344,24 @@ def _resolve_family(well: str, track_ids: list[int],
 
 
 def _new_starts_near(
-    well: str, x0: float, y0: float, f0: int, a0: float,
-    before_min: float, after_min: float, radius_um: float | None,
-) -> tuple[list[int], dict[int, tuple[int, int]], float, int, int]:
-    """Tracks that BEGIN within a window around (x0, y0, f0) -- the candidate pool
-    list_nearby_tracks reports for a human to judge by hand, factored out so
-    resolve_division can judge it automatically with the same test.
+    first, last, um_px: float, x0: float, y0: float, r_um: float, lo: int, hi: int,
+) -> tuple[list[int], dict[int, tuple[int, int]]]:
+    """Track ids that BEGIN within [lo, hi] and within r_um of (x0, y0), plus their
+    spans -- the candidate pool list_nearby_tracks reports for a human to judge by
+    hand, factored out so resolve_division can judge it automatically with the
+    same test.
 
-    Returns (ids, spans, r_um, lo, hi).
+    `first`/`last` are this well's tracks.csv grouped by track_id
+    (`_tracks(well).sort_values("frame").groupby("track_id").first()`/`.last()`) --
+    passed in rather than recomputed here, since every caller already has them
+    (both callers also need the full sort+groupby for their own reporting).
     """
-    df = _cm._tracks(well)
-    um_px = _cm._manifest(well)["pixel_size_um"]
-    srt = df.sort_values("frame")
-    first = srt.groupby("track_id").first()
-    last = srt.groupby("track_id").last()
-
-    r_um = radius_um if radius_um else float(np.sqrt(max(a0, 1.0) / np.pi)) + _FAMILY_NEARBY_UM
     r_px = r_um / um_px
-    lo = _frame_at_offset_min(well, f0, -before_min)
-    hi = _frame_at_offset_min(well, f0, after_min)
-
     pool = first[(first.frame >= lo) & (first.frame <= hi)]
     near = pool[((pool.cx - x0) ** 2 + (pool.cy - y0) ** 2) <= r_px * r_px]
     ids = [int(t) for t in near.index]
     spans = {t: (int(first.loc[t, "frame"]), int(last.loc[t, "frame"])) for t in ids}
-    return ids, spans, r_um, lo, hi
+    return ids, spans
 
 
 @server.tool()
@@ -416,7 +411,9 @@ def resolve_division(
     if df.empty or track_id not in df.track_id.values:
         raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
 
+    um_px = _cm._manifest(well)["pixel_size_um"]
     srt = df.sort_values("frame")
+    first = srt.groupby("track_id").first()
     last = srt.groupby("track_id").last()
     has_area = "area_um2" in srt.columns
     med = srt.groupby("track_id").area_um2.median() if has_area else None
@@ -425,8 +422,10 @@ def resolve_division(
     f0 = int(last.loc[track_id, "frame"])
     a0 = float(med.loc[track_id]) if med is not None and track_id in med.index else 0.0
 
-    ids, spans, r_um, lo, hi = _new_starts_near(
-        well, x0, y0, f0, a0, before_min, after_min, radius_um)
+    r_um = radius_um if radius_um else float(np.sqrt(max(a0, 1.0) / np.pi)) + _FAMILY_NEARBY_UM
+    lo = _frame_at_offset_min(well, f0, -before_min)
+    hi = _frame_at_offset_min(well, f0, after_min)
+    ids, spans = _new_starts_near(first, last, um_px, x0, y0, r_um, lo, hi)
     ids = [t for t in ids if t != track_id]
 
     if not ids:
@@ -460,26 +459,31 @@ def resolve_division(
 
     # THE TEST: two candidates are siblings only if they COEXIST. A run of candidates
     # at one spot whose spans never overlap is one object being repeatedly
-    # re-acquired, not two daughters -- BeWo 969's exact failure mode.
-    def _coexist(a: int, b: int) -> bool:
+    # re-acquired, not two daughters -- BeWo 969's exact failure mode. Union-find
+    # over every coexisting pair, one pass, rather than repeatedly rescanning the
+    # cluster list from scratch after each merge.
+    parent = {t: t for t in ids}
+
+    def _find(t: int) -> int:
+        while parent[t] != t:
+            parent[t] = parent[parent[t]]
+            t = parent[t]
+        return t
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for a, b in itertools.combinations(ids, 2):
         (a_lo, a_hi), (b_lo, b_hi) = spans[a], spans[b]
-        return a_lo <= b_hi and b_lo <= a_hi
+        if a_lo <= b_hi and b_lo <= a_hi:
+            _union(a, b)
 
-    clusters: list[list[int]] = [[t] for t in ids]
-    merged = True
-    while merged:
-        merged = False
-        for i in range(len(clusters)):
-            for j in range(i + 1, len(clusters)):
-                if any(_coexist(a, b) for a in clusters[i] for b in clusters[j]):
-                    clusters[i] = clusters[i] + clusters[j]
-                    del clusters[j]
-                    merged = True
-                    break
-            if merged:
-                break
-
-    siblings = [c for c in clusters if len(c) >= 2]
+    groups: dict[int, list[int]] = {}
+    for t in ids:
+        groups.setdefault(_find(t), []).append(t)
+    siblings = [g for g in groups.values() if len(g) >= 2]
     if not siblings:
         return (
             f"{well} track {track_id}: {len(ids)} candidate(s) start nearby "
@@ -599,9 +603,8 @@ def list_nearby_tracks(
     hi = _frame_at_offset_min(well, f0, after_min)
 
     if new_only:
-        pool = first[(first.frame >= lo) & (first.frame <= hi)]
-        near = pool[((pool.cx - x0) ** 2 + (pool.cy - y0) ** 2) <= r_px * r_px]
-        ids = [int(t) for t in near.index if t != tid]
+        ids_new, _ = _new_starts_near(first, last, um_px, x0, y0, r_um, lo, hi)
+        ids = [t for t in ids_new if t != tid]
     else:
         win = df[(df.frame >= lo) & (df.frame <= hi)]
         win = win[((win.cx - x0) ** 2 + (win.cy - y0) ** 2) <= r_px * r_px]

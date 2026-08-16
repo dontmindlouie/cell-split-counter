@@ -144,7 +144,8 @@ _STALE_SNAP_MIN = 45.0
 
 
 @server.tool()
-def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float) -> str:
+def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float,
+                          stale_snap_min: float = _STALE_SNAP_MIN) -> str:
     """Turn one row of a Fiji AutoMeasure Results table into a track_id, so a
     researcher who spotted something interesting scanning the raw .nd2 by eye can
     hand it straight to you instead of hand-converting units and off-by-one frames
@@ -195,6 +196,12 @@ def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float) -> str
             Fiji -- do not adjust it first.
         x, y: the Fiji X/Y values, exactly as shown in the Results table or status
             bar -- do not convert units first.
+        stale_snap_min: how long (minutes) a snapped track may have been running
+            before the clicked frame before this flags it as possibly idling
+            rather than the thing that happened here. Same reasoning as
+            list_nearby_tracks/resolve_division's before_min/after_min windows --
+            overridable per well rather than a fixed cutoff, since acquisition
+            cadence and typical mitosis duration both vary by cell line.
     """
     m = _cm._manifest(well)
     n_frames = int(m["n_frames"])
@@ -217,7 +224,8 @@ def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float) -> str
                 f"frame at all -- empty frame in tracks.csv, or wrong well/frame?")
 
     candidates.sort(key=lambda c: c[1][1])
-    (best_label, (best_id, best_dist)), *rest = candidates
+    best_label, (best_id, best_dist) = candidates[0]
+    rest = candidates[1:]
     same_track = len(rest) == 1 and rest[0][1][0] == best_id
 
     lines = [f"{well} f{frame} (Fiji frame {fiji_frame}, x={x}, y={y}):"]
@@ -260,7 +268,7 @@ def resolve_fiji_sighting(well: str, fiji_frame: int, x: float, y: float) -> str
             if t_start < frame:
                 age_min = _cm._minutes_between(well, t_start, frame)
                 has_parent = (lin.get(best_id) or {}).get("parent") is not None
-                if age_min > _STALE_SNAP_MIN:
+                if age_min > stale_snap_min:
                     lines.append(
                         f"  CHECK BEFORE TRUSTING THIS SNAP: track {best_id} has been "
                         f"running since f{t_start}, {age_min:.0f} min before the clicked "

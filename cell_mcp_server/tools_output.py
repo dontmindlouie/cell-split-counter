@@ -151,24 +151,18 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                     f"events[{i}] uses x/y and needs start_frame and end_frame too -- "
                     f"there is no track lifetime to default a window from: {ev!r}")
             mx = ev.get("max_images")
-            header, thumb_images = _cm._fixed_point_frames(
-                well, int(ev["start_frame"]), int(ev["end_frame"]),
-                float(ev["x"]), float(ev["y"]), None,
+            common = dict(
                 max_images=None if mx is None else int(mx),
                 crop_um=float(ev.get("crop_um", 90.0)),
                 color=True, scale_bar=True,
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,
             )
+            args = (well, int(ev["start_frame"]), int(ev["end_frame"]),
+                    float(ev["x"]), float(ev["y"]), None)
+            header, thumb_images = _cm._fixed_point_frames(*args, **common)
             _, lb_images = _cm._fixed_point_frames(
-                well, int(ev["start_frame"]), int(ev["end_frame"]),
-                float(ev["x"]), float(ev["y"]), None,
-                max_images=None if mx is None else int(mx),
-                crop_um=float(ev.get("crop_um", 90.0)),
-                color=True, scale_bar=True,
-                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
-                cap=MAX_IMAGES_PAGE, upscale_to=_FIGURE_UPSCALE_TO,
-            )
+                *args, **common, upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"({ev['x']:.0f}, {ev['y']:.0f})"
         elif "track_ids" in ev:
             members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])

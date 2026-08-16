@@ -693,8 +693,12 @@ def _family_filmstrip_frames(
         # out BeWo 1893 -- f480-497, the surviving daughter and the only member that
         # carried the outcome -- for being the smallest object in the set. The member
         # you cannot afford to lose is the one that is still there at the end.
+        # cx/cy medians ride along on this same groupby so the far-member spatial
+        # check below (guarded by `if dropped`, so only reached when this branch
+        # ran) does not pay for a second full groupby over `win` just for them.
         rank = (win.groupby("track_id")
-                .agg(n=("frame", "size"), a=("area_px", "median"))
+                .agg(n=("frame", "size"), a=("area_px", "median"),
+                     cx=("cx", "median"), cy=("cy", "median"))
                 .sort_values(["n", "a"], ascending=False))
         kept = [int(t) for t in rank.index[:_FAMILY_MAX_MEMBERS]]
         dropped = [t for t in ids if t not in kept]
@@ -804,8 +808,7 @@ def _family_filmstrip_frames(
         # wide, it is not sharing a scene with the rest of the set; say so rather
         # than let the reader discover it by watching the crop jump.
         if len(kept) > 1:
-            med_pos = {t: (float(g.cx.median()), float(g.cy.median()))
-                       for t, g in win.groupby("track_id")}
+            med_pos = {t: (float(rank.loc[t, "cx"]), float(rank.loc[t, "cy"])) for t in kept}
             far = [t for t in kept if min(
                 float(np.hypot(med_pos[t][0] - med_pos[u][0],
                                med_pos[t][1] - med_pos[u][1])) * um_px
