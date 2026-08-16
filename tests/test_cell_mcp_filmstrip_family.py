@@ -129,6 +129,37 @@ def test_a_mostly_held_strip_says_so_before_the_images_are_spent(fake):
     assert "re-centre" in header or "cut after_min" in header
 
 
+def test_auto_window_does_not_run_far_past_a_fully_known_member_set(fake):
+    """2026-08-16 feedback: with the real default after_min=180 (the forward-heavy
+    reach that exists to SEARCH for a daughter that hasn't appeared yet), a member
+    set where every member is already known and has already ended -- a mother plus
+    her two recorded daughters, same as here -- rendered 44% pure HELD tail past
+    where the last member ends (verified on ACTB track 2->387+388). The window
+    should stop reaching forward once there is nothing left in the set to find,
+    not continue at the full discovery-search horizon."""
+    header, _ = _strip(fake, [1, 2, 3], after_min=180.0)
+    lo, hi = _window(header)
+    assert hi == 25, "last member (2, 3) ends at f19; clipped to +30min = +6 frames"
+    assert "WARNING" not in header
+
+
+def test_auto_window_clip_does_not_apply_to_a_lone_mother_still_being_searched(fake):
+    """A single member (no recorded daughters yet) is exactly the discovery case
+    the wide forward reach exists for -- the clip must not shrink it, since there
+    is nothing yet to have "already ended"."""
+    header, _ = _strip(fake, [1], after_min=180.0)
+    lo, hi = _window(header)
+    assert hi > 25, "a lone mother's search window must not be clipped like a known set's"
+
+
+def test_auto_window_clip_does_not_override_an_explicit_end_frame(fake):
+    """Passing end_frame is the documented escape hatch for looking further than a
+    known member's own lifetime on purpose -- the clip must never second-guess it."""
+    header, _ = _strip(fake, [1, 2, 3], start_frame=0, end_frame=39, after_min=180.0)
+    lo, hi = _window(header)
+    assert hi == 39
+
+
 def test_it_names_the_tracks_that_would_fill_a_held_strip(fake, monkeypatch):
     """The daughters the tracker never linked are the usual reason a strip goes HELD,
     and they are sitting right there in the crop. Naming them turns a dead render into

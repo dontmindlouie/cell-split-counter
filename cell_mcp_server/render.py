@@ -527,6 +527,12 @@ def _fixed_point_frames(
 
 _FAMILY_MAX_MEMBERS = 6
 
+# How far past a fully-known member set's own last frame to keep rendering, once
+# there's nothing left in the set to show -- a handful of confirmation frames of
+# the settled daughters, not the full forward-discovery horizon (_WINDOW_AFTER_MIN,
+# ~180 min) that exists to search for a daughter that might not have appeared yet.
+_FAMILY_TAIL_BUFFER_MIN = 30.0
+
 
 def _resolve_family_centres(
     win, pos: dict[int, list], picks: list[int],
@@ -671,6 +677,21 @@ def _family_filmstrip_frames(
           if start_frame is None else max(0, int(start_frame)))
     hi = (_frame_at_offset_min(well, transition, after_min)
           if end_frame is None else min(n_frames - 1, int(end_frame)))
+    # Once the full cast is already known (2+ members -- not a lone mother still
+    # being searched for a daughter, which is exactly the case the forward-heavy
+    # after_min above exists for) and every member's own span already ends well
+    # before the auto window's forward edge, the frames past that point are pure
+    # HELD -- a frozen crop of nothing. On ACTB track 2->387+388 (2026-08-16),
+    # 23 of 52 rendered frames (44%) were this empty tail past f104, while the
+    # actual division (f88-104) got only 8; shrinking the window here instead
+    # gives every one of the (now fewer) picks below meaningful content, at the
+    # SAME target stride_min, rather than diluting them across a mostly-empty
+    # window. Only touches the auto path -- pass end_frame explicitly to look
+    # further than a known member's own lifetime on purpose.
+    known = [t for t in ids if t in spans]
+    if end_frame is None and len(known) > 1:
+        last_end = max(spans[t][1] for t in known)
+        hi = min(hi, _frame_at_offset_min(well, last_end, _FAMILY_TAIL_BUFFER_MIN))
     if hi < lo:
         raise ValueError(f"empty range: resolves to {lo}-{hi}; {well} has 0-{n_frames - 1}.")
 
