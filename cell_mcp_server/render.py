@@ -419,6 +419,112 @@ def _filmstrip_frames(
     return header, images
 
 
+def _nearest_detection(well: str, frame: int, x: float, y: float,
+                       exclude: int | None = None) -> tuple[int, float] | None:
+    """(track_id, distance_um) of the closest tracked cell to a point in one frame.
+
+    `exclude` drops one id from the search -- in anchor mode the anchor is always
+    nearest to itself at 0.0 um, which says nothing; the useful answer is what ELSE
+    is near the place being watched.
+    """
+    df = _cm._tracks(well)
+    f = df[df.frame == frame]
+    if exclude is not None:
+        f = f[f.track_id != exclude]
+    if f.empty:
+        return None
+    d = np.hypot(f.cx.to_numpy() - x, f.cy.to_numpy() - y)
+    i = int(np.argmin(d))
+    return int(f.track_id.iloc[i]), float(d[i]) * _cm._manifest(well)["pixel_size_um"]
+
+
+def _fixed_point_frames(
+    well: str,
+    start_frame: int, end_frame: int,
+    x: float | None, y: float | None,
+    anchor_track_id: int | None,
+    *,
+    max_images: int | None, crop_um: float,
+    color: bool, scale_bar: bool,
+    stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
+    upscale_to: int = _UPSCALE_TO,
+) -> tuple[str, list[np.ndarray]]:
+    """Shared by watch_location_over_time (MCP images) and show_cells_in_browser (HTML page).
+
+    Crop on a PLACE (or a neighbour's track, as a stable vantage point) rather than
+    a mask -- see watch_location_over_time's docstring for the semantics; this is
+    that function's body with the ImageContent encoding split off so a second caller
+    can embed the same pixels differently, same split as _filmstrip_frames above.
+    """
+    m = _cm._manifest(well)
+    n_frames = int(m["n_frames"])
+    lo, hi = max(0, int(start_frame)), min(n_frames - 1, int(end_frame))
+    if hi < lo:
+        raise ValueError(f"empty range {start_frame}-{end_frame}; {well} has 0-{n_frames - 1}.")
+
+    anchor_pos: dict[int, tuple[float, float]] = {}
+    if anchor_track_id is not None:
+        t = _cm._tracks(well)
+        t = t[t.track_id == anchor_track_id]
+        if t.empty:
+            raise ValueError(f"anchor track {anchor_track_id} not found in {well}.")
+        anchor_pos = {int(r.frame): (float(r.cx), float(r.cy)) for r in t.itertuples()}
+        known = sorted(anchor_pos)
+    elif x is None or y is None:
+        raise ValueError("give either x and y (full-frame pixels), or anchor_track_id.")
+
+    def _centre(f: int) -> tuple[float, float]:
+        if anchor_track_id is None:
+            return float(x), float(y)
+        if f in anchor_pos:
+            return anchor_pos[f]
+        nf = min(known, key=lambda k: abs(k - f))
+        return anchor_pos[nf]
+
+    avail = list(range(lo, hi + 1))
+    picks, pick_note = _pick_frames(well, avail, max_images, cap, stride_min)
+
+    um_px = m["pixel_size_um"]
+    half = max(8, int(round(crop_um / um_px / 2)))
+
+    where = (f"anchored on track {anchor_track_id}" if anchor_track_id is not None
+             else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
+    spec = (f"{well}: frames {lo}-{hi} ({_minutes_between(well, lo, hi):.0f} min), "
+            f"{pick_note}, {where}. Crop {crop_um:g} um wide.")
+    gen = (
+        "This is a PLACE, not a tracked object -- nothing is ringed, because a ring "
+        "would claim a detection that was never made. The yellow crosshair marks WHERE "
+        "YOU ASKED to look. Each frame's label also names the NEAREST tracked cell and "
+        "how far its centre sits from the crosshair (only when closer than the crop is "
+        "wide) -- that is the nearest cell, not necessarily the thing at the crosshair, "
+        "which may be untracked or nothing at all. A nearest cell many microns away "
+        "means the thing at this position is not tracked, which is the usual reason to "
+        "be here. Distances are centre-to-centre, so a large nucleus can read several "
+        "microns away while still overlapping the point. Time is elapsed hours from the "
+        "start of the recording." + _display_note(well)
+    )
+    header = spec + _HDR_SEP + gen
+
+    images: list[np.ndarray] = []
+    for f in picks:
+        ccx, ccy = _centre(int(f))
+        tile = _crop_tile(well, int(f), ccx, ccy, half, color, upscale_to=upscale_to)
+        if tile is None:
+            continue
+        img = tile.img
+        cxp, cyp = int(tile.cx), int(tile.cy)
+        for dx0, dx1 in ((-12, -5), (5, 12)):
+            cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
+
+        near = _nearest_detection(well, int(f), ccx, ccy, exclude=anchor_track_id)
+        corner = (f"~{near[0]} @{near[1]:.0f}um"
+                  if near is not None and near[1] < crop_um else None)
+        label = f"f{int(f)} t={_cm._elapsed_str(well, int(f))} @({ccx:.0f}, {ccy:.0f})"
+        images.append(_stamp_tile(tile, label, um_px, scale_bar, corner=corner))
+    return header, images
+
+
 _FAMILY_MAX_MEMBERS = 6
 
 
@@ -690,6 +796,30 @@ def _family_filmstrip_frames(
         spec.append(f"{len(dropped)} further member(s) were dropped to keep the centre "
                     f"stable ({', '.join(str(t) for t in dropped)}); the {len(kept)} "
                     f"kept are the longest-lived over this window.")
+        # 2026-08-15 feedback: "8 further member(s) were dropped..." retained a
+        # long-persisting but spatially-unrelated track while dropping the short
+        # connecting fragments that actually told the story -- a crop that visibly
+        # jumps between unrelated objects, with nothing above explaining why. If a
+        # KEPT member sits farther from every other kept member than the crop is
+        # wide, it is not sharing a scene with the rest of the set; say so rather
+        # than let the reader discover it by watching the crop jump.
+        if len(kept) > 1:
+            med_pos = {t: (float(g.cx.median()), float(g.cy.median()))
+                       for t, g in win.groupby("track_id")}
+            far = [t for t in kept if min(
+                float(np.hypot(med_pos[t][0] - med_pos[u][0],
+                               med_pos[t][1] - med_pos[u][1])) * um_px
+                for u in kept if u != t) > crop_um]
+            if far:
+                spec.append(
+                    f"WARNING: {', '.join(str(t) for t in far)} "
+                    f"{'sits' if len(far) == 1 else 'sit'} farther from every other "
+                    f"kept member than the crop is wide -- the crop below will jump "
+                    f"between unrelated objects rather than show one coherent scene. "
+                    f"Consider dropping {'it' if len(far) == 1 else 'them'} by hand "
+                    f"instead: pass a track_ids list that leaves "
+                    f"{'it' if len(far) == 1 else 'them'} out."
+                )
     if absent:
         spec.append(f"{', '.join(str(t) for t in absent)} "
                     f"{'is' if len(absent) == 1 else 'are'} not present anywhere in "
@@ -776,4 +906,5 @@ __all__ = [
     "_WALK_MAX_GAP_DIST", "_WALK_MAX_GAP_FRAMES", "_label_img", "_blob_centroids",
     "_walk_positions", "_filmstrip_frames", "_FAMILY_MAX_MEMBERS",
     "_resolve_family_centres", "_family_filmstrip_frames",
+    "_nearest_detection", "_fixed_point_frames",
 ]

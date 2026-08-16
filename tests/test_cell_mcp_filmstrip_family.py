@@ -177,6 +177,36 @@ def test_unknown_ids_are_reported_rather_than_silently_ignored(fake):
     assert "NOT FOUND" in header and "999" in header
 
 
+def test_a_kept_member_far_from_the_rest_is_flagged(fake, monkeypatch):
+    """2026-08-15 feedback: dropping the SHORTEST members by lifetime can retain a
+    long-persisting but spatially-unrelated track while dropping the short
+    connecting fragments that actually told the story, producing a crop that
+    visibly jumps between unrelated objects. Six long-lived members (1-6) get
+    kept over two short ones (7, 8); member 6 sits thousands of microns from the
+    rest and must be called out rather than discovered by watching the crop jump."""
+    rows = [{"track_id": t, "frame": f, "cx": 100.0 + t, "cy": 100.0,
+             "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0}
+            for t in range(1, 6) for f in range(10)]
+    rows += [{"track_id": 6, "frame": f, "cx": 5000.0, "cy": 100.0,
+              "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0}
+             for f in range(10)]
+    rows += [{"track_id": t, "frame": f, "cx": 100.0 + t, "cy": 100.0,
+              "area_px": 200.0, "n_masks_in_frame": 1, "intensity_mean": 100.0}
+             for t in (7, 8) for f in range(2)]
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
+    header, _ = _strip(fake, list(range(1, 9)), start_frame=0, end_frame=9)
+    assert "dropped to keep the centre stable" in header
+    assert "WARNING: 6" in header
+    assert "farther from every other kept member than the crop is wide" in header
+
+
+def test_kept_members_all_close_together_are_not_flagged(fake):
+    """The far-member warning is conditioned on there being a drop -- a small,
+    spatially coherent set (this fixture's normal case) must stay silent."""
+    header, _ = _strip(fake, [1, 2, 3])
+    assert "farther from every other kept member" not in header
+
+
 def test_all_members_are_missing_is_an_error_not_an_empty_strip(fake):
     with pytest.raises(ValueError, match="none of"):
         _strip(fake, [777, 888])

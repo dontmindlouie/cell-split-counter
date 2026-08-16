@@ -70,3 +70,12 @@ def test_rejects_an_unknown_anchor_track(fake):
 def test_rejects_an_inverted_range(fake):
     with pytest.raises(ValueError, match="empty range"):
         cell_mcp_server.watch_location_over_time(fake, start_frame=5, end_frame=1, x=1.0, y=1.0)
+
+
+def test_default_crop_is_wide_enough_to_keep_a_neighbour_in_frame():
+    """2026-08-15 feedback: the old 45um default cropped a stable neighbour nucleus
+    out of frame (or to a bare edge sliver), which was mistaken for the dividing
+    cell. 90um was confirmed directly to keep it fully visible."""
+    import inspect
+    default = inspect.signature(cell_mcp_server.watch_location_over_time).parameters["crop_um"].default
+    assert default >= 70.0

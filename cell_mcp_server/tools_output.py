@@ -95,8 +95,19 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 A single id here expands to that track plus its recorded daughters,
                 the window defaults to 30 min before / 90 min after the membership
                 transition (`before_min`/`after_min` keys), and crop_um defaults to
-                auto-fit rather than 60.
-            start_frame, end_frame (optional): as in follow_cells_over_time -- may fall outside
+                auto-fit rather than 60, OR
+            x, y (both required together): a fixed PLACE, rendered as
+                watch_location_over_time(x=..., y=...) does it -- no mask, no
+                re-centring, just the raw clicked/reported point. Use this for a
+                researcher's raw coordinate before it has been snapped to a track,
+                or for anything the segmenter never caught. start_frame and
+                end_frame are REQUIRED with x/y (there is no track lifetime to
+                default a window from). crop_um defaults to 90.0, wider than the
+                track_id default, because a fixed point has no re-centring to save
+                it if the crop is too tight and something relevant drifts to the
+                edge.
+            start_frame, end_frame (optional with track_id/track_ids, REQUIRED with
+                x/y): as in follow_cells_over_time -- may fall outside
                 the track's own lifetime, e.g. to show a division just past its end.
             label (optional): a short heading, e.g. "2036 -- divides, pro/meta/ana
                 309/319/321". Defaults to "track <track_id>".
@@ -130,9 +141,36 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     lb_data = []
     nav_items = []
     for i, ev in enumerate(events):
-        if "track_id" not in ev and "track_ids" not in ev:
-            raise ValueError(f"events[{i}] needs 'track_id' or 'track_ids': {ev!r}")
-        if "track_ids" in ev:
+        if "track_id" not in ev and "track_ids" not in ev and "x" not in ev and "y" not in ev:
+            raise ValueError(f"events[{i}] needs 'track_id', 'track_ids', or 'x'/'y': {ev!r}")
+        if "x" in ev or "y" in ev:
+            if "x" not in ev or "y" not in ev:
+                raise ValueError(f"events[{i}] gave only one of x/y -- both are required: {ev!r}")
+            if ev.get("start_frame") is None or ev.get("end_frame") is None:
+                raise ValueError(
+                    f"events[{i}] uses x/y and needs start_frame and end_frame too -- "
+                    f"there is no track lifetime to default a window from: {ev!r}")
+            mx = ev.get("max_images")
+            header, thumb_images = _cm._fixed_point_frames(
+                well, int(ev["start_frame"]), int(ev["end_frame"]),
+                float(ev["x"]), float(ev["y"]), None,
+                max_images=None if mx is None else int(mx),
+                crop_um=float(ev.get("crop_um", 90.0)),
+                color=True, scale_bar=True,
+                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
+                cap=MAX_IMAGES_PAGE,
+            )
+            _, lb_images = _cm._fixed_point_frames(
+                well, int(ev["start_frame"]), int(ev["end_frame"]),
+                float(ev["x"]), float(ev["y"]), None,
+                max_images=None if mx is None else int(mx),
+                crop_um=float(ev.get("crop_um", 90.0)),
+                color=True, scale_bar=True,
+                stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
+                cap=MAX_IMAGES_PAGE, upscale_to=_FIGURE_UPSCALE_TO,
+            )
+            label = ev.get("label") or f"({ev['x']:.0f}, {ev['y']:.0f})"
+        elif "track_ids" in ev:
             members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])
             crop = ev.get("crop_um")
             mx = ev.get("max_images")
@@ -231,14 +269,16 @@ details.howto {{ color: #888; font-size: 0.82rem; max-width: 60rem; margin-botto
 details.howto summary {{ cursor: pointer; color: #7aa7d0; }}
 html {{ scroll-behavior: smooth; }}
 section {{ scroll-margin-top: 3.2rem; }}
-nav.track-nav {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 0.4rem;
-  overflow-x: auto; background: #111; border-bottom: 1px solid #333; padding: 0.6rem 0; margin-bottom: 0.5rem; }}
-nav.track-nav a {{ flex: 0 0 auto; color: #7aa7d0; font-size: 0.78rem; white-space: nowrap;
-  text-decoration: none; border: 1px solid #333; border-radius: 4px; padding: 0.25rem 0.6rem; }}
-nav.track-nav a:hover {{ background: #1d2a35; }}
-div.view-controls {{ flex: 0 0 auto; display: flex; align-items: center; gap: 0.9rem;
-  margin-left: auto; padding-left: 0.8rem; border-left: 1px solid #333; font-size: 0.78rem; color: #aaa; }}
+nav.track-nav {{ position: sticky; top: 0; z-index: 10; background: #111;
+  border-bottom: 1px solid #333; padding: 0.6rem 0; margin-bottom: 0.5rem; }}
+div.view-controls {{ display: flex; align-items: center; gap: 0.9rem;
+  padding: 0 0 0.5rem; margin-bottom: 0.5rem; border-bottom: 1px solid #222;
+  font-size: 0.78rem; color: #aaa; }}
 div.view-controls label {{ display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; cursor: pointer; }}
+div.chip-row {{ display: flex; align-items: center; gap: 0.4rem; overflow-x: auto; }}
+div.chip-row a {{ flex: 0 0 auto; color: #7aa7d0; font-size: 0.78rem; white-space: nowrap;
+  text-decoration: none; border: 1px solid #333; border-radius: 4px; padding: 0.25rem 0.6rem; }}
+div.chip-row a:hover {{ background: #1d2a35; }}
 div.filmstrip {{ display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; }}
 div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
 /* The frame/time/coord label (top) and scale bar (bottom) are burned into the PNG
@@ -262,9 +302,12 @@ body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
 .lightbox-nav.next {{ right: 16px; }}
 </style></head><body>
 <h1>{well}</h1>
-<nav class="track-nav">{nav_html}<div class="view-controls">
+<nav class="track-nav">
+<div class="view-controls">
   <label><input type="checkbox" id="figureCtl" onchange="document.body.classList.toggle('figure-mode', this.checked)"> hide labels + scale bar (figures)</label>
-</div></nav>
+</div>
+<div class="chip-row">{nav_html}</div>
+</nav>
 {note_html}
 {shared_html}
 {''.join(sections)}

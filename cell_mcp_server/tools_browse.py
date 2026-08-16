@@ -444,7 +444,9 @@ def get_lineage(well: str, track_id: int) -> str:
         return (f"No lineage.csv in this bundle for {well}, so mother/daughter links are "
                 f"unavailable. You can still follow a cell past the end of its track: "
                 f"follow_cells_over_time accepts start_frame/end_frame outside the track's lifetime "
-                f"and will render those frames as OFF-TRACK.")
+                f"and will render those frames as OFF-TRACK. resolve_division(track_id={track_id}) "
+                f"and resolve_lineage_chain(track_id={track_id}) both work without lineage.csv too "
+                f"-- they resolve real splits and id hops from tracks.csv geometry alone.")
 
     cov = _cm._manifest(well).get("lineage", {}).get("coverage", "unknown")
     df = _cm._tracks(well)
@@ -506,7 +508,10 @@ def get_lineage(well: str, track_id: int) -> str:
             lines.append(f"    {d} ({_span(d)})")
             lines.extend(_quality(lin.get(d, {})))
     else:
-        lines.append("  daughters none recorded")
+        lines.append(f"  daughters none recorded -- try resolve_division(track_id={track_id}) "
+                      f"to check for a real split lineage.csv never linked, or "
+                      f"resolve_lineage_chain(track_id={track_id}) if this track's own id just "
+                      f"wobbles and comes back rather than dividing.")
 
     if cov == "partial":
         lines.append(

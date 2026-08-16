@@ -4,12 +4,11 @@ follow_cells_over_time, and the family-resolution helper they share.
 Split out of the original single-file cell_mcp.py's "tools" section.
 """
 
-import cv2
 import numpy as np
 
 from .server import server, MAX_IMAGES, _WINDOW_BEFORE_MIN, _WINDOW_AFTER_MIN, _STRIDE_MIN
 from .io import _frame_at_offset_min, _minutes_between
-from .render import _crop_tile, _stamp_tile, _encode, _display_note
+from .render import _encode, _nearest_detection
 
 import cell_mcp_server as _cm
 
@@ -20,25 +19,6 @@ _FAMILY_NEARBY_UM = 14.0
 _FAMILY_NEARBY_BEFORE_MIN = 15.0
 _FAMILY_NEARBY_AFTER_MIN = 75.0
 
-def _nearest_detection(well: str, frame: int, x: float, y: float,
-                       exclude: int | None = None) -> tuple[int, float] | None:
-    """(track_id, distance_um) of the closest tracked cell to a point in one frame.
-
-    `exclude` drops one id from the search -- in anchor mode the anchor is always
-    nearest to itself at 0.0 um, which says nothing; the useful answer is what ELSE
-    is near the place being watched.
-    """
-    df = _cm._tracks(well)
-    f = df[df.frame == frame]
-    if exclude is not None:
-        f = f[f.track_id != exclude]
-    if f.empty:
-        return None
-    d = np.hypot(f.cx.to_numpy() - x, f.cy.to_numpy() - y)
-    i = int(np.argmin(d))
-    return int(f.track_id.iloc[i]), float(d[i]) * _cm._manifest(well)["pixel_size_um"]
-
-
 @server.tool(structured_output=False)
 def watch_location_over_time(
     well: str,
@@ -48,7 +28,7 @@ def watch_location_over_time(
     y: float | None = None,
     anchor_track_id: int | None = None,
     max_images: int = 8,
-    crop_um: float = 45.0,
+    crop_um: float = 90.0,
     color: bool = True,
     scale_bar: bool = True,
 ) -> list:
@@ -88,96 +68,21 @@ def watch_location_over_time(
             useful as a stable vantage on a neighbour. Where the anchor is missing
             from a frame, its closest known position is used.
         max_images: how many frames to show (hard capped at 12).
-        crop_um: crop width in micrometres.
+        crop_um: crop width in micrometres. Defaults wide (90) so a neighbour
+            cell doesn't fall out of frame or shrink to a sliver at the edge --
+            narrow this only once you already know what's nearby.
         color: apply the microscope's own display colour.
         scale_bar: burn in a labelled scale bar.
     """
     from mcp.types import TextContent
 
-    m = _cm._manifest(well)
-    n_frames = int(m["n_frames"])
-    lo, hi = max(0, int(start_frame)), min(n_frames - 1, int(end_frame))
-    if hi < lo:
-        raise ValueError(f"empty range {start_frame}-{end_frame}; {well} has 0-{n_frames - 1}.")
-
-    anchor_pos: dict[int, tuple[float, float]] = {}
-    if anchor_track_id is not None:
-        t = _cm._tracks(well)
-        t = t[t.track_id == anchor_track_id]
-        if t.empty:
-            raise ValueError(f"anchor track {anchor_track_id} not found in {well}.")
-        anchor_pos = {int(r.frame): (float(r.cx), float(r.cy)) for r in t.itertuples()}
-        known = sorted(anchor_pos)
-    elif x is None or y is None:
-        raise ValueError("give either x and y (full-frame pixels), or anchor_track_id.")
-
-    def _centre(f: int) -> tuple[float, float]:
-        if anchor_track_id is None:
-            return float(x), float(y)
-        if f in anchor_pos:
-            return anchor_pos[f]
-        # Nearest frame the anchor was actually seen in.
-        nf = min(known, key=lambda k: abs(k - f))
-        return anchor_pos[nf]
-
-    avail = list(range(lo, hi + 1))
-    n = min(max_images, MAX_IMAGES, len(avail))
-    picks = [avail[i] for i in np.linspace(0, len(avail) - 1, n).astype(int)]
-
-    um_px = m["pixel_size_um"]
-    half = max(8, int(round(crop_um / um_px / 2)))
-
-    where = (f"anchored on track {anchor_track_id}" if anchor_track_id is not None
-             else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
-    # The corner label is the one mark in this toolset a reader cannot decode from the
-    # image: a session once grepped cell_mcp.py's source to find out what "~2362 @6um"
-    # meant. It is burned in so a frame stays identified if it gets separated from this
-    # text, which only works if the text says how to read it.
-    lines = [f"{well}: frames {lo}-{hi}, showing {n} of {len(avail)}, {where}. "
-             f"Crop {crop_um:g} um wide. The yellow crosshair marks WHERE YOU ASKED to "
-             f"look -- nothing is ringed, because this is a place, not a tracked object, "
-             f"and a ring would imply something was detected there. The bottom-left label "
-             f"reads \"~<track_id> @<distance>um\": the NEAREST tracked cell to the "
-             f"crosshair and how far its centre sits from it -- not the thing at the "
-             f"crosshair, which may be untracked or nothing at all. It is only drawn when "
-             f"that cell is closer than the crop is wide, so a blank corner means nothing "
-             f"tracked is even in view. Nearest tracked cell per frame:"]
-
-    images: list[np.ndarray] = []
-    for f in picks:
-        ccx, ccy = _centre(int(f))
-        tile = _crop_tile(well, int(f), ccx, ccy, half, color)
-        if tile is None:
-            continue
-        img = tile.img
-        # A crosshair, not a ring: it marks where you asked to look, and must not
-        # imply that something was detected there. Gapped in the middle so it never
-        # covers the chromatin being judged.
-        cxp, cyp = int(tile.cx), int(tile.cy)
-        for dx0, dx1 in ((-12, -5), (5, 12)):
-            cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
-            cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
-
-        near = _nearest_detection(well, int(f), ccx, ccy, exclude=anchor_track_id)
-        if near is None:
-            note = "no tracked cell in this frame"
-        else:
-            tid, dum = near
-            note = f"track {tid}, {dum:.1f} um away"
-        lines.append(f"  f{int(f)} ({_cm._hours(well, int(f)):.2f} h): {note}")
-        corner = (f"~{near[0]} @{near[1]:.0f}um"
-                  if near is not None and near[1] < crop_um else None)
-        label = f"f{int(f)} t={_cm._elapsed_str(well, int(f))} @({ccx:.0f}, {ccy:.0f})"
-        images.append(_stamp_tile(tile, label, um_px, scale_bar, corner=corner))
-
-    lines.append(
-        "\nA nearest cell many microns away means the thing at this position is NOT "
-        "tracked -- which is the usual reason to be here. Distances are centre-to-centre, "
-        "so a large nucleus can read several microns away while still overlapping the point."
-        + _display_note(well)
+    header, images = _cm._fixed_point_frames(
+        well, start_frame, end_frame, x, y, anchor_track_id,
+        max_images=max_images, crop_um=crop_um,
+        color=color, scale_bar=scale_bar, cap=MAX_IMAGES,
     )
-    out: list = [TextContent(type="text", text="\n".join(lines))]
-    out.extend(_encode(i) for i in images)
+    out: list = [TextContent(type="text", text=header)]
+    out.extend(_encode(img) for img in images)
     return out
 
 
@@ -434,6 +339,185 @@ def _resolve_family(well: str, track_ids: list[int],
     extra = [int(t) for t in near.sort_values("d2").index if int(t) not in ids and int(t) not in seen]
     extra = extra[:2]
     return [*ids, *chained, *extra], [*chained, *extra]
+
+
+def _new_starts_near(
+    well: str, x0: float, y0: float, f0: int, a0: float,
+    before_min: float, after_min: float, radius_um: float | None,
+) -> tuple[list[int], dict[int, tuple[int, int]], float, int, int]:
+    """Tracks that BEGIN within a window around (x0, y0, f0) -- the candidate pool
+    list_nearby_tracks reports for a human to judge by hand, factored out so
+    resolve_division can judge it automatically with the same test.
+
+    Returns (ids, spans, r_um, lo, hi).
+    """
+    df = _cm._tracks(well)
+    um_px = _cm._manifest(well)["pixel_size_um"]
+    srt = df.sort_values("frame")
+    first = srt.groupby("track_id").first()
+    last = srt.groupby("track_id").last()
+
+    r_um = radius_um if radius_um else float(np.sqrt(max(a0, 1.0) / np.pi)) + _FAMILY_NEARBY_UM
+    r_px = r_um / um_px
+    lo = _frame_at_offset_min(well, f0, -before_min)
+    hi = _frame_at_offset_min(well, f0, after_min)
+
+    pool = first[(first.frame >= lo) & (first.frame <= hi)]
+    near = pool[((pool.cx - x0) ** 2 + (pool.cy - y0) ** 2) <= r_px * r_px]
+    ids = [int(t) for t in near.index]
+    spans = {t: (int(first.loc[t, "frame"]), int(last.loc[t, "frame"])) for t in ids}
+    return ids, spans, r_um, lo, hi
+
+
+@server.tool()
+def resolve_division(
+    well: str, track_id: int,
+    before_min: float = _FAMILY_NEARBY_BEFORE_MIN, after_min: float = _FAMILY_NEARBY_AFTER_MIN,
+    radius_um: float | None = None, max_hops: int = 6,
+) -> str:
+    """Resolve a REAL split -- a track ending in two or more coexisting daughters
+    the tracker never linked -- automatically. Free: no images.
+
+    Most divisions found by hand are NOT id hops (that's resolve_lineage_chain's
+    job): they are genuine splits into 2+ coexisting daughters that lineage.csv
+    simply never recorded, because the tracker's link breaks exactly at the
+    division. Finding them by hand means list_nearby_tracks() then judging
+    coexistence yourself, often 3-4 hops deep -- this was the single most repeated
+    manual workflow in a 2026-08-15 review session. This tool runs that same
+    coexistence+distance+size test automatically and hands back the assembled
+    mother+daughters set.
+
+    THE TEST IS THE SAME ONE list_nearby_tracks and resolve_lineage_chain use:
+    a candidate must be NEW near where this track ends, close in space -- and,
+    what makes a sibling pair rather than one object being re-acquired, two
+    candidates must COEXIST (on screen at the same time). Candidates are first
+    chain-walked forward (resolve_lineage_chain's own logic) so a daughter that
+    itself wobbles mid-life collapses into one physical object before the
+    coexistence test runs, rather than being mistaken for a second daughter.
+
+    If nothing nearby coexists with anything else, this says so rather than
+    guessing -- that pattern (a run of non-overlapping candidates at one spot) is
+    itself the signature of an id hop, and resolve_lineage_chain is the right tool
+    for it instead.
+
+    Args:
+        well: well name from list_wells().
+        track_id: the track whose split you want resolved -- usually a mother
+            whose own filmstrip goes OFF-TRACK with get_lineage showing no
+            daughters recorded.
+        before_min, after_min: how far either side of this track's last frame to
+            look for daughters, in minutes. Forward-heavy by default (daughters
+            appear AFTER the link breaks, and on BeWo the mitotic figure can be
+            ~20 min past it) -- same reasoning as list_nearby_tracks.
+        radius_um: search radius. None = this track's own radius + 14 um.
+        max_hops: cap on each candidate's own hop-chain walk.
+    """
+    df = _cm._tracks(well)
+    if df.empty or track_id not in df.track_id.values:
+        raise ValueError(f"track {track_id} not found in {well}. Use list_tracks().")
+
+    srt = df.sort_values("frame")
+    last = srt.groupby("track_id").last()
+    has_area = "area_um2" in srt.columns
+    med = srt.groupby("track_id").area_um2.median() if has_area else None
+
+    x0, y0 = float(last.loc[track_id, "cx"]), float(last.loc[track_id, "cy"])
+    f0 = int(last.loc[track_id, "frame"])
+    a0 = float(med.loc[track_id]) if med is not None and track_id in med.index else 0.0
+
+    ids, spans, r_um, lo, hi = _new_starts_near(
+        well, x0, y0, f0, a0, before_min, after_min, radius_um)
+    ids = [t for t in ids if t != track_id]
+
+    if not ids:
+        return (f"{well} track {track_id}: nothing new starts within {r_um:.0f} um of "
+                f"its last position (f{f0}) in f{lo}-{hi}. No split resolves here -- if "
+                f"the track just loses its id and comes back, try "
+                f"resolve_lineage_chain(track_id={track_id}) instead.")
+
+    # Collapse each candidate's own forward hop chain into one physical object first,
+    # so a daughter that itself wobbles mid-life (segmentation re-acquiring IT, or
+    # even re-acquiring INTO another one of our own candidates -- BeWo 969's exact
+    # failure mode) is not mistaken for a second, separate daughter. Processed
+    # earliest-first so a hop target that is itself one of our candidates gets
+    # absorbed into the chain that reaches it, rather than also starting its own.
+    # Extend the surviving candidate's span to cover the whole chain, since the
+    # coexistence test below needs the full lifetime.
+    seen = {track_id}
+    chains: dict[int, list[int]] = {}
+    absorbed: set[int] = set()
+    for t in sorted(ids, key=lambda t: spans[t][0]):
+        if t in absorbed:
+            continue
+        hops = _walk_chain(well, t, direction="forward", max_hops=max_hops, seen=set(seen))
+        full = [t, *(h["track_id"] for h in hops)]
+        chains[t] = full
+        seen.update(full)
+        absorbed.update(full[1:])
+        if hops:
+            spans[t] = (spans[t][0], hops[-1]["frames"][1])
+    ids = [t for t in ids if t not in absorbed]
+
+    # THE TEST: two candidates are siblings only if they COEXIST. A run of candidates
+    # at one spot whose spans never overlap is one object being repeatedly
+    # re-acquired, not two daughters -- BeWo 969's exact failure mode.
+    def _coexist(a: int, b: int) -> bool:
+        (a_lo, a_hi), (b_lo, b_hi) = spans[a], spans[b]
+        return a_lo <= b_hi and b_lo <= a_hi
+
+    clusters: list[list[int]] = [[t] for t in ids]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(clusters)):
+            for j in range(i + 1, len(clusters)):
+                if any(_coexist(a, b) for a in clusters[i] for b in clusters[j]):
+                    clusters[i] = clusters[i] + clusters[j]
+                    del clusters[j]
+                    merged = True
+                    break
+            if merged:
+                break
+
+    siblings = [c for c in clusters if len(c) >= 2]
+    if not siblings:
+        return (
+            f"{well} track {track_id}: {len(ids)} candidate(s) start nearby "
+            f"({', '.join(str(t) for t in ids)}) in f{lo}-{hi}, but none of them "
+            f"COEXIST with each other -- that pattern is one object being "
+            f"re-acquired, not a split. Try "
+            f"resolve_lineage_chain(track_id={track_id}) instead, or inspect by "
+            f"hand with list_nearby_tracks(track_id={track_id})."
+        )
+
+    best = max(siblings, key=len)
+    members = [int(track_id), *sorted(m for t in best for m in chains[t])]
+    lines = [
+        f"{well} track {track_id}: resolved as a split into "
+        f"{len(best)} coexisting daughter(s), from {len(ids)} candidate(s) checked."
+    ]
+    for t in sorted(best):
+        chain_note = (f" (chain: {chains[t]})" if len(chains[t]) > 1 else "")
+        lines.append(f"  {t}: f{spans[t][0]}-{spans[t][1]}{chain_note}")
+    extra = [c for c in siblings if c is not best]
+    if extra:
+        lines.append(
+            f"\n{len(extra)} further coexisting group(s) also found nearby but not "
+            f"included -- likely unrelated neighbours dividing in the same window: "
+            + "; ".join(str(sorted(c)) for c in extra) + "."
+        )
+    leftover = [t for t in ids if not any(t in c for c in siblings)]
+    if leftover:
+        lines.append(
+            f"{len(leftover)} candidate(s) did not coexist with anything and were "
+            f"dropped: {', '.join(str(t) for t in leftover)}."
+        )
+    lines.append(
+        f"\nStitched set: {members}. This is bookkeeping, not a judgement that a "
+        f"division happened -- confirm on the pixels via "
+        f"follow_cells_over_time(track_ids={members})."
+    )
+    return "\n".join(lines)
 
 
 @server.tool()
@@ -700,5 +784,6 @@ __all__ = [
     "_CHAIN_GAP_MIN", "_CHAIN_MARGIN_UM", "_CHAIN_AMBIGUOUS_RATIO",
     "_nearest_detection", "watch_location_over_time", "_resolve_family",
     "_walk_chain", "resolve_lineage_chain",
+    "_new_starts_near", "resolve_division",
     "list_nearby_tracks", "follow_cells_over_time",
 ]
