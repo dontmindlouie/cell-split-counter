@@ -9,6 +9,37 @@ direction; aoai_agent_actb_batch.py is AI-found candidates for human review.
 Paste sightings into SIGHTINGS below, one per line:
     <well> <frame> <x> <y> [optional free-text note]
 Blank lines and lines starting with # are ignored.
+
+--- Getting sightings OUT of Fiji's AutoMeasure and INTO the line format above ---
+
+1. Analyze > Set Measurements: check Area, Mean gray value, Min & max gray value,
+   Centroid, Stack Position. **UNCHECK "Scaled units"** -- nd2s opened via Bio-Formats
+   carry a pixel-size calibration (Fiji's title bar shows e.g. "885.50x885.50 microns
+   (2048x2048)"), so with "Scaled units" ON, X/Y/Area come out in MICRONS, but
+   tracks.csv (and _nearest_detection below) work in raw PIXELS. Leaving it checked
+   silently feeds the wrong-unit coordinate in -- usually caught by the 30um snap
+   check below (garbage distance), but not always. Unchecking it avoids the whole
+   problem: X/Y then come out in the same pixel space as the bundle.
+2. Toolbar: long-press the (multi-)point tool icon, pick the plain **Point** tool
+   (not Multi-point -- only Point's options dialog has Auto-Measure). Double-click
+   its icon, check "Auto-Measure".
+3. Click each cell of interest across frames. The Results window fills in as you go
+   (Window menu if it doesn't appear, or force one with Ctrl+M).
+4. Copy with Ctrl+A, Ctrl+C. This copies DATA ROWS ONLY, no header -- with the
+   config above the column order is fixed:
+       n | Area | Mean | Min | Max | X | Y | Ch | Frame
+   e.g. `1  0.000  50  50  50  741  1440  2  194` -> X=741, Y=1440, Frame=194.
+   (Pasting a screenshot of the Results window instead works too, and is more
+   robust against Set Measurements drifting out of this exact config, since the
+   header text is then visible.)
+5. Convert each row to a SIGHTINGS line:
+     - well: not in the Results table at all -- read it off the Fiji window title
+       bar / the .nd2 filename.
+     - frame: Fiji's "Frame" column is 1-based; the pipeline's frame numbering
+       (tracks.csv, this script) is 0-based -- **subtract 1**.
+     - x, y: the X/Y columns directly (already pixels per step 1).
+   So Results row `1  0.000  50  50  50  741  1440  2  194` in well
+   `20251016_ACTB_M2` becomes: `20251016_ACTB_M2 193 741 1440`
 """
 import json
 import os

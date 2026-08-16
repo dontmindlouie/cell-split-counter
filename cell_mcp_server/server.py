@@ -58,7 +58,21 @@ server = MCPServer(
         "When the user asks to SEE something rather than be told about it -- 'show me', "
         "'let me see', 'send me' -- answer with show_cells_in_browser(), which writes a page of "
         "labelled filmstrips they can open, rather than describing frames in prose. "
-        "Record human verdicts with annotate(); it is the only file here a human owns."
+        "Record human verdicts with annotate(); it is the only file here a human owns.\n\n"
+        "The user is often a bench researcher, not a programmer -- assume no familiarity "
+        "with tracks, pixels, or this tool set's own vocabulary unless they show it. If they "
+        "say they spotted something scanning the raw footage in Fiji themselves: ASK THEM TO "
+        "SCREENSHOT Fiji's Results window rather than copy-paste the numbers as text -- a "
+        "text paste from Fiji has no header row, so its column order is silent and easy to "
+        "misread, while a screenshot shows the column names directly. Then call "
+        "resolve_fiji_sighting(well, fiji_frame, x, y) with the numbers exactly as Fiji shows "
+        "them (its 1-indexed frame, whatever unit its X/Y happen to be in) -- it converts both "
+        "for you, do not do that arithmetic yourself. It also tells you the next tool calls to "
+        "make and exactly what centre_frame to pass -- follow that, since guessing your own "
+        "window there is the single most common way this tool set produces a filmstrip that "
+        "shows the lead-up but not the outcome, or the outcome but not the lead-up. "
+        "open_in_fiji(well, frame, cx, cy) does the reverse: jumps Fiji itself to a location "
+        "from a report page or filmstrip label, for cross-checking a call against the raw file."
     ),
 )
 
