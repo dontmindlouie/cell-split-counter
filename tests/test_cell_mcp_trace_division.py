@@ -110,3 +110,43 @@ def test_all_members_traced_includes_every_generation(fake):
     tail = out.split("All members traced:")[1]
     for tid in ("1", "10", "11", "20", "21", "22"):
         assert tid in tail
+
+
+@pytest.fixture
+def wide_fake(monkeypatch):
+    """Mother 1 (f0-4, at 100,100) splits into two long-lived daughters 30
+    (100,220) and 31 (140,220) -- both 120-127um away, outside the default
+    radius_um=70 (so the default search finds NOTHING, n_checked=0) but inside
+    the 2.2x widened radius (154um). No other branch competes for them.
+
+    Added 2026-08-17 (field feedback): the default search is not always wide
+    enough -- track 12 on 20251016_ACTB_M1's real daughters (828/829) were only
+    reachable a widened search away from an intermediate hop. This is the
+    positive case; see the `fake` fixture above (10/11/20/21) for the negative
+    guard -- a widened search must never steal a candidate that actually
+    belongs to a sibling branch.
+    """
+    rows = []
+    for f in range(0, 5):
+        rows.append({"track_id": 1, "frame": f, "cx": 100.0, "cy": 100.0,
+                     "area_um2": 50.0})
+    for f in range(5, 25):
+        rows.append({"track_id": 30, "frame": f, "cx": 100.0, "cy": 220.0,
+                     "area_um2": 25.0})
+        rows.append({"track_id": 31, "frame": f, "cx": 140.0, "cy": 220.0,
+                     "area_um2": 25.0})
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda well: {
+        "pixel_size_um": 1.0, "n_frames": 40, "width_px": 512, "height_px": 512,
+        "frame_timestamps_ms": [f * 60_000 for f in range(40)],
+    })
+    return "fake"
+
+
+def test_widen_retry_finds_daughters_outside_default_radius(wide_fake):
+    out = cell_mcp_server.trace_division(wide_fake, 1, **_R)
+    assert "30" in out and "31" in out
+    assert "WIDENED SEARCH" in out
+    terminal_section = out.split("Terminal branches")[1]
+    assert "30:" in terminal_section
+    assert "31:" in terminal_section
