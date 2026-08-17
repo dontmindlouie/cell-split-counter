@@ -447,7 +447,7 @@ def _fixed_point_frames(
     max_images: int | None, crop_um: float,
     color: bool, scale_bar: bool,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
-    upscale_to: int = _UPSCALE_TO,
+    upscale_to: int = _UPSCALE_TO, crosshair: bool = True,
 ) -> tuple[str, list[np.ndarray]]:
     """Shared by watch_location_over_time (MCP images) and show_cells_in_browser (HTML page).
 
@@ -491,17 +491,22 @@ def _fixed_point_frames(
              else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
     spec = (f"{well}: frames {lo}-{hi} ({_minutes_between(well, lo, hi):.0f} min), "
             f"{pick_note}, {where}. Crop {crop_um:g} um wide.")
+    where_word = "crosshair" if crosshair else "crop centre"
     gen = (
         "This is a PLACE, not a tracked object -- nothing is ringed, because a ring "
-        "would claim a detection that was never made. The yellow crosshair marks WHERE "
-        "YOU ASKED to look. Each frame's label also names the NEAREST tracked cell and "
-        "how far its centre sits from the crosshair (only when closer than the crop is "
-        "wide) -- that is the nearest cell, not necessarily the thing at the crosshair, "
-        "which may be untracked or nothing at all. A nearest cell many microns away "
-        "means the thing at this position is not tracked, which is the usual reason to "
-        "be here. Distances are centre-to-centre, so a large nucleus can read several "
-        "microns away while still overlapping the point. Time is elapsed hours from the "
-        "start of the recording." + _display_note(well)
+        "would claim a detection that was never made."
+        + (" The yellow crosshair marks WHERE YOU ASKED to look." if crosshair else
+           " No crosshair is drawn on this page -- it would read as a detection ring "
+           "to someone opening it cold, so the report view omits it; the crop is "
+           "centred on the requested point regardless.")
+        + f" Each frame's label also names the NEAREST tracked cell and how far its "
+        f"centre sits from the {where_word} (only when closer than the crop is "
+        "wide) -- that is the nearest cell, not necessarily the thing at the "
+        f"{where_word}, which may be untracked or nothing at all. A nearest cell many "
+        "microns away means the thing at this position is not tracked, which is the "
+        "usual reason to be here. Distances are centre-to-centre, so a large nucleus "
+        "can read several microns away while still overlapping the point. Time is "
+        "elapsed hours from the start of the recording." + _display_note(well)
     )
     header = spec + _HDR_SEP + gen
 
@@ -513,9 +518,10 @@ def _fixed_point_frames(
             continue
         img = tile.img
         cxp, cyp = int(tile.cx), int(tile.cy)
-        for dx0, dx1 in ((-12, -5), (5, 12)):
-            cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
-            cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
+        if crosshair:
+            for dx0, dx1 in ((-12, -5), (5, 12)):
+                cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
+                cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
 
         near = _nearest_detection(well, int(f), ccx, ccy, exclude=anchor_track_id)
         corner = (f"~{near[0]} @{near[1]:.0f}um"

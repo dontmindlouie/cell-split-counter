@@ -144,11 +144,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 pointing out one specific cell among several similar-looking ones
                 in a crowded or wide crop, e.g. a page someone else will read with
                 no other way to say "this one, not that one". With track_ids, rings
-                every member present or none. NOTE: kind="point" always draws a
-                crosshair at the given coordinate regardless of `marker` -- that
-                crosshair means "you asked me to look here", not "detected cell",
-                but the two currently look visually similar enough to be confused
-                (2026-08-16 field feedback) and there is no way to suppress it yet.
+                every member present or none. kind="point" never draws a crosshair
+                on this page regardless of `marker` (fixed 2026-08-17 -- it read as
+                a detection ring even though it isn't one); the crop is centred on
+                the requested point regardless. watch_location_over_time keeps the
+                crosshair, since it's a live aid while investigating, not a
+                handoff report.
             hold_centre_after_member_end (optional, default False, kind="family"
                 only): freeze a member's last position into the crop's mean once
                 its span ends, instead of letting the mean jump to whoever
@@ -201,6 +202,14 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 color=True, scale_bar=True,
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,
+                # Always off on this page, unconditionally -- not a per-event
+                # option. This is a report a researcher opens cold, and the
+                # crosshair reads as a detection ring even though it isn't one
+                # (2026-08-16 field feedback: "how did the marker get added back?").
+                # watch_location_over_time/follow_cells_over_time keep it, since
+                # there it's a live aid for figuring out which nucleus a crop is
+                # tracking, not a handoff artifact.
+                crosshair=False,
             )
             args = (well, int(ev["start_frame"]), int(ev["end_frame"]),
                     float(ev["x"]), float(ev["y"]), None)
