@@ -523,8 +523,6 @@ def _resolve_with_escalation(
     used). Returns (result, widened, widened_level) -- see trace_division for the
     ladder/theft-guard rationale (_TRACE_ESCALATION_MULTS above).
     """
-    res = None
-    widened_level = 0
     last_weak_res: dict | None = None
     base_r_um: float | None = None
     for level, mult in enumerate(_TRACE_ESCALATION_MULTS):

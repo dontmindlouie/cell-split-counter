@@ -135,6 +135,25 @@ def test_a_mostly_held_strip_says_so_before_the_images_are_spent(fake):
     assert "re-centre" in header or "cut after_min" in header
 
 
+def test_browser_sample_badge_skips_the_warnings_own_showing(fake, tmp_path, monkeypatch):
+    """2026-08-17 bug, found by an actual browser click-test: the WARNING message
+    above is inserted BEFORE the real sampling sentence and itself contains the word
+    "showing" ("a frozen crop of a place, showing whatever happens to sit there").
+    show_cells_in_browser's sample-badge regex used to match from THAT "showing"
+    instead of the real one, swallowing the entire warning paragraph into what was
+    supposed to be a short "showing N of M frames" badge."""
+    monkeypatch.chdir(tmp_path)
+    out = cell_mcp_server.show_cells_in_browser(
+        fake, events=[{"kind": "family", "track_ids": [1, 2, 3],
+                       "start_frame": 0, "end_frame": 39, "max_images": 12}])
+    html = Path(out.splitlines()[0]).read_text(encoding="utf-8")
+    m = re.search(r'<span class=samplebadge>([^<]*)</span>', html)
+    assert m, "no sample badge rendered"
+    assert m.group(1).startswith("showing"), m.group(1)
+    assert "WARNING" not in m.group(1) and "HELD" not in m.group(1), m.group(1)
+    assert len(m.group(1)) < 80, f"badge swallowed more than the sampling note: {m.group(1)!r}"
+
+
 def test_auto_window_does_not_run_far_past_a_fully_known_member_set(fake):
     """2026-08-16 feedback: with the real default after_min=180 (the forward-heavy
     reach that exists to SEARCH for a daughter that hasn't appeared yet), a member

@@ -318,7 +318,17 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         # title too, where it can't be mistaken for part of the general caption.
         # Lookahead stops at the real sentence-ending period/comma, not a decimal
         # point inside the note itself (e.g. "~2.0 min apart").
-        m = re.search(r"showing .*?(?=, (?:fixed at|anchored on|interpolated across)|\.\s*Crop)", spec)
+        #
+        # Anchored to the two literal formats _pick_frames emits ("showing all N
+        # frames" / "showing N of M frames") -- 2026-08-17 bug found via an actual
+        # browser click-test: a bare "showing " match grabbed the WRONG occurrence
+        # when a family render's own HELD-frames WARNING (which _family_filmstrip_
+        # frames inserts BEFORE the real sampling sentence, and which itself
+        # contains the word "showing", e.g. "a frozen crop... showing whatever
+        # happens to sit there") preceded it, swallowing the entire warning
+        # paragraph into what was supposed to be a short badge.
+        m = re.search(r"showing (?:all \d+|\d+ of \d+) frames.*?"
+                       r"(?=, (?:fixed at|anchored on|interpolated across)|\.\s*Crop)", spec)
         badge_html = f'<span class=samplebadge>{m.group(0)}</span>' if m else ""
         sections.append(
             f"<section id=sec{i}><h2>{i + 1}. {label} {badge_html}</h2>"
