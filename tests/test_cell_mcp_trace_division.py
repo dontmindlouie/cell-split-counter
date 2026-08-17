@@ -146,7 +146,56 @@ def wide_fake(monkeypatch):
 def test_widen_retry_finds_daughters_outside_default_radius(wide_fake):
     out = cell_mcp_server.trace_division(wide_fake, 1, **_R)
     assert "30" in out and "31" in out
-    assert "WIDENED SEARCH" in out
+    assert "WIDENED SEARCH (level 1" in out
     terminal_section = out.split("Terminal branches")[1]
     assert "30:" in terminal_section
     assert "31:" in terminal_section
+
+
+@pytest.fixture
+def escalation_fake(monkeypatch):
+    """Mother 1 (f0-4, at 100,100) splits into two long-lived daughters 40
+    (100,350) and 41 (140,350) -- 250-253um away. Outside the default radius
+    (70) AND the single-widen level (154), but inside the level-2 escalation
+    cap (min(70*4.8, 300) = 300um) -- needs the ladder to actually reach a
+    SECOND level, not just the one retry the previous single-widen version had.
+    """
+    rows = []
+    for f in range(0, 5):
+        rows.append({"track_id": 1, "frame": f, "cx": 100.0, "cy": 100.0,
+                     "area_um2": 50.0})
+    for f in range(5, 25):
+        rows.append({"track_id": 40, "frame": f, "cx": 100.0, "cy": 350.0,
+                     "area_um2": 25.0})
+        rows.append({"track_id": 41, "frame": f, "cx": 140.0, "cy": 350.0,
+                     "area_um2": 25.0})
+    monkeypatch.setattr(cell_mcp_server, "_tracks", lambda well: pd.DataFrame(rows))
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda well: {
+        "pixel_size_um": 1.0, "n_frames": 40, "width_px": 512, "height_px": 512,
+        "frame_timestamps_ms": [f * 60_000 for f in range(40)],
+    })
+    return "fake"
+
+
+def test_escalation_reaches_a_second_level(escalation_fake):
+    out = cell_mcp_server.trace_division(escalation_fake, 1, **_R)
+    assert "40" in out and "41" in out
+    assert "WIDENED SEARCH (level 2" in out
+    terminal_section = out.split("Terminal branches")[1]
+    assert "40:" in terminal_section
+    assert "41:" in terminal_section
+
+
+def test_escalation_stops_at_theft_rather_than_widening_further(fake):
+    """Same 10/11/20/21 fixture as the sibling-theft guard above, but with a
+    radius small enough that 10's OWN escalation doesn't reach 20/21 (140.8um
+    away) until level 2 (30*4.8=144um) -- the ladder must still refuse them
+    there (same theft rule at every level, not just level 1), leaving 10 an
+    ordinary terminal. 11's own default search (30um) already reaches its real
+    children directly (25um away) with no escalation needed, so 11 correctly
+    resolves into 20/21 as a normal generation, not a terminal."""
+    out = cell_mcp_server.trace_division(fake, 1, before_min=0, after_min=20, radius_um=30.0)
+    assert "11 (via chain end 11) -> 20, 21" in out
+    terminal_section = out.split("Terminal branches")[1]
+    assert "10:" in terminal_section
+    assert "11:" not in terminal_section

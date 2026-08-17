@@ -32,8 +32,21 @@ _FAMILY_NEARBY_AFTER_MIN = 75.0
 # same short-lived-artifact-cluster signature recurs AT the real split itself
 # (827/830/838/839, all 1 frame, born alongside 828/829). See
 # _split_candidates' docstring and trace_division's for the full trail.
-_TRACE_WIDEN_RADIUS_MULT = 2.2
-_TRACE_WIDEN_AFTER_MULT = 2.0
+#
+# A SINGLE widen step (first shipped 2026-08-17) wasn't enough on the real case
+# that motivated it: track 12's own generation 2 widened correctly and reached
+# 579/596, but THAT generation's own downstream search was also weak, and one
+# retry wasn't enough to punch through -- confirmed by hand that the real
+# answer (828/829) sits several more hops out than a single 2.2x/2x retry
+# reaches. Escalation ladder instead: each level tried in turn, stopping at the
+# first that resolves. Ceilings exist so a branch that's genuinely, truly dead
+# (not just under-searched) can't escalate into scanning the whole field --
+# 300um and 600min are both roughly the field-of-view / whole-movie scale for
+# this well, past which "wider" stops meaning anything more precise than
+# "everywhere."
+_TRACE_ESCALATION_MULTS = (1.0, 2.2, 4.8, 10.6)
+_TRACE_MAX_RADIUS_UM = 300.0
+_TRACE_MAX_AFTER_MIN = 600.0
 
 @server.tool(structured_output=False)
 def watch_location_over_time(
@@ -524,17 +537,14 @@ def trace_division(
     resolve_division's own multi-generation extension. Free: no images.
 
     QUICK REF (long descriptions truncate ~1200 chars in, no [...] marker --
-    read this first): a generation only counts as confirmed once at least one
-    daughter clears `short_lived_frames` -- if every candidate found is
-    short-lived (or nothing is found at all), this automatically retries once
-    with a wider radius/window before giving up, tagged "WIDENED SEARCH" in the
-    output (lower confidence, verify on the pixels). Fixed 2026-08-17 after well
-    20251016_ACTB_M1 track 12 (real answer 828/829) stopped dead at a cluster of
-    1-2-frame artifacts (554/558/561/562) -- the SAME short-lived-cluster
-    signature turned out to recur right at the real split too (827/830/838/839,
-    all 1 frame, alongside the real 828/829). If a branch still looks wrong
-    after that, raise max_hops (each generation's own hop-chain walk) or
-    hand-walk get_lineage as a cross-check.
+    read this first): a generation only counts as confirmed once a daughter
+    clears `short_lived_frames` -- otherwise this escalates through a ladder
+    of wider radius/window attempts (_TRACE_ESCALATION_MULTS, capped at
+    _TRACE_MAX_RADIUS_UM/_TRACE_MAX_AFTER_MIN), tagged "WIDENED SEARCH (level
+    N)" -- confidence drops per level, verify on pixels. Stops escalating
+    early rather than stealing a candidate that actually belongs to a sibling
+    branch. If a branch still looks wrong, raise max_hops or hand-walk
+    get_lineage as a cross-check.
 
     resolve_division answers "who coexists with THIS track's end" for one hop --
     not enough when a real division hides behind a wobbling id-hop chain first
@@ -568,10 +578,12 @@ def trace_division(
             with fewer frames than this is flagged LIKELY FRAGMENT rather than
             reported as an ordinary terminal, as before. (2) a GENERATION only
             counts as confirmed once at least one of its daughters clears this
-            bar -- if every candidate found there is shorter, that generation is
-            treated as unresolved and retried once with a wider search
-            (_TRACE_WIDEN_RADIUS_MULT/_TRACE_WIDEN_AFTER_MULT), tagged WIDENED
-            SEARCH if that's what it took.
+            bar -- if every candidate found there is shorter, that generation
+            is treated as unresolved and escalated through
+            _TRACE_ESCALATION_MULTS (capped at _TRACE_MAX_RADIUS_UM/
+            _TRACE_MAX_AFTER_MIN) until one level resolves or the ladder runs
+            out, tagged WIDENED SEARCH (with the level reached) if it took
+            more than the default attempt.
     """
     df = _cm._tracks(well)
     if df.empty or track_id not in df.track_id.values:
@@ -620,72 +632,71 @@ def trace_division(
                 chain = [*chain, *(h["track_id"] for h in more_hops)]
                 seen.update(h["track_id"] for h in more_hops)
             end_id = chain[-1]
-            seen_trial = set(seen)
-            res = _split_candidates(
-                well, end_id, before_min=before_min, after_min=after_min,
-                radius_um=radius_um, max_hops=max_hops,
-                first=first, last=last, med=med, um_px=um_px, seen=seen_trial,
-            )
-            seen.update(seen_trial)
+            # Escalation ladder: try increasingly wide radius/window, stopping at the
+            # first level that resolves. A level only counts as resolved if (a) it
+            # isn't weak (_is_weak_split) AND (b) it isn't STEALING a candidate that
+            # actually belongs to a sibling in this same generation's frontier --
+            # confirmed as a real regression while building this: widening one
+            # branch's empty search can reach into a sibling's own real children
+            # (140.8um away was inside a 154um widened radius on the test fixture).
+            # Going WIDER only makes theft more likely, never less, so a stolen level
+            # stops the ladder outright rather than trying yet wider -- the rightful
+            # sibling claims those candidates on its own turn instead.
+            res = None
             widened = False
-            if _is_weak_split(res, short_lived_frames):
-                # Default search found nothing, or found only short-lived candidates --
-                # either could be a real terminal, or could be the same short-lived-
-                # artifact-cluster signature that surrounds a real division in this kind
-                # of data (see _TRACE_WIDEN_RADIUS_MULT above). Try once more, wider,
-                # from a FRESH seen copy (not seen_trial) so the widened search sees the
-                # full candidate pool at once rather than one already thinned by the
-                # first attempt's absorptions -- a candidate the default search grouped
-                # as a leftover singleton needs to be visible again to pair up with
-                # whatever the wider net additionally finds.
-                base_r_um = radius_um if radius_um else res["r_um"]
-                seen_wide = set(seen)
-                res_wide = _split_candidates(
-                    well, end_id, before_min=before_min, after_min=after_min * _TRACE_WIDEN_AFTER_MULT,
-                    radius_um=base_r_um * _TRACE_WIDEN_RADIUS_MULT, max_hops=max_hops,
-                    first=first, last=last, med=med, um_px=um_px, seen=seen_wide,
+            widened_level = 0
+            last_weak_res: dict | None = None
+            base_r_um: float | None = None
+            for level, mult in enumerate(_TRACE_ESCALATION_MULTS):
+                seen_try = set(seen)
+                r_try = radius_um if level == 0 else min(base_r_um * mult, _TRACE_MAX_RADIUS_UM)
+                after_try = after_min if level == 0 else min(after_min * mult, _TRACE_MAX_AFTER_MIN)
+                res_try = _split_candidates(
+                    well, end_id, before_min=before_min, after_min=after_try,
+                    radius_um=r_try, max_hops=max_hops,
+                    first=first, last=last, med=med, um_px=um_px, seen=seen_try,
                 )
-                # NOT merged into the live `seen` yet -- only once this widened
-                # attempt is actually accepted below. A rejected (stolen) widened
-                # attempt still chain-walks and absorbs every candidate it touches
-                # into seen_wide; committing that unconditionally would permanently
-                # exclude a sibling's own real children from ITS later, legitimate
-                # search in this same generation -- confirmed as a second real
-                # regression while fixing the first (track 10's rejected widened
-                # attempt was starving track 11's correct one).
-                # A wider net can reach past this branch's own territory into a
-                # SIBLING's -- confirmed as a real regression on the test fixture:
-                # widening track 10's empty search (nothing within the default
-                # radius) pulled in track 11's own real children, because they sat
-                # only 140.8um away against a 154um widened radius. Refuse the
-                # widened result if any of its daughters started closer to (or
-                # comparably close to) another sibling in THIS generation's own
-                # frontier than made sense -- that candidate likely belongs to the
-                # sibling, not this branch, and a wrong widened guess is worse than
-                # the branch staying an ordinary (still-reported) terminal.
+                if level == 0:
+                    base_r_um = radius_um if radius_um else res_try["r_um"]
+                if _is_weak_split(res_try, short_lived_frames):
+                    # Not solid, but not a conflict either -- safe to commit this
+                    # level's bookkeeping (chain-walks it triggered) and try wider.
+                    seen.update(seen_try)
+                    last_weak_res = res_try
+                    continue
+                self_x, self_y = float(last.loc[end_id, "cx"]), float(last.loc[end_id, "cy"])
                 stolen = False
-                if not _is_weak_split(res_wide, short_lived_frames):
-                    self_x, self_y = float(last.loc[end_id, "cx"]), float(last.loc[end_id, "cy"])
-                    for d in res_wide["daughters"]:
-                        dx, dy = float(first.loc[d, "cx"]), float(first.loc[d, "cy"])
-                        dist_self = np.hypot(dx - self_x, dy - self_y)
-                        for sib, (sx, sy) in sibling_pos.items():
-                            if sib == parent:
-                                continue
-                            if np.hypot(dx - sx, dy - sy) < dist_self:
-                                stolen = True
-                                break
-                        if stolen:
+                for d in res_try["daughters"]:
+                    dx, dy = float(first.loc[d, "cx"]), float(first.loc[d, "cy"])
+                    dist_self = np.hypot(dx - self_x, dy - self_y)
+                    for sib, (sx, sy) in sibling_pos.items():
+                        if sib == parent:
+                            continue
+                        if np.hypot(dx - sx, dy - sy) < dist_self:
+                            stolen = True
                             break
-                    if not stolen:
-                        res, widened = res_wide, True
-                if not stolen:
-                    seen.update(seen_wide)
+                    if stolen:
+                        break
+                if stolen:
+                    # NOT committed to `seen` -- same reasoning as the single-widen
+                    # fix: a rejected level's absorptions must not starve a sibling's
+                    # own legitimate search later in this generation.
+                    break
+                seen.update(seen_try)
+                res, widened, widened_level = res_try, level > 0, level
+                break
+            if res is None:
+                # Ladder exhausted (all weak) or abandoned (stolen) without ever
+                # resolving -- fall back to the last safe (non-stolen) attempt, or a
+                # bare "nothing" if even level 0 itself was stolen (rare; only the
+                # `daughters` key is read on this path).
+                res = last_weak_res if last_weak_res is not None else {"daughters": None}
             if not res["daughters"]:
                 terminals.append((parent, chain, (int(first.loc[end_id, "frame"]),
                                                     int(last.loc[end_id, "frame"]))))
                 continue
-            gen_events.append({"parent": parent, "end": end_id, "widened": widened, **res})
+            gen_events.append({"parent": parent, "end": end_id, "widened": widened,
+                               "widened_level": widened_level, **res})
             for d in res["daughters"]:
                 next_frontier.append((d, res["chains"][d]))
         if gen_events:
@@ -702,12 +713,15 @@ def trace_division(
         lines.append(f"\nGeneration {g}:")
         for ev in events:
             who = ", ".join(str(d) for d in ev["daughters"])
-            widened_note = (" -- WIDENED SEARCH: default radius/window found nothing "
-                             "solid here, this resolved only after retrying wider "
-                             f"({_TRACE_WIDEN_RADIUS_MULT:g}x radius, "
-                             f"{_TRACE_WIDEN_AFTER_MULT:g}x after_min) -- lower "
-                             "confidence than an ordinary generation, verify on the "
-                             "pixels" if ev["widened"] else "")
+            widened_note = ""
+            if ev["widened"]:
+                mult = _TRACE_ESCALATION_MULTS[ev["widened_level"]]
+                widened_note = (
+                    f" -- WIDENED SEARCH (level {ev['widened_level']}/"
+                    f"{len(_TRACE_ESCALATION_MULTS) - 1}, {mult:g}x radius/window): "
+                    "default radius/window found nothing solid here, this resolved "
+                    "only after retrying wider -- confidence drops with each level, "
+                    "verify on the pixels")
             lines.append(f"  {ev['parent']} (via chain end {ev['end']}) -> {who}{widened_note}")
             for d in ev["daughters"]:
                 chain_note = (f" (chain: {ev['chains'][d]})" if len(ev["chains"][d]) > 1 else "")
