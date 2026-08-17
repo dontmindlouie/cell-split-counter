@@ -251,8 +251,12 @@ def _blob_centroids(label_img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return cxs, cys
 
 
+_WALK_ESTABLISHED_TOL_PX = 3.0  # blob-to-track-centroid match tolerance for identifying a tracked blob
+
+
 def _walk_positions(
-    well: str, frames: list[int], seed_cx: float, seed_cy: float
+    well: str, frames: list[int], seed_cx: float, seed_cy: float,
+    *, boundary_frame: int | None = None, df=None,
 ) -> dict[int, tuple[float, float, bool]]:
     """Nearest-centroid walk across `frames` (already ordered outward from the
     track's boundary), starting adjacent to (seed_cx, seed_cy).
@@ -261,7 +265,24 @@ def _walk_positions(
     cell here (too far, or nothing detected) and the position is carried over from
     the last frame it WAS resolved at -- a real "last known position", same as the
     old behaviour, just reached only after actually trying rather than immediately.
+
+    boundary_frame/df (optional): if given, a candidate blob that matches an
+    EXISTING track already alive before `boundary_frame` is refused, same as if
+    nothing had been detected there -- 2026-08-16 field feedback found the walk
+    locking onto a stable, long-established neighbour in 4/4 tries (tracks 51, 9,
+    21, 12 on 20251016_ACTB_M1), never the real outcome, because nearest-by-
+    distance alone cannot tell "the same cell re-acquired" from "a calm neighbour
+    that happened to be closest." A blob with no matching track (untracked
+    debris/a genuinely fresh detection) or one whose own track started at or
+    after `boundary_frame` is still fair game -- only a track that predates the
+    gap being walked through is refused. Without these two args the walk behaves
+    exactly as before (matches list_nearby_tracks/watch_location_over_time
+    callers that don't have a tracks table handy).
     """
+    starts = None
+    if boundary_frame is not None and df is not None:
+        starts = df.sort_values("frame").groupby("track_id").frame.first()
+
     out: dict[int, tuple[float, float, bool]] = {}
     cx, cy = seed_cx, seed_cy
     misses = 0
@@ -278,6 +299,18 @@ def _walk_positions(
             misses += 1
             out[f] = (cx, cy, False)
             continue
+        if starts is not None:
+            frame_rows = df[df.frame == f]
+            if not frame_rows.empty:
+                td = np.hypot(frame_rows.cx.to_numpy() - cxs[i], frame_rows.cy.to_numpy() - cys[i])
+                j = int(np.argmin(td))
+                if td[j] <= _WALK_ESTABLISHED_TOL_PX:
+                    cand_track = int(frame_rows.track_id.iloc[j])
+                    cand_start = int(starts.get(cand_track, boundary_frame))
+                    if cand_start < boundary_frame:
+                        misses += 1
+                        out[f] = (cx, cy, False)
+                        continue
         misses = 0
         cx, cy = float(cxs[i]), float(cys[i])
         out[f] = (cx, cy, True)
@@ -343,10 +376,12 @@ def _filmstrip_frames(
     walked: dict[int, tuple[float, float, bool]] = {}
     if off_before:
         walked.update(_walk_positions(
-            well, list(range(t_lo - 1, min(off_before) - 1, -1)), first_row.cx, first_row.cy))
+            well, list(range(t_lo - 1, min(off_before) - 1, -1)), first_row.cx, first_row.cy,
+            boundary_frame=t_lo, df=df))
     if off_after:
         walked.update(_walk_positions(
-            well, list(range(t_hi + 1, max(off_after) + 1)), last_row.cx, last_row.cy))
+            well, list(range(t_hi + 1, max(off_after) + 1)), last_row.cx, last_row.cy,
+            boundary_frame=t_hi, df=df))
     n_walked = sum(1 for f in (off_before + off_after) if walked.get(f, (0, 0, False))[2])
 
     # The ring is drawn clear of the nucleus, never over it: the chromatin's shape is

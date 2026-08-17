@@ -903,9 +903,14 @@ def follow_cells_over_time(
     track's own lifetime are labelled OFF-TRACK and rendered by walking the nearest
     detected blob from the track's boundary (solid orange ring): usually the same
     physical object under a new id, but never confirmed to be THIS cell rather than
-    a neighbour. Where the walk loses the trail the crop freezes at the last
-    resolved position (dashed blue ring) instead of guessing further. Read OFF-TRACK
-    frames as "this patch of the field", not "this cell".
+    a neighbour. The walk refuses to step onto a blob that belongs to an already-
+    established track (one that started before this gap) -- fixed 2026-08-17 after
+    field feedback found it locking onto a long-lived stable neighbour in 4/4 tries,
+    never the real outcome; only a fresh detection (untracked, or a track that
+    started at/after this boundary) is accepted. Where the walk loses the trail the
+    crop freezes at the last resolved position (dashed blue ring) instead of
+    guessing further. Read OFF-TRACK frames as "this patch of the field", not "this
+    cell".
 
     A MEMBER SET -- `track_ids=[...]`. The crop centres on the mean position of
     whichever members are present in each frame, so it rides the mother up to the
