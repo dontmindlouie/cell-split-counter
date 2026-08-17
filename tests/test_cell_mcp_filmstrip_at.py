@@ -56,9 +56,9 @@ def test_nearest_detection_is_none_when_the_frame_has_nothing(fake):
 
 
 def test_requires_either_a_point_or_an_anchor(fake):
-    with pytest.raises(ValueError, match="either x and y"):
+    with pytest.raises(ValueError, match="give x and y"):
         cell_mcp_server.watch_location_over_time(fake, start_frame=0, end_frame=2)
-    with pytest.raises(ValueError, match="either x and y"):
+    with pytest.raises(ValueError, match="give x and y"):
         cell_mcp_server.watch_location_over_time(fake, start_frame=0, end_frame=2, x=1.0)
 
 

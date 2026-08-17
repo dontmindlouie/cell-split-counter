@@ -10,8 +10,8 @@ watch_location_over_time already does, as an alternative event shape.
 Updated 2026-08-16: every event now declares its shape with a required `kind`
 key ("track"/"family"/"point") instead of it being inferred from whichever
 other keys happen to be present, so a wrong or missing id key fails with
-"kind='point' but no 'x'/'y' given" instead of a generic "needs
-track_id/track_ids/x/y" that doesn't say which one was intended.
+"kind='point' but no 'x'/'y' (or 'waypoints') given" instead of a generic
+"needs track_id/track_ids/x/y" that doesn't say which one was intended.
 """
 
 import sys
@@ -58,9 +58,23 @@ def test_point_event_renders_a_page(fake, tmp_path, monkeypatch):
 
 
 def test_point_event_requires_both_coordinates(fake):
-    with pytest.raises(ValueError, match="no 'x'/'y' given"):
+    with pytest.raises(ValueError, match="no 'x'/'y' \\(or 'waypoints'\\) given"):
         cell_mcp_server.show_cells_in_browser(
             fake, events=[{"kind": "point", "x": 100.0, "start_frame": 0, "end_frame": 1}])
+
+
+def test_point_event_waypoints_renders_a_page(fake, tmp_path, monkeypatch):
+    # 2026-08-16 field feedback: a drifting untracked object (debris/fragment)
+    # needs the crop centre to move too, not stay fixed on the click that
+    # started the search -- see render.py's _fixed_point_frames docstring.
+    monkeypatch.chdir(tmp_path)
+    out = cell_mcp_server.show_cells_in_browser(
+        fake, events=[{"kind": "point", "waypoints": [(0, 100.0, 100.0), (1, 150.0, 150.0)],
+                       "start_frame": 0, "end_frame": 1}])
+    path = out.splitlines()[0]
+    html = Path(path).read_text(encoding="utf-8")
+    assert "interpolated across 2 waypoints" in html
+    assert "drift (2 waypoints)" in html  # default label falls back to a waypoint count
 
 
 def test_point_event_requires_a_frame_window(fake):

@@ -70,10 +70,13 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         events[].kind REQUIRED = "track" (needs track_id) / "family" (needs
         track_ids; add hold_centre_after_member_end=True once a vanished member
         is confirmed gone, else re-centring snaps to survivors) / "point" (needs
-        x, y, start_frame, end_frame -- no drift-following yet, re-anchor with
-        several point events if the target moves). max_images: leave OFF, <60
-        frames renders GAP-FREE; the "showing N of M frames" sampling note is
-        ONLY in the return text, not on the page. Returns 2 lines: path, file:// URL.
+        start_frame, end_frame, plus EITHER x+y for a fixed spot OR waypoints=
+        [(frame,x,y), ...] for a drifting one -- interpolates the crop centre
+        between checkpoints instead of one fixed position; never draws a
+        crosshair on this page). max_images: leave OFF, <60 frames renders
+        GAP-FREE; a wider window's sampling ratio ("showing N of M frames") is
+        also on the page now, as a small badge next to each title. Returns 2
+        lines: path, file:// URL.
 
     CALL THIS WHENEVER THE USER SAYS "show me", "let me see", "send me", "put
     together", "can I look at" -- anything meaning they want to LOOK at cells rather
@@ -114,16 +117,25 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 min before / 90 min after the membership transition
                 (`before_min`/`after_min` keys), and crop_um defaults to auto-fit
                 rather than 60.
-            kind="point": a fixed PLACE, rendered as
-                watch_location_over_time(x=..., y=...) does it -- no mask, no
-                re-centring, just the raw clicked/reported point. Use this for a
-                researcher's raw coordinate before it has been snapped to a track,
-                or for anything the segmenter never caught. Requires `x`, `y`,
-                `start_frame`, and `end_frame` -- all four, since there is no track
-                lifetime to default a window from. crop_um defaults to 90.0, wider
-                than kind="track"'s default, because a fixed point has no
-                re-centring to save it if the crop is too tight and something
-                relevant drifts to the edge.
+            kind="point": a PLACE, rendered as watch_location_over_time(x=...,
+                y=...) does it -- no mask, no ring, just the raw clicked/reported
+                point. Use this for a researcher's raw coordinate before it has
+                been snapped to a track, or for anything the segmenter never
+                caught. Requires `start_frame` and `end_frame`, plus EITHER `x`
+                and `y` (a single fixed spot) OR `waypoints` (a drifting one):
+                `waypoints`: list of `(frame, x, y)` checkpoints, at least 2,
+                    sorted or not. The crop centre is linearly interpolated
+                    between the two checkpoints bracketing each rendered frame
+                    (clamped to the first/last checkpoint outside their span).
+                    For an untracked object that moves -- debris, a fragment --
+                    instead of a several-call manual workaround (probe a few
+                    checkpoint frames by hand, split into consecutive point
+                    events each re-anchored at the next position). Get the
+                    checkpoint positions from list_nearby_tracks/measure the
+                    same way that manual workaround did.
+                crop_um defaults to 90.0, wider than kind="track"'s default,
+                because a fixed point has no re-centring to save it if the crop
+                is too tight and something relevant drifts to the edge.
             start_frame, end_frame (optional with kind="track"/"family", REQUIRED
                 with kind="point"): as in follow_cells_over_time -- may fall outside
                 the track's own lifetime, e.g. to show a division just past its end.
@@ -188,9 +200,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 f"(got {kind!r}) -- declare the shape, don't rely on it being "
                 f"guessed from whichever other keys are present: {ev!r}")
         if kind == "point":
-            if "x" not in ev or "y" not in ev:
+            waypoints = ev.get("waypoints")
+            if waypoints is None and ("x" not in ev or "y" not in ev):
                 raise ValueError(
-                    f"events[{i}] has kind='point' but no 'x'/'y' given: {ev!r}")
+                    f"events[{i}] has kind='point' but no 'x'/'y' (or 'waypoints') "
+                    f"given: {ev!r}")
             if ev.get("start_frame") is None or ev.get("end_frame") is None:
                 raise ValueError(
                     f"events[{i}] has kind='point' and needs start_frame and "
@@ -211,13 +225,18 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 # there it's a live aid for figuring out which nucleus a crop is
                 # tracking, not a handoff artifact.
                 crosshair=False,
+                waypoints=([(int(f), float(wx), float(wy)) for f, wx, wy in waypoints]
+                           if waypoints is not None else None),
             )
             args = (well, int(ev["start_frame"]), int(ev["end_frame"]),
-                    float(ev["x"]), float(ev["y"]), None)
+                    None if waypoints is not None else float(ev["x"]),
+                    None if waypoints is not None else float(ev["y"]), None)
             header, thumb_images = _cm._fixed_point_frames(*args, **common)
             _, lb_images = _cm._fixed_point_frames(
                 *args, **common, upscale_to=_FIGURE_UPSCALE_TO)
-            label = ev.get("label") or f"({ev['x']:.0f}, {ev['y']:.0f})"
+            label = ev.get("label") or (
+                f"drift ({len(waypoints)} waypoints)" if waypoints is not None
+                else f"({ev['x']:.0f}, {ev['y']:.0f})")
         elif kind == "family":
             if "track_ids" not in ev:
                 raise ValueError(
@@ -299,7 +318,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         # title too, where it can't be mistaken for part of the general caption.
         # Lookahead stops at the real sentence-ending period/comma, not a decimal
         # point inside the note itself (e.g. "~2.0 min apart").
-        m = re.search(r"showing .*?(?=, (?:fixed at|anchored on)|\.\s*Crop)", spec)
+        m = re.search(r"showing .*?(?=, (?:fixed at|anchored on|interpolated across)|\.\s*Crop)", spec)
         badge_html = f'<span class=samplebadge>{m.group(0)}</span>' if m else ""
         sections.append(
             f"<section id=sec{i}><h2>{i + 1}. {label} {badge_html}</h2>"

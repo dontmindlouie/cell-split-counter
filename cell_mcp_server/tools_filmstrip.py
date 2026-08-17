@@ -29,6 +29,7 @@ def watch_location_over_time(
     x: float | None = None,
     y: float | None = None,
     anchor_track_id: int | None = None,
+    waypoints: list[tuple[int, float, float]] | None = None,
     max_images: int = 8,
     crop_um: float = 90.0,
     color: bool = True,
@@ -53,6 +54,12 @@ def watch_location_over_time(
       crop tends to lose the cell at the moment of interest. A place does not move.
     - **You want a stable stage.** Pass anchor_track_id to ride a calm neighbouring
       cell's position while the cell you are watching does something violent.
+    - **The thing you care about DRIFTS.** A single fixed x/y can go off-screen
+      partway through (2026-08-16 field feedback: post-fragmentation debris moved
+      ~130um over ~100 frames). Give `waypoints` instead -- a list of
+      `(frame, x, y)` checkpoints (get their positions the same way you would
+      probe by hand: list_nearby_tracks/measure at a few points along the drift)
+      -- and the crop centre interpolates between them.
 
     Coordinates are PIXELS in the full frame, matching cx/cy in tracks.csv and the
     xy columns of list_tracks -- not microns, and not crop-relative.
@@ -65,10 +72,14 @@ def watch_location_over_time(
         well: well name from list_wells().
         start_frame, end_frame: inclusive frame range.
         x, y: the position to watch, in full-frame pixels. Required unless
-            anchor_track_id is given.
+            anchor_track_id or waypoints is given.
         anchor_track_id: instead of a fixed point, follow THIS track's centroid --
             useful as a stable vantage on a neighbour. Where the anchor is missing
             from a frame, its closest known position is used.
+        waypoints: instead of one fixed x/y, a list of `(frame, x, y)` checkpoints
+            (at least 2) to interpolate the crop centre between, for a drifting
+            untracked object -- clamped to the first/last checkpoint outside
+            their frame span. Takes priority over x/y if both are given.
         max_images: how many frames to show (hard capped at 12).
         crop_um: crop width in micrometres. Defaults wide (90) so a neighbour
             cell doesn't fall out of frame or shrink to a sliver at the edge --
@@ -79,9 +90,11 @@ def watch_location_over_time(
     from mcp.types import TextContent
 
     header, images = _cm._fixed_point_frames(
-        well, start_frame, end_frame, x, y, anchor_track_id,
+        well, start_frame, end_frame,
+        None if waypoints else x, None if waypoints else y, anchor_track_id,
         max_images=max_images, crop_um=crop_um,
         color=color, scale_bar=scale_bar, cap=MAX_IMAGES,
+        waypoints=waypoints,
     )
     out: list = [TextContent(type="text", text=header)]
     out.extend(_encode(img) for img in images)

@@ -483,6 +483,7 @@ def _fixed_point_frames(
     color: bool, scale_bar: bool,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
     upscale_to: int = _UPSCALE_TO, crosshair: bool = True,
+    waypoints: list[tuple[int, float, float]] | None = None,
 ) -> tuple[str, list[np.ndarray]]:
     """Shared by watch_location_over_time (MCP images) and show_cells_in_browser (HTML page).
 
@@ -490,6 +491,15 @@ def _fixed_point_frames(
     a mask -- see watch_location_over_time's docstring for the semantics; this is
     that function's body with the ImageContent encoding split off so a second caller
     can embed the same pixels differently, same split as _filmstrip_frames above.
+
+    waypoints: alternative to a single fixed x/y, for an untracked object that
+    DRIFTS -- 2026-08-16 field feedback: post-fragmentation debris moved ~130um
+    over ~100 frames, a single fixed point went off-screen partway through, and
+    the workaround (probing a few checkpoint frames by hand, then splitting into
+    several consecutive point events each re-anchored at the next waypoint) was
+    real per-event manual labour. A list of (frame, x, y) checkpoints linearly
+    interpolates the crop centre between them (clamped to the first/last waypoint
+    outside their span), turning that into one call.
     """
     m = _cm._manifest(well)
     n_frames = int(m["n_frames"])
@@ -498,7 +508,14 @@ def _fixed_point_frames(
         raise ValueError(f"empty range {start_frame}-{end_frame}; {well} has 0-{n_frames - 1}.")
 
     anchor_pos: dict[int, tuple[float, float]] = {}
-    if anchor_track_id is not None:
+    wp_sorted: list[tuple[int, float, float]] = []
+    if waypoints is not None:
+        if len(waypoints) < 2:
+            raise ValueError("waypoints needs at least 2 (frame, x, y) checkpoints "
+                              "to interpolate between -- for a single fixed point, "
+                              "give x/y instead.")
+        wp_sorted = sorted((int(f), float(wx), float(wy)) for f, wx, wy in waypoints)
+    elif anchor_track_id is not None:
         t = _cm._tracks(well)
         t = t[t.track_id == anchor_track_id]
         if t.empty:
@@ -506,9 +523,18 @@ def _fixed_point_frames(
         anchor_pos = {int(r.frame): (float(r.cx), float(r.cy)) for r in t.itertuples()}
         known = sorted(anchor_pos)
     elif x is None or y is None:
-        raise ValueError("give either x and y (full-frame pixels), or anchor_track_id.")
+        raise ValueError("give x and y (full-frame pixels), waypoints, or anchor_track_id.")
 
     def _centre(f: int) -> tuple[float, float]:
+        if wp_sorted:
+            if f <= wp_sorted[0][0]:
+                return wp_sorted[0][1], wp_sorted[0][2]
+            if f >= wp_sorted[-1][0]:
+                return wp_sorted[-1][1], wp_sorted[-1][2]
+            for (f0, x0, y0), (f1, x1, y1) in zip(wp_sorted, wp_sorted[1:]):
+                if f0 <= f <= f1:
+                    t = (f - f0) / (f1 - f0) if f1 != f0 else 0.0
+                    return x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
         if anchor_track_id is None:
             return float(x), float(y)
         if f in anchor_pos:
@@ -522,8 +548,10 @@ def _fixed_point_frames(
     um_px = m["pixel_size_um"]
     half = max(8, int(round(crop_um / um_px / 2)))
 
-    where = (f"anchored on track {anchor_track_id}" if anchor_track_id is not None
-             else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
+    where = (f"interpolated across {len(wp_sorted)} waypoints (f{wp_sorted[0][0]}-{wp_sorted[-1][0]})"
+              if wp_sorted else
+              f"anchored on track {anchor_track_id}" if anchor_track_id is not None
+              else f"fixed at ({float(x):.0f}, {float(y):.0f}) px")
     spec = (f"{well}: frames {lo}-{hi} ({_minutes_between(well, lo, hi):.0f} min), "
             f"{pick_note}, {where}. Crop {crop_um:g} um wide.")
     where_word = "crosshair" if crosshair else "crop centre"
