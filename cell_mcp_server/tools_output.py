@@ -189,6 +189,14 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     if not events:
         raise ValueError("events is empty -- nothing to render.")
 
+    def _b64_all(imgs):
+        out = []
+        for img in imgs:
+            ok, buf = cv2.imencode(".png", img)
+            if ok:
+                out.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+        return out
+
     sections = []
     shared: list[str] = []
     lb_data = []
@@ -288,14 +296,6 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             _, lb_images = _cm._filmstrip_frames(
                 well, track_id, **common, upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"track {track_id}"
-
-        def _b64_all(imgs):
-            out = []
-            for img in imgs:
-                ok, buf = cv2.imencode(".png", img)
-                if ok:
-                    out.append(base64.b64encode(buf.tobytes()).decode("ascii"))
-            return out
 
         b64_list = _b64_all(thumb_images)      # filmstrip thumbnails -- small, pixelated-upscale OK
         lb_b64_list = _b64_all(lb_images)      # lightbox only -- large, smooth-scaled
