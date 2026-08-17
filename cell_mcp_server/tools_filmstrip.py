@@ -512,13 +512,70 @@ def _split_candidates(
     return result
 
 
+def _resolve_with_escalation(
+    well: str, end_id: int, parent: int, sibling_pos: dict[int, tuple[float, float]],
+    *, before_min: float, after_min: float, radius_um: float | None, max_hops: int,
+    first, last, med, um_px: float, seen: set[int], short_lived_frames: int,
+) -> tuple[dict, bool, int]:
+    """One branch's escalation ladder: try increasingly wide radius/window, stopping
+    at the first level that resolves without stealing a sibling's real children.
+    Mutates `seen` in place (only with whichever level's absorptions actually end up
+    used). Returns (result, widened, widened_level) -- see trace_division for the
+    ladder/theft-guard rationale (_TRACE_ESCALATION_MULTS above).
+    """
+    res = None
+    widened_level = 0
+    last_weak_res: dict | None = None
+    base_r_um: float | None = None
+    for level, mult in enumerate(_TRACE_ESCALATION_MULTS):
+        seen_try = set(seen)
+        r_try = radius_um if level == 0 else min(base_r_um * mult, _TRACE_MAX_RADIUS_UM)
+        after_try = after_min if level == 0 else min(after_min * mult, _TRACE_MAX_AFTER_MIN)
+        res_try = _split_candidates(
+            well, end_id, before_min=before_min, after_min=after_try,
+            radius_um=r_try, max_hops=max_hops,
+            first=first, last=last, med=med, um_px=um_px, seen=seen_try,
+        )
+        if level == 0:
+            base_r_um = radius_um if radius_um else res_try["r_um"]
+        if _is_weak_split(res_try, short_lived_frames):
+            # Not solid, but not a conflict either -- safe to commit this level's
+            # bookkeeping (chain-walks it triggered) and try wider.
+            seen.update(seen_try)
+            last_weak_res = res_try
+            continue
+        self_x, self_y = float(last.loc[end_id, "cx"]), float(last.loc[end_id, "cy"])
+        stolen = False
+        for d in res_try["daughters"]:
+            dx, dy = float(first.loc[d, "cx"]), float(first.loc[d, "cy"])
+            dist_self = np.hypot(dx - self_x, dy - self_y)
+            for sib, (sx, sy) in sibling_pos.items():
+                if sib == parent:
+                    continue
+                if np.hypot(dx - sx, dy - sy) < dist_self:
+                    stolen = True
+                    break
+            if stolen:
+                break
+        if stolen:
+            # NOT committed to `seen` -- a rejected level's absorptions must not
+            # starve a sibling's own legitimate search later in this generation.
+            # Going wider only makes theft more likely, never less, so this stops
+            # the ladder outright rather than trying yet wider.
+            return (last_weak_res or {"daughters": None}), False, 0
+        seen.update(seen_try)
+        return res_try, level > 0, level
+    # Ladder exhausted -- every level weak, none stolen.
+    return (last_weak_res or {"daughters": None}), False, 0
+
+
 def _is_weak_split(res: dict, short_lived_frames: int) -> bool:
     """True when a _split_candidates result isn't solid enough to trust as a
     confirmed terminal -- either nothing resolved, or every daughter found is
     short-lived. A cluster of only short-lived candidates is exactly what a
     tracking-noise artifact around a real division looks like too (see
-    _TRACE_WIDEN_RADIUS_MULT), so trace_division treats this the same as "found
-    nothing" and tries a wider search before giving up.
+    _TRACE_ESCALATION_MULTS), so trace_division/_resolve_with_escalation treats
+    this the same as "found nothing" and escalates to a wider search.
     """
     if not res["daughters"]:
         return True
@@ -632,65 +689,12 @@ def trace_division(
                 chain = [*chain, *(h["track_id"] for h in more_hops)]
                 seen.update(h["track_id"] for h in more_hops)
             end_id = chain[-1]
-            # Escalation ladder: try increasingly wide radius/window, stopping at the
-            # first level that resolves. A level only counts as resolved if (a) it
-            # isn't weak (_is_weak_split) AND (b) it isn't STEALING a candidate that
-            # actually belongs to a sibling in this same generation's frontier --
-            # confirmed as a real regression while building this: widening one
-            # branch's empty search can reach into a sibling's own real children
-            # (140.8um away was inside a 154um widened radius on the test fixture).
-            # Going WIDER only makes theft more likely, never less, so a stolen level
-            # stops the ladder outright rather than trying yet wider -- the rightful
-            # sibling claims those candidates on its own turn instead.
-            res = None
-            widened = False
-            widened_level = 0
-            last_weak_res: dict | None = None
-            base_r_um: float | None = None
-            for level, mult in enumerate(_TRACE_ESCALATION_MULTS):
-                seen_try = set(seen)
-                r_try = radius_um if level == 0 else min(base_r_um * mult, _TRACE_MAX_RADIUS_UM)
-                after_try = after_min if level == 0 else min(after_min * mult, _TRACE_MAX_AFTER_MIN)
-                res_try = _split_candidates(
-                    well, end_id, before_min=before_min, after_min=after_try,
-                    radius_um=r_try, max_hops=max_hops,
-                    first=first, last=last, med=med, um_px=um_px, seen=seen_try,
-                )
-                if level == 0:
-                    base_r_um = radius_um if radius_um else res_try["r_um"]
-                if _is_weak_split(res_try, short_lived_frames):
-                    # Not solid, but not a conflict either -- safe to commit this
-                    # level's bookkeeping (chain-walks it triggered) and try wider.
-                    seen.update(seen_try)
-                    last_weak_res = res_try
-                    continue
-                self_x, self_y = float(last.loc[end_id, "cx"]), float(last.loc[end_id, "cy"])
-                stolen = False
-                for d in res_try["daughters"]:
-                    dx, dy = float(first.loc[d, "cx"]), float(first.loc[d, "cy"])
-                    dist_self = np.hypot(dx - self_x, dy - self_y)
-                    for sib, (sx, sy) in sibling_pos.items():
-                        if sib == parent:
-                            continue
-                        if np.hypot(dx - sx, dy - sy) < dist_self:
-                            stolen = True
-                            break
-                    if stolen:
-                        break
-                if stolen:
-                    # NOT committed to `seen` -- same reasoning as the single-widen
-                    # fix: a rejected level's absorptions must not starve a sibling's
-                    # own legitimate search later in this generation.
-                    break
-                seen.update(seen_try)
-                res, widened, widened_level = res_try, level > 0, level
-                break
-            if res is None:
-                # Ladder exhausted (all weak) or abandoned (stolen) without ever
-                # resolving -- fall back to the last safe (non-stolen) attempt, or a
-                # bare "nothing" if even level 0 itself was stolen (rare; only the
-                # `daughters` key is read on this path).
-                res = last_weak_res if last_weak_res is not None else {"daughters": None}
+            res, widened, widened_level = _resolve_with_escalation(
+                well, end_id, parent, sibling_pos,
+                before_min=before_min, after_min=after_min, radius_um=radius_um,
+                max_hops=max_hops, first=first, last=last, med=med, um_px=um_px,
+                seen=seen, short_lived_frames=short_lived_frames,
+            )
             if not res["daughters"]:
                 terminals.append((parent, chain, (int(first.loc[end_id, "frame"]),
                                                     int(last.loc[end_id, "frame"]))))
