@@ -962,10 +962,11 @@ def follow_cells_over_time(
             silently skipping frames inside ranges that were asked for explicitly --
             which is exactly where the evidence is.
         stride_min: target spacing between rendered frames, in minutes.
-        crop_um: width of the crop in micrometres. None (recommended) means 60 for a
-            single track -- a cell and its immediate neighbours -- and auto-fit for
-            a member set, wide enough to hold every member across the sampled
-            frames. Do not set it by hand on a member set unless you want a
+        crop_um: width of the crop in micrometres. None (recommended) means 90 for a
+            single track -- a cell and its immediate neighbours -- and auto-fit
+            (floor 90) for a member set, wide enough to hold every member across
+            the whole window with room to see neighbours. Do not set it by hand
+            on a member set unless you want a
             particular zoom: guessing is how a sibling drifts out of frame halfway
             along, since separation grows as the daughters move apart.
         color: apply the microscope's own display colour.
@@ -1015,7 +1016,7 @@ def follow_cells_over_time(
         header, images = _cm._filmstrip_frames(
             well, int(track_id), start_frame, end_frame,
             max_images=max_images,
-            crop_um=60.0 if crop_um is None else crop_um,
+            crop_um=90.0 if crop_um is None else crop_um,
             color=color, scale_bar=scale_bar, marker=marker,
             stride_min=stride_min, cap=MAX_IMAGES,
         )

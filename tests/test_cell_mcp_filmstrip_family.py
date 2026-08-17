@@ -597,10 +597,13 @@ def test_neither_or_both_is_refused_rather_than_guessed(fake):
         cell_mcp_server.follow_cells_over_time(fake, track_id=1, track_ids=[1])
 
 
-def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
-    """crop_um=None means auto-fit for a member set but 60 for one mask -- the old
-    get_filmstrip default. Passing None straight through would hand _filmstrip_frames
-    a None where it wants a float."""
+def test_a_single_track_still_defaults_to_the_90um_crop(monkeypatch, fake):
+    """crop_um=None means auto-fit for a member set but a flat floor for one mask.
+    Passing None straight through would hand _filmstrip_frames a None where it
+    wants a float. 90.0 (2026-08-16, raised from 60): every family/point crop
+    floor converged on 90um after "still way too zoomed in" feedback -- the
+    single-track default is kept consistent with the rest rather than left as
+    the one outlier."""
     seen = {}
 
     def spy(well, tid, sf, ef, *, crop_um, **k):
@@ -609,7 +612,7 @@ def test_a_single_track_still_defaults_to_the_60um_crop(monkeypatch, fake):
 
     monkeypatch.setattr(cell_mcp_server, "_filmstrip_frames", spy)
     cell_mcp_server.follow_cells_over_time(fake, track_id=1)
-    assert seen["crop"] == 60.0
+    assert seen["crop"] == 90.0
 
 
 @pytest.fixture

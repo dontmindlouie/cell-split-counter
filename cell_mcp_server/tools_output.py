@@ -40,9 +40,11 @@ _REPORT_WINDOW_AFTER_MIN = 90.0
 # a multi-candidate page (2026-08-13 spot-check feedback) and, at the 900px
 # lightbox specifically, as visibly grainy too (Lanczos amplifying noise at the
 # resulting ~15.6x stretch). Applied to BOTH tiers here, not just the lightbox.
-# 60.0 matches the reference case _FIGURE_UPSCALE_TO below was already reasoned
-# against ("a 60um crop is ~104px natively").
-_REPORT_MIN_CROP_UM = 60.0
+# 2026-08-16: raised again, 60->90, to match render.py's own family-auto-fit
+# floor (also raised to 90 the same session) -- "still way too zoomed in...
+# over multiple iterations" was every earlier fix correcting whether the crop
+# COVERED every tracked member, never whether it left room to see neighbours.
+_REPORT_MIN_CROP_UM = 90.0
 
 # _UPSCALE_TO (server.py, 312) is sized for MCP tools that return ImageContent
 # inline -- follow_cells_over_time, watch_location_over_time, list_nearby_tracks --
@@ -125,7 +127,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 the membership transition. Use it for hand-picked member sets.
             before_min, after_min, stride_min (optional): window and sampling in
                 MINUTES, as in follow_cells_over_time.
-            crop_um (optional, default 60.0): crop width in micrometres.
+            crop_um (optional, default 90.0): crop width in micrometres.
             marker (optional, default False): ring the tracked cell. Leave it OFF
                 for ordinary review -- the ring is one more shape in an image whose
                 shapes ARE the evidence. Turn it on only for the narrow case of
@@ -234,7 +236,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
             common = dict(
                 start_frame=ev.get("start_frame"), end_frame=ev.get("end_frame"),
                 max_images=None if mx is None else int(mx),
-                crop_um=float(ev.get("crop_um", 60.0)),
+                crop_um=float(ev.get("crop_um", 90.0)),
                 color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,

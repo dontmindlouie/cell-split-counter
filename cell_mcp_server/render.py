@@ -635,7 +635,7 @@ def _family_filmstrip_frames(
     before_min: float = _WINDOW_BEFORE_MIN, after_min: float = _WINDOW_AFTER_MIN,
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
     added: list[int] | None = None, centre_frame: int | None = None,
-    upscale_to: int = _UPSCALE_TO, min_crop_um: float = 25.0,
+    upscale_to: int = _UPSCALE_TO, min_crop_um: float = 90.0,
     hold_centre_after_member_end: bool = False,
 ) -> tuple[str, list[np.ndarray]]:
     """Crop centred on a SET of tracks, resolved per frame from whoever is present.
@@ -785,12 +785,19 @@ def _family_filmstrip_frames(
     # (it's the same dict _resolve_family_centres uses), so this costs nothing extra
     # to compute over the full range instead of the subsample.
     #
-    # min_crop_um is the floor of that clip -- 25.0 by default, sized for the 312px
-    # inline-tool render (25um is ~58px natively on ACTB, upscaled ~5.4x to 312, a
-    # reasonable stretch). show_cells_in_browser's 900px figure render passes a
-    # higher floor (tools_output.py) -- at 900px the SAME 25um/58px crop is a ~15.6x
-    # stretch, which read as visibly grainy (Lanczos amplifying noise at that ratio),
-    # not just soft. Reported 2026-08-13, same session as the resolution bump itself.
+    # min_crop_um is the floor of that clip -- 90.0 by default, the same value
+    # watch_location_over_time was bumped to on 2026-08-15 after identical
+    # feedback ("crop too tight, hides neighbour nuclei that cause mix-ups").
+    # That fix only touched watch_location_over_time; this function's own floor
+    # (previously 25.0, ~1.2x a typical ACTB nucleus's ~20um diameter) was left
+    # untouched, so every family/division view kept the tight crop regardless --
+    # "still way too zoomed in... over multiple iterations" (2026-08-16), because
+    # every prior fix corrected COVERAGE (does the crop contain every tracked
+    # member) without ever touching CONTEXT (room to see neighbours), a
+    # different axis. 90um is ~4.5x nucleus diameter, matching the precedent.
+    # The upper clip (was 120.0) is raised to 250.0 for the same reason: a
+    # genuinely wide-spread family should not be clamped back down below what
+    # its real separation needs.
     auto = crop_um is None
     if auto:
         radii = []
@@ -804,7 +811,7 @@ def _family_filmstrip_frames(
                 + float(np.sqrt(max(float(r.area_px), 1.0) / np.pi))
                 for r in rows_f))
         r_px = float(np.percentile(radii, 90)) if radii else 20.0
-        crop_um = float(np.clip(2 * r_px * um_px * 1.15, min_crop_um, 120.0))
+        crop_um = float(np.clip(2 * r_px * um_px * 1.15, min_crop_um, 250.0))
 
     half = max(8, int(round(crop_um / um_px / 2)))
 
