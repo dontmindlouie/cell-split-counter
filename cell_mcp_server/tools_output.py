@@ -7,6 +7,7 @@ Split out of the original single-file cell_mcp.py's "tools" section.
 import base64
 import json
 import os
+import re
 
 import cv2
 
@@ -290,8 +291,18 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         spec, _, gen = header.partition(_HDR_SEP)
         if gen and gen not in shared:
             shared.append(gen)
+        # The "showing N of M frames..." sampling note is already in `spec` below,
+        # but as one clause inside a long grey caption paragraph -- exactly the text
+        # a 2026-08-16 field session needed and repeatedly missed ("did you even add
+        # frames, why does it look the same" across 4 events on a >60-frame window
+        # that got silently thinned). Pull it out as its own small badge next to the
+        # title too, where it can't be mistaken for part of the general caption.
+        # Lookahead stops at the real sentence-ending period/comma, not a decimal
+        # point inside the note itself (e.g. "~2.0 min apart").
+        m = re.search(r"showing .*?(?=, (?:fixed at|anchored on)|\.\s*Crop)", spec)
+        badge_html = f'<span class=samplebadge>{m.group(0)}</span>' if m else ""
         sections.append(
-            f"<section id=sec{i}><h2>{i + 1}. {label}</h2>"
+            f"<section id=sec{i}><h2>{i + 1}. {label} {badge_html}</h2>"
             f"<p class=hdr>{spec}</p>"
             f"<div class=filmstrip>{''.join(tiles)}</div></section>"
         )
@@ -312,6 +323,9 @@ body {{ font-family: system-ui, sans-serif; background: #111; color: #eee; margi
 h1 {{ font-weight: 400; }}
 section {{ margin-bottom: 2.5rem; border-top: 1px solid #333; padding-top: 1rem; }}
 h2 {{ font-size: 1.1rem; font-weight: 600; }}
+span.samplebadge {{ font-size: 0.72rem; font-weight: 400; color: #ffb454;
+  background: #2a2010; border: 1px solid #5a4620; border-radius: 4px;
+  padding: 0.15rem 0.5rem; margin-left: 0.5rem; vertical-align: middle; }}
 p.hdr {{ color: #999; font-size: 0.85rem; max-width: 60rem; }}
 p.task {{ color: #eee; font-size: 1rem; max-width: 60rem; background: #1d2a35; border-left: 3px solid #7aa7d0; padding: 0.7rem 1rem; }}
 details.howto {{ color: #888; font-size: 0.82rem; max-width: 60rem; margin-bottom: 1rem; }}
