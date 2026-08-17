@@ -482,21 +482,23 @@ def trace_division(
     """Walk a division through EVERY hop/fragment generation, not just one --
     resolve_division's own multi-generation extension. Free: no images.
 
-    resolve_division answers "who coexists with THIS track's end" for one hop. On
-    a real 2026-08-16 field case that was not enough: track 12's own id wobbled
-    through a chain of re-acquisitions (12->554->561->558->562->...->800) before
-    the real split into two daughters happened, and only at 800 does
-    resolve_division(800) find them. Calling resolve_division on 12, 554, or 561
-    either finds nothing or -- worse -- resolves the WRONG thing (an earlier
-    re-acquisition mistaken for a sibling pair). Finding the real split by hand
-    took 5-8 hops of get_lineage, and even then a short-lived side branch (one
-    frame, easy to miss) almost got silently dropped.
+    QUICK REF (long descriptions truncate ~1200 chars in, no [...] marker --
+    read this first): if a terminal branch dies out fast (a handful of frames)
+    and you expected a long-lived daughter instead, try raising max_hops (each
+    generation's own hop-chain walk) before trusting the short answer --
+    KNOWN GAP as of 2026-08-16, unresolved: on well 20251016_ACTB_M1 track 12,
+    this still stops at short-lived hops (554/558/561/562) instead of
+    continuing to the real split at 800->827+828/829, confirmed independently
+    3x. If the branch you care about looks wrong, hand-walk get_lineage as a
+    cross-check rather than trusting a short terminal at face value.
 
-    This tool repeats resolve_division's own coexistence+distance+size test
-    generation after generation: collapse the current track's hop chain, look for
-    a real split at its end, and if one resolves, repeat the same test from EACH
-    daughter. Stops a branch when no split resolves there (a genuine terminal --
-    the branch is still alive, tracked, or dead, not necessarily missing) or
+    resolve_division answers "who coexists with THIS track's end" for one hop --
+    not enough when a real division hides behind a wobbling id-hop chain first
+    (see the track-12 case above). This tool repeats resolve_division's own
+    coexistence+distance+size test generation after generation: collapse the
+    current track's hop chain, look for a real split at its end, and if one
+    resolves, repeat from EACH daughter. Stops a branch when no split resolves
+    (a genuine terminal -- alive, tracked, or dead, not necessarily missing) or
     max_generations is hit.
 
     Every terminal branch is returned, including short-lived ones (fewer than

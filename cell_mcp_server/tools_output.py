@@ -64,6 +64,16 @@ _FIGURE_UPSCALE_TO = 900
 def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
 
+    QUICK REF (long descriptions truncate ~1200 chars in, no [...] marker --
+    read this block first, it may be all you get):
+        events[].kind REQUIRED = "track" (needs track_id) / "family" (needs
+        track_ids; add hold_centre_after_member_end=True once a vanished member
+        is confirmed gone, else re-centring snaps to survivors) / "point" (needs
+        x, y, start_frame, end_frame -- no drift-following yet, re-anchor with
+        several point events if the target moves). max_images: leave OFF, <60
+        frames renders GAP-FREE; the "showing N of M frames" sampling note is
+        ONLY in the return text, not on the page. Returns 2 lines: path, file:// URL.
+
     CALL THIS WHENEVER THE USER SAYS "show me", "let me see", "send me", "put
     together", "can I look at" -- anything meaning they want to LOOK at cells rather
     than read a description of them. Describing twelve frames in prose when the
@@ -134,7 +144,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 pointing out one specific cell among several similar-looking ones
                 in a crowded or wide crop, e.g. a page someone else will read with
                 no other way to say "this one, not that one". With track_ids, rings
-                every member present or none.
+                every member present or none. NOTE: kind="point" always draws a
+                crosshair at the given coordinate regardless of `marker` -- that
+                crosshair means "you asked me to look here", not "detected cell",
+                but the two currently look visually similar enough to be confused
+                (2026-08-16 field feedback) and there is no way to suppress it yet.
             hold_centre_after_member_end (optional, default False, kind="family"
                 only): freeze a member's last position into the crop's mean once
                 its span ends, instead of letting the mean jump to whoever
