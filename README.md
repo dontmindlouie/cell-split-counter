@@ -27,7 +27,9 @@ to put her measurements, not in trying to automate her out of the loop. See
    Claude Code session over a local stdio MCP: `list_wells`, `list_tracks`,
    `get_track_profile`, `view_whole_field`, `follow_cells_over_time`, `get_lineage`,
    `measure`, `get_neighbourhood_stats`, `watch_location_over_time`,
-   `list_nearby_tracks`, `find_candidates`, `show_cells_in_browser`, `annotate`.
+   `list_nearby_tracks`, `find_candidates`, `show_cells_in_browser`, `annotate`,
+   `resolve_fiji_sighting`, `open_in_fiji`, `resolve_lineage_chain`,
+   `resolve_division`, `trace_division`, `find_prophase_onset`.
    She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
@@ -92,7 +94,7 @@ that machine (`where uv` on Windows / `which uv` on macOS/Linux, e.g.
 a winget install). That edit is machine-specific, so keep it local (uncommitted)
 rather than pushing your own path into the shared `.mcp.json`.
 
-**Tools** (`cell_mcp.py`, 13 total — docstrings are written as the model-facing schema,
+**Tools** (`cell_mcp.py`, 19 total — docstrings are written as the model-facing schema,
 see the file itself for full argument docs):
 - `list_wells()` / `list_tracks(well, filters...)` — orientation, the `ls`.
 - `find_candidates(well, pool, sort_by, stratum, limit)` — free whole-well triage: ranks
@@ -153,6 +155,29 @@ see the file itself for full argument docs):
   (condensation/metaphase/anaphase/exit) and outcome class to a separate,
   append-only `annotations.csv`, which is what turns her usage of these tools
   into labeled data as a byproduct.
+- `resolve_fiji_sighting(well, fiji_frame, x, y)` — turns one row of a Fiji
+  Results table (or a clicked point) into a `track_id`, trying both the raw-pixel
+  and calibrated-micron reading against real tracked positions so the researcher
+  doesn't have to know which unit Fiji gave, and correcting Fiji's 1-indexed
+  frame to this server's 0-indexed one. Step one only — its own return value
+  points at `find_prophase_onset` and `follow_cells_over_time` next.
+- `open_in_fiji(well, frame, cx, cy, crop_um)` — the reverse: launches Fiji on
+  the raw `.nd2`, jumped to a specific frame/location from a report page or
+  filmstrip label, for cross-checking a call against the real file.
+- `resolve_lineage_chain(well, track_id, direction, max_hops)` — free, chases a
+  track through segmentation id-hops (mask lost and re-acquired) that are NOT a
+  division, stopping rather than guessing through an ambiguous hop.
+- `resolve_division(well, track_id, before_min, after_min, radius_um, max_hops)`
+  — free, automates the coexistence+distance+size test for finding a real split
+  the tracker never linked in `lineage.csv`; flags OWNERSHIP AMBIGUITY when a
+  resolved daughter could instead belong to a different nearby track.
+- `trace_division(well, track_id, ..., max_generations, short_lived_frames)` —
+  free, `resolve_division`'s multi-generation extension: walks every hop/fragment
+  generation forward, escalating search radius/window through a ladder when a
+  generation's daughters are all short-lived before giving up on it.
+- `find_prophase_onset(well, track_id)` — free, looks for where a mother's
+  chromatin condensation actually began, earlier than her own track's first
+  frame, by chasing the id-hop chain backward and scoring each predecessor frame.
 
 ## Testing & Evaluation
 
