@@ -72,7 +72,11 @@ server = MCPServer(
         "window there is the single most common way this tool set produces a filmstrip that "
         "shows the lead-up but not the outcome, or the outcome but not the lead-up. "
         "open_in_fiji(well, frame, cx, cy) does the reverse: jumps Fiji itself to a location "
-        "from a report page or filmstrip label, for cross-checking a call against the raw file."
+        "from a report page or filmstrip label, for cross-checking a call against the raw file.\n\n"
+        "Tool changelog (so a session loading this server anywhere, not just from this repo's "
+        "CLAUDE.md, knows what's new): 2026-08 added resolve_fiji_sighting, open_in_fiji, "
+        "trace_division, resolve_division, resolve_lineage_chain, find_prophase_onset -- see "
+        "each one's own docstring for what it does."
     ),
 )
 

@@ -12,19 +12,33 @@ subset from names alone has already gone wrong once: a session picked the three
 Bash calls reimplementing it from source. Schemas are cheap; guessing is not.
 
 So the first tool call of any session in this repo is one `ToolSearch` loading **all**
-of them:
+of them, by keyword rather than by an enumerated name list:
 
 ```
-select:mcp__cell-microscopy__list_wells,mcp__cell-microscopy__list_tracks,
-mcp__cell-microscopy__find_candidates,mcp__cell-microscopy__get_track_profile,
-mcp__cell-microscopy__get_lineage,mcp__cell-microscopy__list_nearby_tracks,
-mcp__cell-microscopy__get_neighbourhood_stats,mcp__cell-microscopy__measure,
-mcp__cell-microscopy__view_whole_field,mcp__cell-microscopy__follow_cells_over_time,
-mcp__cell-microscopy__watch_location_over_time,mcp__cell-microscopy__show_cells_in_browser,
-mcp__cell-microscopy__annotate
++cell-microscopy
 ```
 
-(One line, no spaces, when actually calling it.)
+with `max_results` set generously (30+). Every tool here is named
+`mcp__cell-microscopy__*`, so `+cell-microscopy` requires that substring and ranks
+the rest in — this returns the whole set, present and future, with nothing to keep in
+sync. Do not enumerate tool names by hand here: a hand-maintained list has already
+gone stale once (2026-08-25: six tools existed but weren't in an older version of this
+list, so a session hand-converted Fiji units itself instead of calling
+`resolve_fiji_sighting` — wasted most of a session on a bug that tool already
+handles). A query-based load can't go stale the same way, which is why it replaced
+the list.
+
+## A researcher's Fiji click starts with `resolve_fiji_sighting`
+
+When a researcher gives you coordinates read off Fiji (status bar hover, or a
+Results table from the point tool + Measure), do not hand-convert units or frame
+numbers yourself. Fiji's calibrated micron reading and raw pixel reading are close
+enough in magnitude to both look plausible, and its frame number is 1-indexed against
+every other tool's 0-indexed. Hand-converting has produced a confidently wrong
+crosshair before. Call `resolve_fiji_sighting(well, fiji_frame, x, y)` instead — it
+tries both unit readings against real tracked positions and returns the track_id
+that actually lands on a cell. Then follow its own instructions (find_prophase_onset,
+follow_cells_over_time) from there.
 
 ## "Show me" ends in `show_cells_in_browser`
 
