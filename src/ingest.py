@@ -40,6 +40,13 @@ class IngestConfig:
     # mixing in a membrane/actin/mito marker inflates the mask past the nucleus. The multi-color
     # display composite still uses every channel regardless. None (default) keeps the old
     # max-projection-of-all-channels behaviour, for reproducing pre-2026-08-14 bundles.
+    position: int | None = None  # multi-position ND2 only (f.sizes["P"] present, e.g. a
+    # multipoint/XY-loop acquisition bundling several wells/conditions into one file):
+    # index into the P axis for the single well this run processes. Required whenever the
+    # source has a P axis -- there is no sane "combine all positions" default the way
+    # max-projecting channels is, since positions are different physical wells/conditions,
+    # not different views of the same sample (confirmed 2026-08-25, Mia's
+    # VenusVSCherry 16-position file).
 
 
 def get_pixel_size_um(video_path: Path) -> float | None:
@@ -174,6 +181,22 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
     kept_index = 0
     nucleus_channel_name = None  # set below on the multi-channel path, if config.nucleus_channel matched
     with nd2.ND2File(config.video_path) as f:
+        n_positions = f.sizes.get("P")
+        if n_positions is not None:
+            if config.position is None:
+                raise ValueError(
+                    f"{config.video_path.name} has {n_positions} positions (multipoint/XY-loop "
+                    f"acquisition) and no position was given -- there is no safe default, each "
+                    f"position is a different well/condition, not a different view of the same "
+                    f"sample. Pass --position (0-{n_positions - 1}).")
+            if not (0 <= config.position < n_positions):
+                raise ValueError(
+                    f"position {config.position} out of range for {config.video_path.name} "
+                    f"({n_positions} positions, 0-{n_positions - 1})")
+        elif config.position is not None:
+            print(f"  WARNING: position={config.position} was requested but "
+                  f"{config.video_path.name} has no P axis -- ignored, has no effect.")
+
         n_channels = f.sizes.get("C", 1)
         if n_channels == 1:
             if config.nucleus_channel is not None:
@@ -202,6 +225,13 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
                  if getattr(c.channel, "color", None) else None)
                 for c in f.metadata.channels
             ]
+        position_name = None
+        if n_positions is not None:
+            for loop in f.experiment:
+                if type(loop).__name__ == "XYPosLoop":
+                    position_name = loop.parameters.points[config.position].name
+                    break
+
         (out_dir / _DISPLAY_COLOR_FILENAME).write_text(
             json.dumps({
                 "display_color_rgb": display_color_rgb,
@@ -209,6 +239,8 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
                 "channel_names": ([c.channel.name for c in f.metadata.channels]
                                    if n_channels > 1 else None),
                 "nucleus_channel_requested": config.nucleus_channel,
+                "position_requested": config.position,
+                "position_name": position_name,
             })
         )
         read_display_color.cache_clear()  # out_dir may reuse a path from an earlier run
@@ -219,7 +251,12 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
             for raw_index in range(total_t):
                 if raw_index % config.frame_step != 0:
                     continue
-                frame = f.read_frame(raw_index)
+                # Flat sequence index is T-outer/P-inner (confirmed empirically
+                # 2026-08-25 via frame_metadata().channels[0].position -- each T tick
+                # visits every position once before advancing), matching t_arr's own
+                # axis order below.
+                seq = raw_index * n_positions + config.position if n_positions is not None else raw_index
+                frame = f.read_frame(seq)
                 if config.roi is not None:
                     x, y, w, h = config.roi
                     frame = frame[y : y + h, x : x + w]
@@ -270,7 +307,11 @@ def _extract_frames_nd2(config: IngestConfig, out_dir: Path) -> list[Path]:
             for raw_index in range(total_t):
                 if raw_index % config.frame_step != 0:
                     continue
-                channels = np.asarray(t_arr[raw_index])  # (C, Y, X)
+                # t_arr's axis order follows f.sizes ("T","P","C","Y","X" when a P axis
+                # exists), confirmed 2026-08-25 -- indexing [raw_index] alone here would
+                # silently pull a (P, C, Y, X) slice instead of (C, Y, X), mixing wells.
+                channels = np.asarray(t_arr[raw_index, config.position] if n_positions is not None
+                                      else t_arr[raw_index])  # (C, Y, X)
                 if config.roi is not None:
                     x, y, w, h = config.roi
                     channels = channels[:, y : y + h, x : x + w]

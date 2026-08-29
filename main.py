@@ -25,6 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("video_path", type=Path)
     parser.add_argument("--frame-step", type=int, default=1)
     parser.add_argument("--nucleus-channel", type=str, default=None, help="multi-channel ND2 only: substring match against a channel name (e.g. AF555, AF647, mCherry). Segmentation runs on THIS channel alone instead of a max-projection of all channels -- required when other channels carry a membrane/actin/mito marker, which would otherwise inflate the mask past the nucleus. The multi-color display composite still shows every channel regardless.")
+    parser.add_argument("--position", type=int, default=None, help="multi-position ND2 only (a multipoint/XY-loop acquisition bundling several wells/conditions into one file): index into the P axis for the single well this run processes. Required whenever the source has a P axis -- there is no safe 'combine all positions' default, since positions are different wells/conditions, not different views of the same sample.")
     parser.add_argument("--tracker", choices=["iou", "trackastra"], default="trackastra")
     parser.add_argument("--tracker-mode", choices=["greedy", "ilp"], default="greedy", help="Trackastra linking mode (default: greedy; ilp catches compact/adjacent divisions greedy collapses, see docs/investigation_notes.md)")
     parser.add_argument("--start-frame", type=int, default=0, help="first frame index to process (0-indexed)")
@@ -49,7 +50,7 @@ if __name__ == "__main__":
     frame_dir = args.frame_dir or (output_dir / "frames")
 
     config = IngestConfig(video_path=args.video_path, frame_step=args.frame_step, roi=None,
-                          nucleus_channel=args.nucleus_channel)
+                          nucleus_channel=args.nucleus_channel, position=args.position)
     run(
         config,
         frame_dir=frame_dir,

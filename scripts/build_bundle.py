@@ -81,7 +81,8 @@ def frame_index_pairs(run_dir: Path) -> list[tuple[int, int]]:
     return pairs
 
 
-def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: str | None = None) -> dict:
+def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: str | None = None,
+                      position: int | None = None) -> dict:
     """Pull everything the bundle needs out of the ND2. Hard-fails on absence.
 
     Deliberately reads acquisition parameters (objective/NA/emission/bit depth)
@@ -99,6 +100,16 @@ def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: st
         if T is None:
             raise CalibrationError(f"{nd2_path.name}: no T axis; not a time-lapse")
 
+        n_positions = sizes.get("P")
+        if n_positions is not None and position is None:
+            raise CalibrationError(
+                f"{nd2_path.name} has {n_positions} positions and no position was given -- "
+                f"each position is a different well/condition, refusing to guess which one "
+                f"this run_dir belongs to.")
+        if n_positions is None and position is not None:
+            raise CalibrationError(
+                f"position={position} was given but {nd2_path.name} has no P axis.")
+
         vs = f.voxel_size()
         if not vs.x or not np.isfinite(vs.x):
             raise CalibrationError(f"{nd2_path.name}: no usable pixel size in voxel_size()")
@@ -110,9 +121,15 @@ def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: st
                 "Wrong ND2 for this run?"
             )
 
+        # Flat frame_metadata() sequence index is T-outer/P-inner (confirmed empirically
+        # 2026-08-25 against XYPosLoop position names) -- a raw T-tick r maps to flat
+        # index r*n_positions+position, NOT r, whenever a P axis is present.
+        def _seq(r: int) -> int:
+            return r * n_positions + position if n_positions is not None else r
+
         timestamps = []
         for r in raw_indices:
-            ts = f.frame_metadata(int(r)).channels[0].time.relativeTimeMs
+            ts = f.frame_metadata(_seq(r)).channels[0].time.relativeTimeMs
             if ts is None or not np.isfinite(ts):
                 raise CalibrationError(f"{nd2_path.name}: missing timestamp at raw frame {r}")
             timestamps.append(float(ts))
@@ -185,7 +202,8 @@ def read_calibration(nd2_path: Path, raw_indices: list[int], nucleus_channel: st
             "objective_magnification": scope.objectiveMagnification,
             "zoom_magnification": scope.zoomMagnification,
             "modality": list(scope.modalityFlags or []),
-            "position_name": f.frame_metadata(int(raw_indices[0])).channels[0].position.name,
+            "position_index": position,
+            "position_name": f.frame_metadata(_seq(int(raw_indices[0]))).channels[0].position.name,
             "acquisition_date": info.get("date"),
             "acquisition_dimensions": _grab(r"(Dimensions:.*)"),
             "source_nd2": nd2_path.name,
@@ -360,6 +378,18 @@ def recorded_segmentation_channel(run_dir: Path) -> str | None:
     return json.loads(p.read_text(encoding="utf-8")).get("segmentation_channel")
 
 
+def recorded_position(run_dir: Path) -> int | None:
+    """The position index ingest actually extracted, straight from its own record.
+
+    None means either a single-position source or a run predating this field --
+    both are fine, there's no position to defer to either way.
+    """
+    p = run_dir / "frames" / "_display_color.json"
+    if not p.is_file():
+        return None
+    return json.loads(p.read_text(encoding="utf-8")).get("position_requested")
+
+
 def provenance(run_dir: Path) -> dict:
     """Record where this bundle came from and when, so a reader can tell whether it
     is internally consistent without resorting to file mtimes.
@@ -476,6 +506,7 @@ def write_lineage(run_dir: Path, out_run: Path) -> dict:
 def write_labels_and_tracks(
     run_dir: Path, out_run: Path, pairs: list[tuple[int, int]],
     nd2_path: Path, cal: dict, bleach_curve: bool, nucleus_channel: str | None = None,
+    position: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Re-encode label maps as PNG-16 and build the per-frame track table.
 
@@ -553,6 +584,7 @@ def write_labels_and_tracks(
         # rescale, unlike the ingest display path) so intensity_mean stays in real
         # ADU units for the bleach curve, at the cost of not being any single
         # marker's true signal at pixels where the other channel is brighter.
+        n_positions = f.sizes.get("P")
         t_arr = nd2.imread(str(nd2_path), dask=True) if n_channels > 1 else None
 
         for i, (kept, raw_idx) in enumerate(pairs):
@@ -563,10 +595,15 @@ def write_labels_and_tracks(
             (labels_dir / f"frame_{kept:05d}.png").write_bytes(buf.tobytes())
 
             if n_channels > 1:
-                channels = np.asarray(t_arr[int(raw_idx)])  # (C, Y, X)
+                # t_arr's axis order follows f.sizes ("T","P","C","Y","X" when a P axis
+                # exists) -- indexing [raw_idx] alone would silently pull a (P, C, Y, X)
+                # slice instead of (C, Y, X), mixing wells (see src/ingest.py, 2026-08-25).
+                channels = np.asarray(t_arr[int(raw_idx), position] if n_positions is not None
+                                      else t_arr[int(raw_idx)])  # (C, Y, X)
                 img = channels[nucleus_idx] if nucleus_idx is not None else np.max(channels, axis=0)
             else:
-                img = np.array(f.read_frame(int(raw_idx)), copy=True)
+                seq = int(raw_idx) * n_positions + position if n_positions is not None else int(raw_idx)
+                img = np.array(f.read_frame(seq), copy=True)
 
             if lab.max() == 0:
                 if bleach_curve:
@@ -649,6 +686,7 @@ def main() -> None:
     ap.add_argument("run_dir", type=Path, help="a pipeline output run directory")
     ap.add_argument("--nd2", type=Path, required=True, help="source ND2 (read for calibration only)")
     ap.add_argument("--nucleus-channel", type=str, default=None, help="Usually unnecessary -- auto-detected from the channel ingest actually segmented on (recorded in <run_dir>/frames/_display_windows.json by main.py's --nucleus-channel). Only needed to build from a run that predates that recording. If passed AND a recorded value exists, they must match exactly or the build is refused.")
+    ap.add_argument("--position", type=int, default=None, help="multi-position ND2 only: index into the P axis for the well this run_dir belongs to. Required whenever --nd2 has a P axis. Must match the --position main.py's ingest used to produce this run_dir, or timestamps/intensity will come from the wrong well.")
     ap.add_argument("--out", type=Path, default=Path("data/bundle"), help="bundle root")
     ap.add_argument("--candidates", type=Path, default=Path("data/candidates"),
                     help="where the detector's candidates.csv goes -- deliberately NOT "
@@ -693,8 +731,18 @@ def main() -> None:
             f"intensity measurements would come from a different channel than its masks.")
     nucleus_channel = args.nucleus_channel or recorded
 
+    rec_position = recorded_position(run_dir)
+    if rec_position is not None and args.position is not None and rec_position != args.position:
+        sys.exit(
+            f"  --position {args.position} does not match the position ingest actually "
+            f"extracted ({rec_position}, from {run_dir}/frames/_display_color.json). Refusing "
+            f"to build a bundle whose timestamps/intensity would come from a different well "
+            f"than its masks.")
+    position = args.position if args.position is not None else rec_position
+
     try:
-        cal = read_calibration(args.nd2, [r for _, r in pairs], nucleus_channel=nucleus_channel)
+        cal = read_calibration(args.nd2, [r for _, r in pairs], nucleus_channel=nucleus_channel,
+                                position=position)
     except CalibrationError as exc:
         sys.exit(f"  CALIBRATION FAILED: {exc}\n  Refusing to write a bundle with fabricated units.")
     iv = cal["interval_ms"]
@@ -704,7 +752,7 @@ def main() -> None:
     print("  encoding labels + measuring tracks...")
     extra, rows = write_labels_and_tracks(
         run_dir, out_run, pairs, args.nd2, cal, not args.no_intensity_curve,
-        nucleus_channel=nucleus_channel,
+        nucleus_channel=nucleus_channel, position=position,
     )
 
     tracks_csv = out_run / "tracks.csv"
