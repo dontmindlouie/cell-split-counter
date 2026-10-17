@@ -61,6 +61,23 @@ _REPORT_MIN_CROP_UM = 90.0
 # top of it, which is where most of the visible softness was coming from.
 _FIGURE_UPSCALE_TO = 900
 
+# JPEG, not PNG, for both tiers. Reported 2026-10-17 (researcher, ZO1_STB_P2): a
+# 60-event page came out at 2.3 GB and would not open; 10 events was still 417 MB.
+# Noisy fluorescence, Lanczos-upscaled, barely compresses losslessly -- measured on a
+# real ACTB_M2 page, the 900px lightbox averaged 961 KB as PNG vs 134 KB at q85
+# (7.2x) and the 312px thumbnail 156 KB vs 28 KB (5.6x), with no difference visible
+# by eye. The lightbox gets the higher quality since it is what gets pulled into
+# figures.
+_THUMB_JPEG_QUALITY = 85
+_LIGHTBOX_JPEG_QUALITY = 90
+
+# Events per page. Same report: one call put every event on one page, and the
+# calling session then paged by hand ("page 1 of 6", ten events per call). Pages
+# are now split here instead, and each page is rendered, written and released
+# before the next is started, so the server's memory is bounded by one page rather
+# than growing with the event count (10 events at PNG peaked at ~2.1 GB).
+_EVENTS_PER_PAGE = 12
+
 @server.tool()
 def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
@@ -175,6 +192,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     linkify a URL but not a Windows path, and which one is clickable depends on their
     client. Do not shorten either, do not describe where the file is instead of naming
     it, and do not make them ask twice.
+    More than 12 events are split automatically into linked pages of up to 12
+    (..._part1of5.html, ...), each with previous/next links. The return is then a
+    one-line summary followed by a path + URL pair per page; giving the user part 1
+    is enough, but pass all of them through. Pass the whole event list in ONE call --
+    do not split it into several calls yourself.
     Images are embedded as base64, so the
     file is portable on its own -- open it directly, or serve it
     (`python -m http.server`) if file:// is blocked in the browser being used.
@@ -188,18 +210,9 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     """
     if not events:
         raise ValueError("events is empty -- nothing to render.")
-
-    def _b64_all(imgs):
-        out = []
-        for img in imgs:
-            ok, buf = cv2.imencode(".png", img)
-            if ok:
-                out.append(base64.b64encode(buf.tobytes()).decode("ascii"))
-        return out
-
-    sections = []
-    shared: list[str] = []
-    lb_data = []
+    # Checked up front for every event, before any rendering: pages are now written
+    # as they fill, so a bad event late in the list would otherwise fail the call
+    # after earlier pages were already on disk.
     for i, ev in enumerate(events):
         kind = ev.get("kind")
         if kind not in ("track", "family", "point"):
@@ -208,8 +221,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 f"(got {kind!r}) -- declare the shape, don't rely on it being "
                 f"guessed from whichever other keys are present: {ev!r}")
         if kind == "point":
-            waypoints = ev.get("waypoints")
-            if waypoints is None and ("x" not in ev or "y" not in ev):
+            if ev.get("waypoints") is None and ("x" not in ev or "y" not in ev):
                 raise ValueError(
                     f"events[{i}] has kind='point' but no 'x'/'y' (or 'waypoints') "
                     f"given: {ev!r}")
@@ -218,6 +230,41 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                     f"events[{i}] has kind='point' and needs start_frame and "
                     f"end_frame too -- there is no track lifetime to default a "
                     f"window from: {ev!r}")
+        elif kind == "family" and "track_ids" not in ev:
+            raise ValueError(
+                f"events[{i}] has kind='family' but no 'track_ids' given: {ev!r}")
+        elif kind == "track" and "track_id" not in ev:
+            raise ValueError(
+                f"events[{i}] has kind='track' but no 'track_id' given: {ev!r}")
+
+    def _b64_all(imgs, quality):
+        out = []
+        for img in imgs:
+            if img.ndim == 3 and img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            if ok:
+                out.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+        return out
+
+    import time
+    out_dir = _cm.BUNDLE / well / "browsers"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    n_pages = -(-len(events) // _EVENTS_PER_PAGE)
+
+    def _page_name(k):
+        return (f"browser_{stamp}.html" if n_pages == 1
+                else f"browser_{stamp}_part{k}of{n_pages}.html")
+
+    written = []
+    sections = []
+    shared: list[str] = []
+    lb_data = []
+    for i, ev in enumerate(events):
+        kind = ev["kind"]
+        if kind == "point":
+            waypoints = ev.get("waypoints")
             mx = ev.get("max_images")
             common = dict(
                 max_images=None if mx is None else int(mx),
@@ -246,9 +293,6 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 f"drift ({len(waypoints)} waypoints)" if waypoints is not None
                 else f"({ev['x']:.0f}, {ev['y']:.0f})")
         elif kind == "family":
-            if "track_ids" not in ev:
-                raise ValueError(
-                    f"events[{i}] has kind='family' but no 'track_ids' given: {ev!r}")
             members, added = _resolve_family(well, [int(t) for t in ev["track_ids"]])
             crop = ev.get("crop_um")
             mx = ev.get("max_images")
@@ -279,9 +323,6 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 min_crop_um=_REPORT_MIN_CROP_UM)
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:  # kind == "track"
-            if "track_id" not in ev:
-                raise ValueError(
-                    f"events[{i}] has kind='track' but no 'track_id' given: {ev!r}")
             track_id = int(ev["track_id"])
             mx = ev.get("max_images")
             common = dict(
@@ -297,11 +338,14 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 well, track_id, **common, upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"track {track_id}"
 
-        b64_list = _b64_all(thumb_images)      # filmstrip thumbnails -- small, pixelated-upscale OK
-        lb_b64_list = _b64_all(lb_images)      # lightbox only -- large, smooth-scaled
+        b64_list = _b64_all(thumb_images, _THUMB_JPEG_QUALITY)       # filmstrip thumbnails -- small, pixelated-upscale OK
+        lb_b64_list = _b64_all(lb_images, _LIGHTBOX_JPEG_QUALITY)    # lightbox only -- large, smooth-scaled
+        del thumb_images, lb_images
+        # Index into THIS page's LB_DATA, not the global event index.
+        lb_i = len(lb_data)
         tiles = [
-            f'<img src="data:image/png;base64,{b64}" loading="lazy" '
-            f'onclick="openLightbox({i},{j})">'
+            f'<img src="data:image/jpeg;base64,{b64}" loading="lazy" '
+            f'onclick="openLightbox({lb_i},{j})">'
             for j, b64 in enumerate(b64_list)
         ]
         # Split the per-case facts from the standing how-this-renders text and collect
@@ -337,7 +381,44 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         )
         lb_data.append({"label": label, "images": lb_b64_list})
 
+        if len(sections) == _EVENTS_PER_PAGE or i == len(events) - 1:
+            written.append(_write_page(
+                out_dir / _page_name(len(written) + 1), well, note, sections, shared,
+                lb_data, len(written) + 1, n_pages, _page_name,
+                first_event=i + 2 - len(sections), last_event=i + 1,
+                n_events=len(events)))
+            sections, shared, lb_data = [], [], []
+
+    # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
+    # used to return "data\bundle\<well>\browsers\browser_....html" -- openable only by
+    # someone already sitting in the repo root. The reader is a person in a terminal or
+    # a chat window, and they said so twice: first that they had to "hunt down the html
+    # link", then that the absolute path still was not clickable and they were pasting
+    # it into Chrome by hand. Terminals and chat clients linkify a URL, not a Windows
+    # path, so give them both and let whichever one their client understands win.
+    full = [p.resolve() for p in written]
+    if len(full) == 1:
+        return f"{full[0]}\n{full[0].as_uri()}"
+    head = (f"{len(events)} events split into {len(full)} pages of up to "
+            f"{_EVENTS_PER_PAGE}; each page links to the previous/next part. "
+            f"Open part 1 first:")
+    return "\n".join([head] + [f"{p}\n{p.as_uri()}" for p in full])
+
+
+def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
+                page_name, first_event, last_event, n_events):
+    """Write one page of show_cells_in_browser's output and return its path."""
     lb_json = json.dumps(lb_data)
+    if n_parts > 1:
+        prev_html = (f'<a href="{page_name(part - 1)}">&lsaquo; part {part - 1}</a>'
+                     if part > 1 else "")
+        next_html = (f'<a href="{page_name(part + 1)}">part {part + 1} &rsaquo;</a>'
+                     if part < n_parts else "")
+        pager_html = (f'<div class="pager"><span>Part {part} of {n_parts} '
+                      f'&middot; events {first_event}&ndash;{last_event} of {n_events}</span>'
+                      f'{prev_html}{next_html}</div>')
+    else:
+        pager_html = ""
     # Collapsed by default: it is reference, not the task. Open once, then get out of
     # the way of the 14 cases the page actually exists for.
     note_html = f"<p class=task>{note}</p>" if note else ""
@@ -346,7 +427,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         f"<p>{g}</p></details>" for g in shared)
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
-<title>{well} browser</title>
+<title>{well} browser{f" ({part}/{n_parts})" if n_parts > 1 else ""}</title>
 <style>
 body {{ font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 2rem; }}
 h1 {{ font-weight: 400; }}
@@ -369,12 +450,12 @@ div.view-controls {{ display: flex; align-items: center; gap: 0.9rem;
 div.view-controls label {{ display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; cursor: pointer; }}
 div.filmstrip {{ display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; }}
 div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
-/* The frame/time/coord label (top) and scale bar (bottom) are burned into the PNG
+/* The frame/time/coord label (top) and scale bar (bottom) are burned into the image
    pixels, not drawn by CSS -- so "hiding" them for a clean figure means clipping
    those strips off the rendered image rather than toggling a layer. Both bands are
    now a single text line each (see _stamp_tile/_scale_bar in render.py), so top and
    bottom take the same inset. Filmstrip and lightbox render the identical base64
-   PNG, just at different display sizes -- clip-path % is relative to the image's
+   image, just at different display sizes -- clip-path % is relative to the image's
    own box either way, so they must use the same values or one under/over-trims. */
 body.figure-mode div.filmstrip img,
 body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
@@ -388,16 +469,22 @@ body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
 .lightbox-nav:disabled {{ opacity: 0.25; cursor: default; }}
 .lightbox-nav.prev {{ left: 16px; }}
 .lightbox-nav.next {{ right: 16px; }}
+div.pager {{ display: flex; align-items: center; gap: 0.9rem; margin-left: auto; font-size: 0.85rem; color: #aaa; }}
+div.pager a {{ color: #7aa7d0; text-decoration: none; padding: 0.15rem 0.6rem; border: 1px solid #335; border-radius: 4px; }}
+div.pager a:hover {{ background: #1d2a35; }}
+body > div.pager {{ margin: 2rem 0; }}
 </style></head><body>
 <h1>{well}</h1>
 <nav class="track-nav">
 <div class="view-controls">
   <label><input type="checkbox" id="figureCtl" onchange="document.body.classList.toggle('figure-mode', this.checked)"> hide labels + scale bar (figures)</label>
+  {pager_html}
 </div>
 </nav>
 {note_html}
 {shared_html}
 {''.join(sections)}
+{pager_html}
 <div class="lightbox" id="lightbox">
   <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
   <button class="lightbox-nav prev" id="lb-prev" onclick="stepLightbox(-1)">&lsaquo;</button>
@@ -410,7 +497,7 @@ var LB_DATA = {lb_json};
 var lbSection = 0, lbIdx = 0;
 function showLbFrame() {{
   var imgs = LB_DATA[lbSection].images;
-  document.getElementById('lb-img').src = 'data:image/png;base64,' + imgs[lbIdx];
+  document.getElementById('lb-img').src = 'data:image/jpeg;base64,' + imgs[lbIdx];
   document.getElementById('lb-caption').textContent =
     LB_DATA[lbSection].label + ' -- frame ' + (lbIdx + 1) + ' / ' + imgs.length;
   document.getElementById('lb-prev').disabled = lbIdx === 0;
@@ -441,20 +528,8 @@ document.addEventListener('keydown', function(e) {{
 </script>
 </body></html>"""
 
-    out_dir = _cm.BUNDLE / well / "browsers"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    import time
-    out_path = out_dir / f"browser_{time.strftime('%Y%m%d_%H%M%S')}.html"
     out_path.write_text(html, encoding="utf-8")
-    # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
-    # used to return "data\bundle\<well>\browsers\browser_....html" -- openable only by
-    # someone already sitting in the repo root. The reader is a person in a terminal or
-    # a chat window, and they said so twice: first that they had to "hunt down the html
-    # link", then that the absolute path still was not clickable and they were pasting
-    # it into Chrome by hand. Terminals and chat clients linkify a URL, not a Windows
-    # path, so give them both and let whichever one their client understands win.
-    full = out_path.resolve()
-    return f"{full}\n{full.as_uri()}"
+    return out_path
 
 
 _ANNOTATION_FIELDS = [

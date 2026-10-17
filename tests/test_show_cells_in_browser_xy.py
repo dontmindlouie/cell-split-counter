@@ -113,3 +113,30 @@ def test_custom_label_used_for_point_event(fake, tmp_path, monkeypatch):
     path = out.splitlines()[0]
     html = Path(path).read_text(encoding="utf-8")
     assert "researcher click #4" in html
+
+
+def test_many_events_split_into_linked_pages(fake, tmp_path, monkeypatch):
+    # 2026-10-17 (researcher, ZO1_STB_P2): 60 events on one page came out at 2.3 GB.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cell_mcp_server._tools_output_mod, "_EVENTS_PER_PAGE", 2)
+    ev = {"kind": "point", "x": 100.0, "y": 100.0, "start_frame": 0, "end_frame": 1}
+    out = cell_mcp_server.show_cells_in_browser(fake, events=[ev] * 5)
+    paths = [Path(l) for l in out.splitlines() if l.endswith(".html") and not l.startswith("file:")]
+    assert [p.name.rsplit("_", 1)[1] for p in paths] == [
+        "part1of3.html", "part2of3.html", "part3of3.html"]
+    middle = paths[1].read_text(encoding="utf-8")
+    assert f'href="{paths[0].name}"' in middle and f'href="{paths[2].name}"' in middle
+    assert "events 3&ndash;4 of 5" in middle
+    assert "<h2>3. " in middle                       # headings keep the global numbering
+    assert "openLightbox(0,0)" in middle             # but lightbox indices are per page
+    assert "data:image/jpeg;base64," in middle and "image/png" not in middle
+    assert paths[2].read_text(encoding="utf-8").count("<section") == 1
+
+
+def test_bad_event_late_in_list_fails_before_any_page_is_written(fake, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cell_mcp_server._tools_output_mod, "_EVENTS_PER_PAGE", 2)
+    ok = {"kind": "point", "x": 100.0, "y": 100.0, "start_frame": 0, "end_frame": 1}
+    with pytest.raises(ValueError, match=r"events\[4\]"):
+        cell_mcp_server.show_cells_in_browser(fake, events=[ok] * 4 + [{"kind": "track"}])
+    assert not list(tmp_path.rglob("*.html"))
