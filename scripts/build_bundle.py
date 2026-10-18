@@ -49,11 +49,44 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.ingest import resolve_channel_index  # noqa: E402
+from src.ingest import _rescale_to_uint8, resolve_channel_index  # noqa: E402
 from src.lineage import _build_tracking_index, _open_tracked_masks  # noqa: E402
 
 _FRAME_RE = re.compile(r"frame_(\d+)_raw(\d+)\.png$")
 _LABEL_DTYPE = np.uint16
+_RING_UM = 3.0  # default width of the per-nucleus ring that <channel>_ring_mean is measured in
+
+
+def channel_column(name: str) -> str:
+    """ND2 channel name -> tracks.csv column prefix ("AF488", "Cy5 (far red)" -> "Cy5_far_red")."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "ch"
+
+
+def measure_channels(lab: np.ndarray, channels: np.ndarray, ring_px: float,
+                     channel_meta: list[dict]) -> dict[int, dict]:
+    """Mean of every channel inside each mask and in a ring just outside it.
+
+    lab is one frame's label map, channels the raw (C, Y, X) slice of that frame.
+    Returns {label: {"<col>_nuc_mean": v, "<col>_ring_mean": v, ...}}. A label with no
+    ring pixels (fully enclosed by neighbours) has no ring keys, so the caller can
+    leave it blank instead of writing a misleading 0.
+    """
+    from skimage.measure import regionprops_table
+    from skimage.segmentation import expand_labels
+
+    stack = np.moveaxis(channels, 0, -1).astype(np.float32)  # (Y, X, C)
+    ring = expand_labels(lab, distance=ring_px)
+    ring[lab > 0] = 0
+    out: dict[int, dict] = {}
+    for region_lab, suffix in ((lab, "nuc_mean"), (ring, "ring_mean")):
+        pr = regionprops_table(region_lab, intensity_image=stack,
+                               properties=("label", "intensity_mean"))
+        for j, rl in enumerate(pr["label"]):
+            d = out.setdefault(int(rl), {})
+            for meta in channel_meta:
+                d[f"{meta['column']}_{suffix}"] = round(
+                    float(pr[f"intensity_mean-{meta['index']}"][j]), 1)
+    return out
 
 
 class CalibrationError(RuntimeError):
@@ -506,7 +539,7 @@ def write_lineage(run_dir: Path, out_run: Path) -> dict:
 def write_labels_and_tracks(
     run_dir: Path, out_run: Path, pairs: list[tuple[int, int]],
     nd2_path: Path, cal: dict, bleach_curve: bool, nucleus_channel: str | None = None,
-    position: int | None = None,
+    position: int | None = None, ring_um: float = _RING_UM,
 ) -> tuple[dict, list[dict]]:
     """Re-encode label maps as PNG-16 and build the per-frame track table.
 
@@ -550,6 +583,18 @@ def write_labels_and_tracks(
     solidity-alone AUC 0.689, area+solidity combined 0.751-0.783). It's free
     here since regionprops_table already computes area from the same mask --
     solidity just asks it for the convex hull too.
+
+    Multi-channel wells (2026-10-18): every channel, not only the segmented one, is
+    also (a) measured per mask -- `<ch>_nuc_mean` inside the nucleus and
+    `<ch>_ring_mean` in a `ring_um`-wide ring just outside it -- against the same raw
+    16-bit slice, and (b) written as its own 8-bit stack under channels/<ch>/, with
+    the per-frame stretch windows in channels/_windows.json. That lets the MCP tools
+    and a researcher's own scripts reach a second marker (ZO1, FUCCI, Tom20, ...)
+    without reopening the ND2, which for the ZO1_STB experiment meant reading 69 GB
+    off an external drive that corrupts files. The ring is expand_labels() minus the
+    masks, so each ring pixel belongs to its nearest nucleus: neighbouring rings
+    never overlap and never include another nucleus. A mask with no free pixels
+    around it (fully enclosed by neighbours) gets a blank ring value, not 0.
     """
     from skimage.measure import regionprops_table
 
@@ -587,6 +632,21 @@ def write_labels_and_tracks(
         n_positions = f.sizes.get("P")
         t_arr = nd2.imread(str(nd2_path), dask=True) if n_channels > 1 else None
 
+        channel_meta: list[dict] = []
+        channel_windows: list[list[list[float]]] = []
+        if n_channels > 1:
+            ring_px = ring_um / cal["pixel_size_um"]
+            for c, ch in enumerate(f.metadata.channels):
+                color = getattr(ch.channel, "color", None)
+                col = channel_column(ch.channel.name)
+                channel_meta.append({
+                    "index": c, "name": ch.channel.name, "column": col,
+                    "dir": f"channels/{col}",
+                    "color_rgb": [color.r, color.g, color.b] if color else None,
+                    "segmentation": c == nucleus_idx,
+                })
+                (out_run / "channels" / col).mkdir(parents=True, exist_ok=True)
+
         for i, (kept, raw_idx) in enumerate(pairs):
             lab = np.asarray(tracked[kept]).astype(_LABEL_DTYPE)
             ok, buf = cv2.imencode(".png", lab)
@@ -601,6 +661,15 @@ def write_labels_and_tracks(
                 channels = np.asarray(t_arr[int(raw_idx), position] if n_positions is not None
                                       else t_arr[int(raw_idx)])  # (C, Y, X)
                 img = channels[nucleus_idx] if nucleus_idx is not None else np.max(channels, axis=0)
+                frame_windows = []
+                for meta in channel_meta:
+                    gray, (lo, hi) = _rescale_to_uint8(channels[meta["index"]])
+                    ok, buf = cv2.imencode(".png", gray)
+                    if not ok:
+                        raise RuntimeError(f"failed to PNG-encode {meta['name']} frame {kept}")
+                    (out_run / meta["dir"] / f"frame_{kept:05d}.png").write_bytes(buf.tobytes())
+                    frame_windows.append([round(lo, 2), round(hi, 2)])
+                channel_windows.append(frame_windows)
             else:
                 seq = int(raw_idx) * n_positions + position if n_positions is not None else int(raw_idx)
                 img = np.array(f.read_frame(seq), copy=True)
@@ -615,6 +684,11 @@ def write_labels_and_tracks(
                 lab, intensity_image=img,
                 properties=("label", "centroid", "area", "bbox", "intensity_mean", "solidity"),
             )
+            per_channel: dict[int, dict] = {}
+            if channel_meta:
+                per_channel = measure_channels(lab, channels, ring_px, channel_meta)
+                blank = {f"{m['column']}_{s}": None
+                         for m in channel_meta for s in ("nuc_mean", "ring_mean")}
             if bleach_curve:
                 # frame_mean alone is NOT a bleaching curve: it scales with how many
                 # nuclei are in the field, and in a proliferating line that dominates.
@@ -634,7 +708,7 @@ def write_labels_and_tracks(
                 rawlab = int(props["label"][j])
                 area = float(props["area"][j])
                 mean_i = float(props["intensity_mean"][j])
-                rows.append({
+                row = {
                     "track_id": canonical_of.get(rawlab, rawlab),
                     "frame": kept,
                     "time_ms": round(ts[i] - t0, 1),
@@ -648,7 +722,11 @@ def write_labels_and_tracks(
                     "intensity_integrated": round(mean_i * area, 1),
                     "solidity": round(float(props["solidity"][j]), 4),
                     "raw_label": rawlab,
-                })
+                }
+                if channel_meta:
+                    row.update(blank)
+                    row.update(per_channel.get(rawlab, {}))
+                rows.append(row)
             if i % 50 == 0:
                 print(f"    frame {i+1}/{len(pairs)}", end="\r", flush=True)
     print(" " * 40, end="\r")
@@ -678,7 +756,17 @@ def write_labels_and_tracks(
         "suspect_tracks": suspect,
         "suspect_track_rule": "track multiplexed in >50% of the frames it appears in",
     }
-    return {"intensity_curve": bleach, "track_multiplicity": stats}, rows
+    extra = {"intensity_curve": bleach, "track_multiplicity": stats}
+    if channel_meta:
+        (out_run / "channels" / "_windows.json").write_text(json.dumps(
+            {"note": ("per-frame 0.5/99.5 percentile window per channel used to make the 8-bit "
+                      "channels/<ch>/ PNGs: raw ~= lo + png/255 * (hi - lo). Values above hi are "
+                      "clipped, so measure brightness from tracks.csv, not from these images."),
+             "channels": [m["column"] for m in channel_meta],
+             "windows": channel_windows}), encoding="utf-8")
+        extra["channels"] = channel_meta
+        extra["ring_um"] = ring_um
+    return extra, rows
 
 
 def main() -> None:
@@ -695,6 +783,14 @@ def main() -> None:
     ap.add_argument("--cell-line", default=None, help="e.g. RUES2, nTSC, pTSC, WGD, BeWo")
     ap.add_argument("--condition", default=None, help="perturbation/treatment label, if any")
     ap.add_argument("--no-intensity-curve", action="store_true", help="skip per-frame intensity stats")
+    ap.add_argument("--ring-um", type=float, default=_RING_UM,
+                    help="multi-channel only: width of the ring outside each nucleus that "
+                         "<channel>_ring_mean is measured in (default %(default)s um)")
+    ap.add_argument("--no-display-composite", action="store_true",
+                    help="multi-channel only: don't copy the pre-rendered colour composite into "
+                         "frames_display/. The tools compose it from channels/ instead, and the "
+                         "bundle is ~2/3 smaller. Kept on by default for now because scripts "
+                         "written against older bundles read frames_display/ directly.")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
@@ -752,7 +848,7 @@ def main() -> None:
     print("  encoding labels + measuring tracks...")
     extra, rows = write_labels_and_tracks(
         run_dir, out_run, pairs, args.nd2, cal, not args.no_intensity_curve,
-        nucleus_channel=nucleus_channel, position=position,
+        nucleus_channel=nucleus_channel, position=position, ring_um=args.ring_um,
     )
 
     tracks_csv = out_run / "tracks.csv"
@@ -774,7 +870,7 @@ def main() -> None:
     # a true multi-color render, kept separate from the grayscale segmentation
     # frames above so this display-only addition can't touch tracking/masks.
     display_src = run_dir / "frames" / "display"
-    if display_src.is_dir():
+    if display_src.is_dir() and not args.no_display_composite:
         display_out = out_run / "frames_display"
         display_out.mkdir(exist_ok=True)
         for p in sorted(display_src.glob("frame_*_raw*.png")):

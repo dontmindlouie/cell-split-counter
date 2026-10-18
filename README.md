@@ -29,7 +29,8 @@ to put her measurements, not in trying to automate her out of the loop. See
    `measure`, `get_neighbourhood_stats`, `watch_location_over_time`,
    `list_nearby_tracks`, `find_candidates`, `show_cells_in_browser`, `annotate`,
    `resolve_fiji_sighting`, `open_in_fiji`, `resolve_lineage_chain`,
-   `resolve_division`, `trace_division`, `find_prophase_onset`.
+   `resolve_division`, `trace_division`, `find_prophase_onset`, `list_channels`,
+   `get_channel_profile`.
    She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
@@ -145,6 +146,12 @@ see the file itself for full argument docs):
   death. Reports the nearest tracked cell per frame instead of ringing anything.
 - `get_lineage(well, track_id)` — mother/daughter links.
 - `measure(well, track_id, frame)` — real units (µm², hours), not pixels or frames.
+- `list_channels(well)` / `get_channel_profile(well, track_ids, channel, region)` —
+  multi-channel wells: every channel is measured per nucleus at build time, inside
+  the mask and in a thin ring just outside it, from the raw data. Reads a second
+  marker over a cell's life (a FUCCI colour in the nucleus, a cytoplasmic marker
+  in the ring) without images or reopening the ND2. The ring does NOT reach cell
+  borders in large, spread cells, so junction markers need the channels/ images.
 - `get_neighbourhood_stats(well, track_id, frame)` — compares one cell against its
   nearest neighbours and the whole field at a single frame, as a z-score — separates
   "this cell is dim" from "the whole field is dim right now."

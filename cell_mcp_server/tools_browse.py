@@ -1,5 +1,5 @@
 """Browsing tools: list_wells, list_tracks, get_track_profile, view_whole_field,
-get_lineage, measure, get_neighbourhood_stats.
+get_lineage, measure, get_neighbourhood_stats, list_channels, get_channel_profile.
 
 Split out of the original single-file cell_mcp.py's "tools" section.
 """
@@ -708,8 +708,138 @@ def get_neighbourhood_stats(well: str, track_id: int, frame: int, n_neighbours: 
     return "\n".join(lines)
 
 
+def _channels(well: str) -> list[dict]:
+    chans = _cm._manifest(well).get("channels") or []
+    if not chans:
+        raise ValueError(
+            f"{well} has no per-channel measurements. Either it is single-channel, or its "
+            f"bundle predates 2026-10-18 and needs rebuilding with scripts/build_bundle.py.")
+    return chans
+
+
+def _resolve_channel(well: str, channel: str) -> dict:
+    chans = _channels(well)
+    key = channel.strip().lower()
+    hits = [c for c in chans if key in (c["name"].lower(), c["column"].lower())]
+    if not hits:
+        hits = [c for c in chans if key in c["name"].lower() or key in c["column"].lower()]
+    if len(hits) != 1:
+        names = ", ".join(c["name"] for c in chans)
+        raise ValueError(f"channel {channel!r} {'is ambiguous' if hits else 'not found'} "
+                         f"in {well}; channels are: {names}")
+    return hits[0]
+
+
+@server.tool()
+def list_channels(well: str) -> str:
+    """List a well's fluorescence channels: which one was segmented, and what was measured.
+
+    Every channel of a multi-channel well is measured for every nucleus in every frame,
+    from the raw microscope data: inside the nucleus, and in a thin ring just outside
+    it. Use get_channel_profile to read those numbers for particular cells. The ring
+    is where a cytoplasmic marker near the nucleus (Tom20, a cytoplasmic reporter)
+    shows up; the inside is where a nuclear reporter (FUCCI, H2B) does. The ring
+    does NOT reach cell borders in large, spread cells, so a junction marker (ZO-1)
+    reads close to flat there -- that is the ring's limit, not evidence that the
+    junctions are gone.
+
+    Args:
+        well: well name from list_wells().
+    """
+    m = _cm._manifest(well)
+    chans = m.get("channels") or []
+    if not chans:
+        return (f"{well}: no per-channel measurements in this bundle (single-channel, or "
+                f"built before 2026-10-18). Only the segmented channel's brightness is in "
+                f"measure()/get_track_profile().")
+    out = [f"{well}: {len(chans)} channels, ring = {m.get('ring_um', '?')} um outside each nucleus",
+           "channel | colour | role | columns in tracks.csv"]
+    for c in chans:
+        rgb = c.get("color_rgb")
+        colour = "#%02x%02x%02x" % tuple(rgb) if rgb else "none"
+        role = "SEGMENTED (masks drawn on this one)" if c.get("segmentation") else "measured only"
+        out.append(f"{c['name']} | {colour} | {role} | {c['column']}_nuc_mean, {c['column']}_ring_mean")
+    out.append(
+        "\nWhich channel is which marker is NOT in the file -- the ND2 only names the dye or "
+        "filter (e.g. AF488). Ask the researcher what each one labels before interpreting it.")
+    return "\n".join(out)
+
+
+def _binned(values: list[float], width: int = 60) -> list[float]:
+    """Average a long series down to at most `width` points, for a sparkline that fits a line."""
+    if len(values) <= width:
+        return values
+    edges = np.linspace(0, len(values), width + 1).astype(int)
+    return [float(np.nanmean(values[a:b])) for a, b in zip(edges[:-1], edges[1:])]
+
+
+@server.tool()
+def get_channel_profile(well: str, track_ids: list[int], channel: str,
+                        region: str = "nucleus") -> str:
+    """How bright one channel is in or around particular cells, over their whole tracks.
+
+    Numbers only, no images, so it's cheap. Values are mean raw intensity (microscope
+    units) from the original data, so unlike the images they ARE comparable across
+    frames. "vs field" divides by the median of all cells in the same frame, which
+    cancels bleaching and focus drift that hit the whole field at once.
+
+    Args:
+        well: well name from list_wells().
+        track_ids: up to 20 cells, e.g. a mother and her daughters.
+        channel: channel name from list_channels(), e.g. "AF488".
+        region: "nucleus" (inside the mask) or "ring" (a thin band just outside it,
+            shared out so neighbouring cells never count the same pixel).
+    """
+    if region not in ("nucleus", "ring"):
+        raise ValueError("region must be 'nucleus' or 'ring'")
+    if not track_ids:
+        raise ValueError("give at least one track_id")
+    if len(track_ids) > 20:
+        raise ValueError("at most 20 track_ids per call")
+    ch = _resolve_channel(well, channel)
+    col = f"{ch['column']}_{'nuc' if region == 'nucleus' else 'ring'}_mean"
+    df = _cm._tracks(well)
+    if col not in df.columns:
+        raise ValueError(f"{well}: tracks.csv has no {col} column; rebuild the bundle.")
+    field = df.drop_duplicates(["frame", "track_id"]).groupby("frame")[col].median()
+    suspect = set(_cm._manifest(well).get("track_multiplicity", {}).get("suspect_tracks", []))
+
+    out = [f"{well} {ch['name']} {region} brightness"
+           + (" (this is the segmented channel)" if ch.get("segmentation") else "")]
+    for tid in track_ids:
+        t = df[df.track_id == int(tid)].sort_values("frame").drop_duplicates("frame")
+        if t.empty:
+            out.append(f"\ntrack {tid}: not found")
+            continue
+        v = t[col].astype(float)
+        ok = v.notna()
+        if not ok.any():
+            out.append(f"\ntrack {tid}: no {region} pixels in any frame (always enclosed by neighbours)")
+            continue
+        t, v = t[ok], v[ok]
+        rel = (v / t.frame.map(field)).astype(float)
+        f0, f1 = int(t.frame.iloc[0]), int(t.frame.iloc[-1])
+        out.append(
+            f"\ntrack {tid}: frames {f0}-{f1} ({_cm._hours(well, f0):.1f}-{_cm._hours(well, f1):.1f} h, "
+            f"{len(t)} points)" + ("  WARNING: merged-cells track, numbers mix two cells" if int(tid) in suspect else ""))
+        out.append(f"  raw       {_sparkline(_binned(v.tolist()))}  "
+                   f"(min {v.min():.0f}, median {v.median():.0f}, max {v.max():.0f})")
+        out.append(f"  vs field  {_sparkline(_binned(rel.tolist()))}  "
+                   f"(min {rel.min():.2f}, median {rel.median():.2f}, max {rel.max():.2f})")
+        # A handful of exact readings, so a change can be pinned to a time.
+        idx = np.unique(np.linspace(0, len(t) - 1, min(8, len(t))).astype(int))
+        out.append("  samples   " + "  ".join(
+            f"f{int(t.frame.iloc[i])} {_cm._hours(well, int(t.frame.iloc[i])):.1f}h={v.iloc[i]:.0f} ({rel.iloc[i]:.2f}x)"
+            for i in idx))
+    out.append(
+        "\nSparklines are scaled to each row's own range: read the printed numbers for levels. "
+        "Long tracks are averaged into at most 60 bins. Which marker this channel is comes "
+        "from the researcher, not the file.")
+    return "\n".join(out)
+
 
 __all__ = [
     "list_wells", "list_tracks", "_SPARK_CHARS", "_sparkline", "get_track_profile",
     "view_whole_field", "_lineage", "get_lineage", "measure", "get_neighbourhood_stats",
+    "list_channels", "get_channel_profile", "_channels", "_resolve_channel", "_binned",
 ]

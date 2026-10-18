@@ -10,8 +10,14 @@ Check `manifest.json` → `cell_line` before comparing anything across wells.
 ```
 <well>/
   frames/frame_00042.png   raw image, one per timepoint, 0-based
-  labels/frame_00042.png   16-bit PNG; pixel value = track_id of the cell there,
-                           0 = background. Lossless.
+  labels/frame_00042.png   16-bit PNG; pixel value = that row's `raw_label` in
+                           tracks.csv (equal to track_id except where broken tracks
+                           were bridged), 0 = background. Lossless.
+  channels/<ch>/frame_00042.png   multi-channel wells only: each channel on its own,
+                           8-bit grey, same frame numbering. See "Multi-channel wells".
+  frames_display/frame_00042.png  multi-channel wells, older bundles: all channels
+                           pre-merged into one colour image. Optional from 2026-10-18;
+                           compose it from channels/ instead (recipe below).
   tracks.csv               one row per cell shape per frame
   lineage.csv              mother/daughter links between track_ids
   manifest.json            calibration + acquisition metadata, plus a `provenance`
@@ -197,12 +203,48 @@ after the mother ends, or overlapping it heavily, is an id-linking artifact.
 | `solidity` | area / convex-hull area, 0–1. Drops when a mask rounds up or briefly fragments — the strongest single geometric signal found so far for locating mitosis (stronger than area or intensity alone); a dip that recovers over a few frames is more informative than the raw value at any one frame |
 | `raw_label` | pre-merge tracker label; real key is (track_id, frame, raw_label) |
 | `n_masks_in_frame` | >1 means this id covers several shapes here — see above |
+| `<ch>_nuc_mean` | multi-channel only: mean of channel `<ch>` inside the nucleus mask, raw 16-bit |
+| `<ch>_ring_mean` | multi-channel only: mean of `<ch>` in a ring `manifest.ring_um` wide just outside the mask (default 3 µm). Each ring pixel belongs to its nearest nucleus, so rings never overlap or include another nucleus. Blank when the nucleus is fully enclosed by neighbours |
+
+## Multi-channel wells
+
+`manifest.channels` lists every channel: `name` (from the ND2, e.g. `AF488`),
+`column` (the prefix used in tracks.csv and channels/), `color_rgb` (the
+microscope's own display colour), and `segmentation` (true for the one channel the
+masks were drawn on). The file names the dye or filter, **not the biology**: which
+channel is ZO-1, FUCCI or Tom20 has to come from the researcher.
+
+- **Numbers:** use the `<ch>_nuc_mean` / `<ch>_ring_mean` columns. A nuclear
+  reporter (FUCCI, H2B) is read inside; a cytoplasmic marker near the nucleus
+  (Tom20) in the ring. The ring does **not** measure cell borders: in the ZO1_STB
+  movie ZO-1 was flat from 0 to 13 µm out (cells there are ~60 µm apart, so
+  junctions sit ~20–25 µm from a nucleus), and a thin junction line is averaged
+  away in any ring wide enough to reach it. For borders, junctions or spots, use
+  the channels/ images with the masks.
+- **Images:** `channels/<ch>/` is each channel's own 8-bit stretch, per frame, with
+  the window in `channels/_windows.json` (raw ≈ lo + png/255 × (hi − lo)). Pixels
+  above the window are clipped, so take brightness from the columns.
+- **Colour composite** (what the tools show), per frame:
+
+```python
+import json, cv2, numpy as np
+m = json.load(open(f"{well}/manifest.json"))
+out = None
+for ch in m["channels"]:
+    if not ch["color_rgb"]:
+        continue
+    g = cv2.imread(f"{well}/{ch['dir']}/frame_{k:05d}.png", cv2.IMREAD_GRAYSCALE).astype(np.float32)
+    r, gr, b = (v / 255 for v in ch["color_rgb"])
+    t = np.stack([g * b, g * gr, g * r], -1)          # BGR, as cv2 writes it
+    out = t if out is None else np.maximum(out, t)    # max, so a dim marker isn't washed out
+composite_bgr = out.astype(np.uint8)
+```
 
 ## What the images actually show
 
-The marker is **H2B-mCherry**: a red fluorescent protein fused to a histone, so
-it labels **chromatin only**. There is no membrane or cytoplasm signal. Practical
-consequences:
+The segmentation marker is usually **H2B-mCherry**: a red fluorescent protein fused
+to a histone, so it labels **chromatin only**. Single-channel wells have no membrane
+or cytoplasm signal; a multi-channel well may (see above). Practical consequences:
 
 - The detected shapes are **nuclei, not whole cells**. A cell with two nuclei
   appears as two separate shapes and cannot be distinguished from two adjacent

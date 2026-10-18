@@ -117,7 +117,36 @@ def _frame_png(well: str, frame: int) -> np.ndarray:
     disp = _cm.BUNDLE / well / "frames_display" / f"frame_{frame:05d}.png"
     if disp.is_file():
         return cv2.imread(str(disp), cv2.IMREAD_COLOR)
+    # Bundles built with --no-display-composite (2026-10-18) store each channel as
+    # its own grey stack instead; compose the same image here.
+    channels = _cm._manifest(well).get("channels")
+    if channels:
+        return _compose_channels(well, frame, channels)
     return cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+
+
+def _compose_channels(well: str, frame: int, channels: list[dict]) -> np.ndarray:
+    """Tint each channels/<ch>/ grey frame with its own LUT, combined by per-plane max.
+
+    The same recipe src/ingest.py uses for frames_display/, from the same 8-bit
+    stretch, so a composed frame matches the stored composite it replaces. Max rather
+    than sum keeps one bright marker from washing out a dimmer one.
+    """
+    out = None
+    for ch in channels:
+        if ch.get("color_rgb") is None:
+            continue
+        grey = cv2.imread(str(_cm.BUNDLE / well / ch["dir"] / f"frame_{frame:05d}.png"),
+                          cv2.IMREAD_GRAYSCALE)
+        if grey is None:
+            raise ValueError(f"{well}: missing {ch['dir']}/frame_{frame:05d}.png")
+        r, g, b = (v / 255.0 for v in ch["color_rgb"])
+        tinted = np.stack([grey * b, grey * g, grey * r], axis=-1).astype(np.float32)
+        out = tinted if out is None else np.maximum(out, tinted)
+    if out is None:  # no channel carries a colour: fall back to the segmentation frame
+        return cv2.imread(str(_cm.BUNDLE / well / "frames" / f"frame_{frame:05d}.png"),
+                          cv2.IMREAD_GRAYSCALE)
+    return out.astype(np.uint8)
 
 
 def _hours(well: str, frame: int) -> float:
