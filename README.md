@@ -30,7 +30,7 @@ to put her measurements, not in trying to automate her out of the loop. See
    `list_nearby_tracks`, `find_candidates`, `show_cells_in_browser`, `annotate`,
    `resolve_fiji_sighting`, `open_in_fiji`, `resolve_lineage_chain`,
    `resolve_division`, `trace_division`, `find_prophase_onset`, `list_channels`,
-   `get_channel_profile`.
+   `get_channel_profile`, `measure_points`.
    She clones the repo, points
    `CELL_BUNDLE_DIR` at a bundle, and asks Claude what a given cell is doing — no
    ND2 reader, no GPU, nothing to keep running.
@@ -168,6 +168,12 @@ see the file itself for full argument docs):
   doesn't have to know which unit Fiji gave, and correcting Fiji's 1-indexed
   frame to this server's 0-indexed one. Step one only — its own return value
   points at `find_prophase_onset` and `follow_cells_over_time` next.
+- `measure_points(well, points | csv_path, ...)` — the batch version for a list
+  of points (a pasted Results table, or frames from the researcher's own scoring
+  sheet): one row of numbers per point (track_id, area, diameter, DNA and
+  per-channel brightness). Fits Fiji's µm/px so every click lands on a whole
+  pixel, and checks each frame against the raw `.nd2` when Fiji's Mean column is
+  there. Writes a CSV beside the input, never inside the bundle.
 - `open_in_fiji(well, frame, cx, cy, crop_um)` — the reverse: launches Fiji on
   the raw `.nd2`, jumped to a specific frame/location from a report page or
   filmstrip label, for cross-checking a call against the real file.

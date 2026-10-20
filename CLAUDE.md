@@ -40,6 +40,22 @@ tries both unit readings against real tracked positions and returns the track_id
 that actually lands on a cell. Then follow its own instructions (find_prophase_onset,
 follow_cells_over_time) from there.
 
+For a LIST of points (a pasted Results table, or frames from the researcher's own
+scoring sheet), call `measure_points` once instead. It fits Fiji's units over the whole
+list, checks frames against the raw .nd2 when Fiji's Mean column is present, and
+returns or writes one row of numbers per point. Building the researcher's sheet from
+that table is the session's job; don't write a per-position measuring script.
+
+## Every tool behaviour change gets a changelog line
+
+The server's own instructions (`cell_mcp_server/server.py`, "Tool changelog") are the
+one place every consuming session reads, whatever folder it starts in. A researcher's
+Claude remembers how a tool behaved and keeps working around it: on 2026-10-17 a
+2.3 GB browser page led her sessions to write their own browsers, and they kept doing
+so after paging shipped, because nothing told them it had changed. So any commit that
+adds a tool or changes what one does or returns adds a dated line there, in the same
+commit.
+
 ## "Show me" ends in `show_cells_in_browser`
 
 When the user asks to SEE cells — "show me", "let me see", "send me", "give me a link",
