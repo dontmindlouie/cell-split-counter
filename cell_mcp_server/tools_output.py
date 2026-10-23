@@ -79,7 +79,8 @@ _LIGHTBOX_JPEG_QUALITY = 90
 _EVENTS_PER_PAGE = 12
 
 @server.tool()
-def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
+def show_cells_in_browser(well: str, events: list[dict], note: str = "",
+                          review_form: dict | None = None) -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
 
     QUICK REF (long descriptions truncate ~1200 chars in, no [...] marker --
@@ -187,6 +188,27 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 watch_location_over_time) the member genuinely vanished and you
                 want the framing to hold rather than snap to the survivors.
 
+        review_form (optional): marking controls YOU choose for this task, shown
+            under every event. Every page already has a notes box per event and an
+            "Export CSV" button whether or not this is passed; this adds the
+            structured fields. Pick them from what the reader is being asked to
+            judge -- there is no fixed list. Keys (all optional):
+                checks: list of tick-box labels, any number may be ticked, e.g.
+                    ["not a division", "lagging", "bridge", "multipolar",
+                     "micronucleus"].
+                choices: {name: [options]} -- pick-one groups, e.g.
+                    {"HLA-G": ["+", "-", "unsure"], "nuclei after": ["mono", "bi"]}.
+                numbers: list of number-box labels, e.g. ["metaphase frame"].
+                text: list of short free-text box labels.
+            Marks are kept in the reader's browser (shared across all parts of a
+            multi-page set) until they press Export, which downloads ONE CSV for
+            the whole set: one row per event with its id/frames/position, every
+            field, and notes. Ask the user for that file (usually their Downloads
+            folder, named review_<well>_<stamp>.csv) and read it -- then use
+            annotate() for verdicts worth keeping in the bundle. An event may carry
+            an `id` key (any string, e.g. your own candidate number); it becomes the
+            CSV's event_id column so rows join back to your list.
+
     Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
     the user BOTH, verbatim, each on its own line -- terminals and chat clients
     linkify a URL but not a Windows path, and which one is clickable depends on their
@@ -236,6 +258,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         elif kind == "track" and "track_id" not in ev:
             raise ValueError(
                 f"events[{i}] has kind='track' but no 'track_id' given: {ev!r}")
+    form = _normalize_review_form(review_form)
 
     def _b64_all(imgs, quality):
         out = []
@@ -256,6 +279,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     def _page_name(k):
         return (f"browser_{stamp}.html" if n_pages == 1
                 else f"browser_{stamp}_part{k}of{n_pages}.html")
+
+    # One row per event for the CSV export. Every part embeds the WHOLE set's list so
+    # Export on any part writes every event, marked or not (blank = not reviewed).
+    meta = [_event_meta(i, ev) for i, ev in enumerate(events)]
+    review = {"key": f"cell-review:{well}:{stamp}", "file": f"review_{well}_{stamp}.csv",
+              "form": form, "events": meta}
 
     written = []
     sections = []
@@ -377,7 +406,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
         sections.append(
             f"<section id=sec{i}><h2>{i + 1}. {label} {badge_html}</h2>"
             f"<p class=hdr>{spec}</p>"
-            f"<div class=filmstrip>{''.join(tiles)}</div></section>"
+            f"<div class=filmstrip>{''.join(tiles)}</div>"
+            f"{_review_controls_html(i, form)}</section>"
         )
         lb_data.append({"label": label, "images": lb_b64_list})
 
@@ -386,7 +416,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
                 out_dir / _page_name(len(written) + 1), well, note, sections, shared,
                 lb_data, len(written) + 1, n_pages, _page_name,
                 first_event=i + 2 - len(sections), last_event=i + 1,
-                n_events=len(events)))
+                n_events=len(events), review=review))
             sections, shared, lb_data = [], [], []
 
     # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
@@ -405,10 +435,77 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "") -> str:
     return "\n".join([head] + [f"{p}\n{p.as_uri()}" for p in full])
 
 
+_FORM_KINDS = ("checks", "choices", "numbers", "text")
+
+
+def _normalize_review_form(form):
+    """Validate show_cells_in_browser's review_form up front and return it as
+    {checks: [...], choices: {name: [...]}, numbers: [...], text: [...]}."""
+    if not form:
+        return {"checks": [], "choices": {}, "numbers": [], "text": []}
+    unknown = set(form) - set(_FORM_KINDS)
+    if unknown:
+        raise ValueError(f"review_form has unknown keys {sorted(unknown)}; "
+                         f"use any of {list(_FORM_KINDS)}")
+    out = {"checks": [str(c) for c in form.get("checks") or []],
+           "choices": {str(k): [str(o) for o in v]
+                       for k, v in (form.get("choices") or {}).items()},
+           "numbers": [str(n) for n in form.get("numbers") or []],
+           "text": [str(t) for t in form.get("text") or []]}
+    names = (out["checks"] + list(out["choices"]) + out["numbers"] + out["text"])
+    reserved = {"notes", "event", "event_id", "label", "kind", "track_ids", "x", "y",
+                "start_frame", "end_frame"}
+    if len(names) != len(set(names)) or reserved & set(names):
+        raise ValueError(f"review_form field names must be unique and not one of "
+                         f"{sorted(reserved)} (the export already has those columns): {names}")
+    for k, v in out["choices"].items():
+        if len(v) < 2:
+            raise ValueError(f"review_form choices[{k!r}] needs at least 2 options: {v}")
+    return out
+
+
+def _event_meta(i, ev):
+    """The identifying columns one event gets in the review CSV export."""
+    ids = ev.get("track_ids") or ([ev["track_id"]] if "track_id" in ev else [])
+    default = (f"track {ids[0]}" if ev["kind"] == "track"
+               else f"tracks {', '.join(str(t) for t in ids)}" if ev["kind"] == "family"
+               else f"point ({ev.get('x', '')}, {ev.get('y', '')})")
+    return {"event": i + 1, "event_id": str(ev.get("id", "")),
+            "label": ev.get("label") or default, "kind": ev["kind"],
+            "track_ids": " ".join(str(t) for t in ids),
+            "x": ev.get("x", ""), "y": ev.get("y", ""),
+            "start_frame": ev.get("start_frame", ""), "end_frame": ev.get("end_frame", "")}
+
+
+def _review_controls_html(i, form):
+    """The marking row under one event: the review_form fields, then notes."""
+    from html import escape
+    parts = []
+    for c in form["checks"]:
+        parts.append(f'<label><input type=checkbox data-ev={i} data-f="{escape(c)}"> '
+                     f'{escape(c)}</label>')
+    for name, opts in form["choices"].items():
+        radios = "".join(
+            f'<label><input type=radio name="ev{i}-{escape(name)}" data-ev={i} '
+            f'data-f="{escape(name)}" value="{escape(o)}"> {escape(o)}</label>'
+            for o in opts)
+        parts.append(f'<span class=grp><b>{escape(name)}</b> {radios}</span>')
+    for n in form["numbers"]:
+        parts.append(f'<label>{escape(n)} <input type=number data-ev={i} '
+                     f'data-f="{escape(n)}"></label>')
+    for t in form["text"]:
+        parts.append(f'<label>{escape(t)} <input type=text data-ev={i} '
+                     f'data-f="{escape(t)}"></label>')
+    return (f'<div class=review>{"".join(parts)}'
+            f'<textarea data-ev={i} data-f="notes" rows=1 placeholder="notes"></textarea></div>')
+
+
 def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
-                page_name, first_event, last_event, n_events):
+                page_name, first_event, last_event, n_events, review):
     """Write one page of show_cells_in_browser's output and return its path."""
     lb_json = json.dumps(lb_data)
+    # "</" escaped so a label containing "</script>" can't end the script block early.
+    review_json = json.dumps(review).replace("</", "<\\/")
     if n_parts > 1:
         prev_html = (f'<a href="{page_name(part - 1)}">&lsaquo; part {part - 1}</a>'
                      if part > 1 else "")
@@ -473,11 +570,28 @@ div.pager {{ display: flex; align-items: center; gap: 0.9rem; margin-left: auto;
 div.pager a {{ color: #7aa7d0; text-decoration: none; padding: 0.15rem 0.6rem; border: 1px solid #335; border-radius: 4px; }}
 div.pager a:hover {{ background: #1d2a35; }}
 body > div.pager {{ margin: 2rem 0; }}
+div.review {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem;
+  margin-top: 0.5rem; font-size: 0.85rem; color: #ccc; }}
+div.review label {{ display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; white-space: nowrap; }}
+div.review span.grp {{ display: inline-flex; gap: 0.5rem; align-items: center;
+  border: 1px solid #333; border-radius: 4px; padding: 0.1rem 0.5rem; }}
+div.review input[type=number] {{ width: 5rem; }}
+div.review input[type=number], div.review input[type=text], div.review textarea {{
+  background: #1a1a1a; color: #eee; border: 1px solid #444; border-radius: 4px;
+  padding: 0.2rem 0.4rem; font: inherit; }}
+div.review textarea {{ flex: 1 1 20rem; min-width: 14rem; resize: vertical; }}
+section.marked h2::after {{ content: " \\2713"; color: #6fcf7f; }}
+div.reviewbar {{ display: flex; align-items: center; gap: 0.6rem; }}
+div.reviewbar button {{ background: #1d2a35; color: #cfe3f5; border: 1px solid #335;
+  border-radius: 4px; padding: 0.2rem 0.7rem; cursor: pointer; font: inherit; }}
+div.reviewbar button:hover {{ background: #26394a; }}
 </style></head><body>
 <h1>{well}</h1>
 <nav class="track-nav">
 <div class="view-controls">
   <label><input type="checkbox" id="figureCtl" onchange="document.body.classList.toggle('figure-mode', this.checked)"> hide labels + scale bar (figures)</label>
+  <div class="reviewbar"><span id="rv-count"></span>
+    <button onclick="exportReview()" title="Download one CSV with every event in this set (all parts)">Export CSV</button></div>
   {pager_html}
 </div>
 </nav>
@@ -525,6 +639,68 @@ document.addEventListener('keydown', function(e) {{
   if (e.key === 'ArrowLeft') stepLightbox(-1);
   if (e.key === 'ArrowRight') stepLightbox(1);
 }});
+
+// Marks live in localStorage under one key per page SET, so every part of a
+// multi-page set reads and writes the same store and Export from any part has all
+// of them. Storage can be unavailable (private window, blocked site data): marking
+// still works for this visit, it just won't survive a reload -- said in the counter.
+var REVIEW = {review_json};
+var rvState = {{}}, rvStored = true;
+try {{ rvState = JSON.parse(localStorage.getItem(REVIEW.key) || '{{}}'); }}
+catch (e) {{ rvStored = false; }}
+function rvSave() {{
+  try {{ localStorage.setItem(REVIEW.key, JSON.stringify(rvState)); }} catch (e) {{ rvStored = false; }}
+  rvCount();
+}}
+function rvMarked(ev) {{
+  var s = rvState[ev]; if (!s) return false;
+  for (var k in s) if (s[k] !== '' && s[k] !== false) return true;
+  return false;
+}}
+function rvCount() {{
+  var n = 0;
+  for (var i = 0; i < REVIEW.events.length; i++) if (rvMarked(i)) n++;
+  document.getElementById('rv-count').textContent = n + ' of ' + REVIEW.events.length +
+    ' marked' + (rvStored ? '' : ' (not saved: browser storage blocked, export before closing)');
+  document.querySelectorAll('section[id^=sec]').forEach(function(sec) {{
+    sec.classList.toggle('marked', rvMarked(+sec.id.slice(3)));
+  }});
+}}
+document.querySelectorAll('div.review [data-f]').forEach(function(el) {{
+  var s = rvState[el.dataset.ev] || {{}}, v = s[el.dataset.f];
+  if (el.type === 'checkbox') el.checked = !!v;
+  else if (el.type === 'radio') el.checked = v === el.value;
+  else if (v !== undefined) el.value = v;
+  el.addEventListener(el.tagName === 'TEXTAREA' || el.type === 'text' || el.type === 'number'
+                      ? 'input' : 'change', function() {{
+    var st = rvState[el.dataset.ev] = rvState[el.dataset.ev] || {{}};
+    st[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value;
+    rvSave();
+  }});
+}});
+function csvCell(v) {{
+  v = v === undefined || v === null ? '' : String(v);
+  return /[",\\n\\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}}
+function exportReview() {{
+  var f = REVIEW.form, idCols = ['event', 'event_id', 'label', 'kind', 'track_ids',
+    'x', 'y', 'start_frame', 'end_frame'];
+  var fields = f.checks.concat(Object.keys(f.choices), f.numbers, f.text, ['notes']);
+  var rows = [idCols.concat(['marked'], fields).map(csvCell).join(',')];
+  REVIEW.events.forEach(function(m, i) {{
+    var s = rvState[i] || {{}};
+    var vals = fields.map(function(k) {{
+      return f.checks.indexOf(k) >= 0 ? (s[k] ? 1 : '') : s[k];
+    }});
+    rows.push(idCols.map(function(c) {{ return m[c]; }})
+      .concat([rvMarked(i) ? 1 : 0], vals).map(csvCell).join(','));
+  }});
+  var blob = new Blob(['\\ufeff' + rows.join('\\r\\n')], {{type: 'text/csv'}});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = REVIEW.file;
+  document.body.appendChild(a); a.click(); a.remove();
+}}
+rvCount();
 </script>
 </body></html>"""
 

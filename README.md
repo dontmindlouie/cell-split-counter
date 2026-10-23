@@ -155,9 +155,11 @@ see the file itself for full argument docs):
 - `get_neighbourhood_stats(well, track_id, frame)` — compares one cell against its
   nearest neighbours and the whole field at a single frame, as a z-score — separates
   "this cell is dim" from "the whole field is dim right now."
-- `show_cells_in_browser(well, events)` — writes a self-contained HTML page (images
+- `show_cells_in_browser(well, events, review_form=None)` — writes a self-contained HTML page (images
   embedded as base64) of specific cells/frame-ranges, to hand off rather than
-  describe in chat.
+  describe in chat. Every event gets a notes box and the page an Export CSV button;
+  `review_form` adds whatever tick boxes / pick-one choices / number fields the task
+  needs, chosen per call.
 - `annotate(well, track_id, outcome_class, ...)` — appends stage marks
   (condensation/metaphase/anaphase/exit) and outcome class to a separate,
   append-only `annotations.csv`, which is what turns her usage of these tools
