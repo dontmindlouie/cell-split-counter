@@ -709,7 +709,7 @@ document.addEventListener('keydown', function(e) {{
   }}
   var n = /^[1-9]$/.test(e.key) ? +e.key : 0;
   if (document.getElementById('lightbox').classList.contains('open')) {{
-    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'Escape') {{ closeLightbox(); setFocus(focusEv, true); }}   // back to the event you ended on
     else if (e.key === 'ArrowLeft') {{ stopPlay(); stepLightbox(-1); }}
     else if (e.key === 'ArrowRight') {{ stopPlay(); stepLightbox(1); }}
     else if (e.key === ' ') togglePlay();
