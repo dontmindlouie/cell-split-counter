@@ -48,7 +48,9 @@ def main():
                        "start_frame": start, "end_frame": max(end, start + 1),
                        "crop_um": float(cfg.get("crop_um", 70)), "context_um": float(cfg.get("context_um", 200)),
                        "id": r.event_id,
-                       "label": f"{r.event_id} &middot; {r.source} &middot; Fiji frame {r.fiji_frame}{sug}"})
+                       # plain text: the label is also the lightbox caption, set as text, so an
+                       # HTML entity would show literally there
+                       "label": f"{r.event_id} | {r.source} | Fiji frame {r.fiji_frame}{sug}"})
     print(m.show_cells_in_browser(a.well, events, note=cfg.get("note", ""), review_form=cfg["review_form"],
                                   channels=cfg.get("channels"), channels_off=cfg.get("channels_off")))
 
