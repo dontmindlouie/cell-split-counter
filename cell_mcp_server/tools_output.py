@@ -181,6 +181,10 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 the requested point regardless. watch_location_over_time keeps the
                 crosshair, since it's a live aid while investigating, not a
                 handoff report.
+            context_um (optional): crop width in micrometres for the LIGHTBOX only,
+                e.g. 220 to show the neighbours around a 70 um filmstrip -- whether
+                the "daughters" are really daughters is often decided by what is
+                around them. Default: the same crop as the filmstrip.
             hold_centre_after_member_end (optional, default False, kind="family"
                 only): freeze a member's last position into the crop's mean once
                 its span ends, instead of letting the mean jump to whoever
@@ -219,6 +223,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     one-line summary followed by a path + URL pair per page; giving the user part 1
     is enough, but pass all of them through. Pass the whole event list in ONE call --
     do not split it into several calls yourself.
+    Keyboard (shown on the page): j/k move between events (crossing into the next
+    or previous part), Enter opens the lightbox, 1-9 pick an option of the FIRST
+    review_form choices group and move on, n jumps to notes. In the lightbox:
+    left/right step frames, space plays, up/down change event, 1-9 mark and move on.
+    Put the main verdict first in `choices` so those keys mark it.
     Images are embedded as base64, so the
     file is portable on its own -- open it directly, or serve it
     (`python -m http.server`) if file:// is blocked in the browser being used.
@@ -317,7 +326,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                     None if waypoints is not None else float(ev["y"]), None)
             header, thumb_images = _cm._fixed_point_frames(*args, **common)
             _, lb_images = _cm._fixed_point_frames(
-                *args, **common, upscale_to=_FIGURE_UPSCALE_TO)
+                *args, **_lightbox_args(common, ev), upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or (
                 f"drift ({len(waypoints)} waypoints)" if waypoints is not None
                 else f"({ev['x']:.0f}, {ev['y']:.0f})")
@@ -348,7 +357,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             header, thumb_images = _cm._family_filmstrip_frames(
                 well, members, **common, min_crop_um=_REPORT_MIN_CROP_UM)
             _, lb_images = _cm._family_filmstrip_frames(
-                well, members, **common, upscale_to=_FIGURE_UPSCALE_TO,
+                well, members, **_lightbox_args(common, ev), upscale_to=_FIGURE_UPSCALE_TO,
                 min_crop_um=_REPORT_MIN_CROP_UM)
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:  # kind == "track"
@@ -364,7 +373,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             )
             header, thumb_images = _cm._filmstrip_frames(well, track_id, **common)
             _, lb_images = _cm._filmstrip_frames(
-                well, track_id, **common, upscale_to=_FIGURE_UPSCALE_TO)
+                well, track_id, **_lightbox_args(common, ev), upscale_to=_FIGURE_UPSCALE_TO)
             label = ev.get("label") or f"track {track_id}"
 
         b64_list = _b64_all(thumb_images, _THUMB_JPEG_QUALITY)       # filmstrip thumbnails -- small, pixelated-upscale OK
@@ -436,6 +445,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
 
 
 _FORM_KINDS = ("checks", "choices", "numbers", "text")
+
+
+def _lightbox_args(common, ev):
+    """The lightbox render's arguments: the filmstrip's, with a wider crop if the
+    event asks for context_um."""
+    return dict(common, crop_um=float(ev["context_um"])) if ev.get("context_um") else common
 
 
 def _normalize_review_form(form):
@@ -511,9 +526,14 @@ def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
                      if part > 1 else "")
         next_html = (f'<a href="{page_name(part + 1)}">part {part + 1} &rsaquo;</a>'
                      if part < n_parts else "")
+        # Every part listed, so a reviewer can jump straight to where they left off;
+        # the script ticks parts whose events are all marked.
+        parts_html = "".join(
+            f'<a href="{page_name(k)}" data-part={k}'
+            f'{" class=cur" if k == part else ""}>{k}</a>' for k in range(1, n_parts + 1))
         pager_html = (f'<div class="pager"><span>Part {part} of {n_parts} '
                       f'&middot; events {first_event}&ndash;{last_event} of {n_events}</span>'
-                      f'{prev_html}{next_html}</div>')
+                      f'{prev_html}{parts_html}{next_html}</div>')
     else:
         pager_html = ""
     # Collapsed by default: it is reference, not the task. Open once, then get out of
@@ -569,6 +589,13 @@ body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
 div.pager {{ display: flex; align-items: center; gap: 0.9rem; margin-left: auto; font-size: 0.85rem; color: #aaa; }}
 div.pager a {{ color: #7aa7d0; text-decoration: none; padding: 0.15rem 0.6rem; border: 1px solid #335; border-radius: 4px; }}
 div.pager a:hover {{ background: #1d2a35; }}
+div.pager a.cur {{ background: #7aa7d0; color: #111; }}
+div.pager a.done::after {{ content: " \\2713"; color: #6fcf7f; }}
+section.focus {{ outline: 2px solid #4fa3ff; outline-offset: 6px; border-radius: 4px; }}
+p.keys {{ color: #888; font-size: 0.78rem; margin: 0.2rem 0 0; }}
+.lightbox-play {{ position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%);
+  background: rgba(255,255,255,0.12); color: #fff; border: none; border-radius: 6px;
+  padding: 4px 14px; cursor: pointer; font: inherit; }}
 body > div.pager {{ margin: 2rem 0; }}
 div.review {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem;
   margin-top: 0.5rem; font-size: 0.85rem; color: #ccc; }}
@@ -594,6 +621,8 @@ div.reviewbar button:hover {{ background: #26394a; }}
     <button onclick="exportReview()" title="Download one CSV with every event in this set (all parts)">Export CSV</button></div>
   {pager_html}
 </div>
+<p class=keys>Keys: <b>j</b>/<b>k</b> next/previous event &middot; <b>Enter</b> enlarge &middot; <b>1</b>-<b>9</b> pick from the first choice group and move on &middot; <b>n</b> notes.
+Enlarged: <b>&larr;</b>/<b>&rarr;</b> frames &middot; <b>space</b> play &middot; <b>&uarr;</b>/<b>&darr;</b> previous/next event &middot; <b>1</b>-<b>9</b> mark and move on &middot; <b>Esc</b> close.</p>
 </nav>
 {note_html}
 {shared_html}
@@ -605,6 +634,7 @@ div.reviewbar button:hover {{ background: #26394a; }}
   <img id="lb-img" alt="">
   <div class="lightbox-caption" id="lb-caption"></div>
   <button class="lightbox-nav next" id="lb-next" onclick="stepLightbox(1)">&rsaquo;</button>
+  <button class="lightbox-play" id="lb-play" onclick="togglePlay()">play</button>
 </div>
 <script>
 var LB_DATA = {lb_json};
@@ -622,7 +652,7 @@ function openLightbox(section, idx) {{
   showLbFrame();
   document.getElementById('lightbox').classList.add('open');
 }}
-function closeLightbox() {{ document.getElementById('lightbox').classList.remove('open'); }}
+function closeLightbox() {{ if (playTimer) stopPlay(); document.getElementById('lightbox').classList.remove('open'); }}
 function stepLightbox(delta) {{
   var imgs = LB_DATA[lbSection].images;
   var next = lbIdx + delta;
@@ -633,11 +663,69 @@ function stepLightbox(delta) {{
 document.getElementById('lightbox').addEventListener('click', function(e) {{
   if (e.target.id === 'lightbox') closeLightbox();
 }});
+// Keyboard review. Section ids are GLOBAL event numbers (sec0..); LB_DATA is this
+// page's events only, so lightbox index k is event FIRST + k.
+var FIRST = {first_event - 1}, PAGES = {json.dumps([page_name(k) for k in range(1, n_parts + 1)])},
+    PER = {_EVENTS_PER_PAGE}, focusEv = FIRST, playTimer = null;
+function secOf(ev) {{ return document.getElementById('sec' + ev); }}
+function setFocus(ev, scroll) {{
+  if (ev < FIRST || ev >= FIRST + LB_DATA.length) {{
+    // another part: go there, at that event
+    if (ev >= 0 && ev < REVIEW.events.length) location.href = PAGES[Math.floor(ev / PER)] + '#sec' + ev;
+    return;
+  }}
+  var old = secOf(focusEv); if (old) old.classList.remove('focus');
+  focusEv = ev; var s = secOf(ev); s.classList.add('focus');
+  if (scroll) s.scrollIntoView({{block: 'center'}});
+}}
+function markFirstChoice(ev, n) {{
+  var names = Object.keys(REVIEW.form.choices); if (!names.length) return false;
+  var opts = REVIEW.form.choices[names[0]]; if (n > opts.length) return false;
+  var r = Array.prototype.find.call(document.querySelectorAll('input[type=radio][data-ev="' + ev + '"]'),
+    function(x) {{ return x.dataset.f === names[0] && x.value === opts[n - 1]; }});
+  if (!r) return false;
+  r.checked = true; r.dispatchEvent(new Event('change'));
+  return true;
+}}
+function stopPlay() {{ clearInterval(playTimer); playTimer = null; document.getElementById('lb-play').textContent = 'play'; }}
+function togglePlay() {{
+  if (playTimer) return stopPlay();
+  document.getElementById('lb-play').textContent = 'pause';
+  playTimer = setInterval(function() {{
+    lbIdx = (lbIdx + 1) % LB_DATA[lbSection].images.length; showLbFrame();
+  }}, 350);
+}}
+function lbEvent(d) {{
+  stopPlay();
+  var k = lbSection + d;
+  if (k < 0 || k >= LB_DATA.length) {{ closeLightbox(); setFocus(FIRST + k, true); return; }}
+  setFocus(FIRST + k, false); openLightbox(k, 0);
+}}
 document.addEventListener('keydown', function(e) {{
-  if (!document.getElementById('lightbox').classList.contains('open')) return;
-  if (e.key === 'Escape') closeLightbox();
-  if (e.key === 'ArrowLeft') stepLightbox(-1);
-  if (e.key === 'ArrowRight') stepLightbox(1);
+  var t = e.target.tagName;
+  if (t === 'TEXTAREA' || (t === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'radio')) {{
+    if (e.key === 'Escape') e.target.blur();
+    return;
+  }}
+  var n = /^[1-9]$/.test(e.key) ? +e.key : 0;
+  if (document.getElementById('lightbox').classList.contains('open')) {{
+    if (e.key === 'Escape') closeLightbox();
+    else if (e.key === 'ArrowLeft') {{ stopPlay(); stepLightbox(-1); }}
+    else if (e.key === 'ArrowRight') {{ stopPlay(); stepLightbox(1); }}
+    else if (e.key === ' ') togglePlay();
+    else if (e.key === 'ArrowUp') lbEvent(-1);
+    else if (e.key === 'ArrowDown') lbEvent(1);
+    else if (n) {{ if (markFirstChoice(FIRST + lbSection, n)) lbEvent(1); }}
+    else return;
+    e.preventDefault(); return;
+  }}
+  if (e.key === 'j') setFocus(focusEv + 1, true);
+  else if (e.key === 'k') setFocus(focusEv - 1, true);
+  else if (e.key === 'Enter') openLightbox(focusEv - FIRST, 0);
+  else if (e.key === 'n') {{ var ta = secOf(focusEv).querySelector('textarea'); if (ta) ta.focus(); }}
+  else if (n) {{ if (markFirstChoice(focusEv, n)) setFocus(focusEv + 1, true); }}
+  else return;
+  e.preventDefault();
 }});
 
 // Marks live in localStorage under one key per page SET, so every part of a
@@ -664,6 +752,11 @@ function rvCount() {{
     ' marked' + (rvStored ? '' : ' (not saved: browser storage blocked, export before closing)');
   document.querySelectorAll('section[id^=sec]').forEach(function(sec) {{
     sec.classList.toggle('marked', rvMarked(+sec.id.slice(3)));
+  }});
+  document.querySelectorAll('div.pager a[data-part]').forEach(function(a) {{
+    var p = +a.dataset.part, done = true;
+    for (var i = (p - 1) * PER; i < Math.min(p * PER, REVIEW.events.length); i++) if (!rvMarked(i)) done = false;
+    a.classList.toggle('done', done);
   }});
 }}
 document.querySelectorAll('div.review [data-f]').forEach(function(el) {{
@@ -701,6 +794,7 @@ function exportReview() {{
   document.body.appendChild(a); a.click(); a.remove();
 }}
 rvCount();
+setFocus(/^#sec[0-9]+$/.test(location.hash) ? +location.hash.slice(4) : FIRST, !!location.hash);
 </script>
 </body></html>"""
 

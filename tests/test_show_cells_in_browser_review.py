@@ -69,3 +69,30 @@ def test_every_part_carries_the_whole_set(fake, tmp_path, monkeypatch):
 def test_bad_review_form_rejected(fake, form, msg):
     with pytest.raises(ValueError, match=msg):
         cell_mcp_server.show_cells_in_browser(fake, events=[POINT], review_form=form)
+
+
+def test_parts_listed_and_keyboard_wired(fake, tmp_path, monkeypatch):
+    # Every part links every other part (jump to where you left off), and the page
+    # knows its own first event so j/k and the lightbox map to global event numbers.
+    monkeypatch.chdir(tmp_path)
+    lines = cell_mcp_server.show_cells_in_browser(fake, events=[POINT] * 13).splitlines()
+    pages = [Path(l) for l in lines[1:] if not l.startswith("file:")]
+    second = pages[1].read_text(encoding="utf-8")
+    assert second.count("data-part=") == 2 * 2          # top and bottom pager
+    assert f'href="{pages[0].name}" data-part=1' in second
+    assert "var FIRST = 12," in second
+    assert "markFirstChoice" in second and 'id="lb-play"' in second
+
+
+def test_context_um_widens_only_the_lightbox(fake, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    real = cell_mcp_server.tools_output._cm._fixed_point_frames
+
+    def spy(*a, **k):
+        calls.append(k["crop_um"])
+        return real(*a, **k)
+
+    monkeypatch.setattr(cell_mcp_server.tools_output._cm, "_fixed_point_frames", spy)
+    cell_mcp_server.show_cells_in_browser(fake, events=[dict(POINT, crop_um=60, context_um=200)])
+    assert calls == [60.0, 200.0]                        # filmstrip, then lightbox
