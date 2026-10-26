@@ -1,0 +1,9 @@
+{
+ "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). Decide whether it is a division (1 = division, 2 = not a division, 3 = unsure; the keys move to the next card) and type anything else in the notes box (n jumps there). Labels marked 'suggested' are the detector's hints, not calls.",
+ "before_min": 60,
+ "after_min": 540,
+ "frames_per_part": 240,
+ "crop_um": 70,
+ "context_um": 200,
+ "review_form": {"choices": {"verdict": ["division", "not a division", "unsure"]}}
+}

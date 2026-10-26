@@ -1,0 +1,5 @@
+{
+ "note": "HLA-G (AF647, magenta) is shown: call it per card.",
+ "channels_off": [],
+ "review_form": {"choices": {"HLA-G": ["+", "-", "unsure"]}}
+}

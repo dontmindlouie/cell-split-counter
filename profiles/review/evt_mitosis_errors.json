@@ -1,28 +1,15 @@
 {
- "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). First decide whether it is a division (1 = division, 2 = not a division, 3 = unsure), then tick every error you see, call HLA-G, and type the metaphase frame (Fiji numbering, shown on each tile as f#+1). Labels marked 'suggested' are the detector's hints, not calls. Each card runs from 1 h before to 9 h after the event (binucleation can resolve ~7 h later); every frame is shown. Need more? Ask for those cards to be rebuilt with a longer window. Channels: H2B red, ZO1 green, each stretched to the card. HLA-G (AF647) is left out to keep pages light; for HLA-G calls the pages are rebuilt with it on (--toggles adds per-channel switches).",
+ "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). Decide whether it is a division (1 = division, 2 = not a division, 3 = unsure; the keys move to the next card) and type anything else in the notes box (n jumps there). Labels marked 'suggested' are the detector's hints, not calls. Channels: H2B red (AF594), ZO1 green (AF488), each stretched to the card. Tick any mitotic errors you see (optional -- notes work too) and type the metaphase frame (Fiji numbering).",
  "before_min": 60,
  "after_min": 540,
  "frames_per_part": 240,
  "crop_um": 70,
  "context_um": 200,
- "channels": [
-  "AF594",
-  "AF488",
-  "AF647"
- ],
- "channels_off": [
-  "AF647"
- ],
  "review_form": {
   "choices": {
    "verdict": [
     "division",
     "not a division",
-    "unsure"
-   ],
-   "HLA-G": [
-    "+",
-    "-",
     "unsure"
    ]
   },
@@ -39,5 +26,13 @@
   "numbers": [
    "metaphase frame"
   ]
- }
+ },
+ "channels": [
+  "AF594",
+  "AF488",
+  "AF647"
+ ],
+ "channels_off": [
+  "AF647"
+ ]
 }

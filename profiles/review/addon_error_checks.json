@@ -1,0 +1,7 @@
+{
+ "note": "Tick any mitotic errors you see (optional -- notes work too) and type the metaphase frame (Fiji numbering).",
+ "review_form": {
+  "checks": ["misaligned", "lagging", "bridge", "micronuclei", "binuclei", "tripolar/multipolar", "cytokinesis failure", "cell death"],
+  "numbers": ["metaphase frame"]
+ }
+}

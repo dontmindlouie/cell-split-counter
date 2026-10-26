@@ -4,7 +4,7 @@ The page is the same reusable browser for every analysis; what changes per analy
 config: the window (MINUTES, converted per event through the bundle's real frame clock),
 crop sizes, which channels are shown and which start hidden, and the marking form.
 
-    uv run python scripts/review_pages.py <well> <events.csv> <config.json>
+    uv run python scripts/review_pages.py <well> <events.csv> <config.json> [<add-on.json> ...]
         [--first N] [--limit N] [--ids ID,ID,...]
         [--before-min M] [--after-min M] [--events-per-part N] [--max-frames N]
 
@@ -14,7 +14,13 @@ cards per part shrink so a part stays within frames_per_part frames in total -- 
 windows cost more parts, not heavier ones. To extend only some cards (the reviewer asked
 for "more frames after" on them), rebuild just those: --ids <event_id,...> --after-min 720.
 
-Config keys (all optional except review_form; the command-line flags override them):
+CONFIGS STACK: a base plus any add-ons, merged in order, so experiment-specific parts (an
+HLA-G call, a set of error tick boxes, a channel list) are off unless that file is given.
+Merging: review_form groups combine (choices by name, tick boxes / numbers / text appended,
+the base's first choice group stays first so the 1-9 keys still mark it), "note" texts are
+joined, every other key is replaced by the later file.
+
+Config keys (all optional; review_form required after merging; flags override them):
     note            what the reader is asked to do (shown at the top of every part)
     before_min, after_min   window around each event's anchor frame (default 60 / 300)
     frames_per_part         page-weight budget, frames summed over a part's cards (default 240)
@@ -39,9 +45,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cell_mcp_server as m  # noqa: E402
 
 
+def merge_configs(cfgs):
+    out = {}
+    for c in cfgs:
+        for k, v in c.items():
+            if k == "review_form" and "review_form" in out:
+                rf = out["review_form"]
+                for kind, val in v.items():
+                    if kind == "choices":
+                        rf.setdefault("choices", {}).update(val)
+                    else:
+                        rf[kind] = list(dict.fromkeys(rf.get(kind, []) + list(val)))
+            elif k == "note" and out.get("note"):
+                out["note"] = out["note"] + " " + v
+            else:
+                out[k] = json.loads(json.dumps(v))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("well"); ap.add_argument("events"); ap.add_argument("config")
+    ap.add_argument("well"); ap.add_argument("events")
+    ap.add_argument("config", nargs="+", help="base config, then any add-ons")
     ap.add_argument("--first", type=int, default=0); ap.add_argument("--limit", type=int)
     ap.add_argument("--ids", help="comma-separated event_ids: build only these cards")
     ap.add_argument("--before-min", type=float); ap.add_argument("--after-min", type=float)
@@ -49,7 +74,9 @@ def main():
     ap.add_argument("--toggles", action="store_true",
                     help="per-channel on/off in the browser (about 3x the data with three channels)")
     a = ap.parse_args()
-    cfg = json.loads(Path(a.config).read_text(encoding="utf-8"))
+    cfg = merge_configs([json.loads(Path(p).read_text(encoding="utf-8")) for p in a.config])
+    if "review_form" not in cfg:
+        raise SystemExit("no review_form in any config")
     ev = pd.read_csv(a.events)
     if a.ids:
         want = [s.strip() for s in a.ids.split(",") if s.strip()]

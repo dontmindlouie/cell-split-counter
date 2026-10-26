@@ -10,12 +10,16 @@ Reviewing each once means merging them first: events closer than --merge-um and
 
 Clicks CSVs are scripts/convert_fiji_clicks.py output (click, frame 0-based, x, y px).
 A candidates dir is src.mitosis_scan output; its fate.csv (src.mitosis_fate), if present,
-adds the fate variables and SUGGESTIONS -- hints for the reviewer to confirm, never
-filters: multipolar? (3+ daughters), disruption? (fragments and lost H2B),
-long mitosis? (>= 80 min plate to segregation, which precedes cytokinesis failure).
+adds the fate variables as passthrough columns.
 
-Output: one row per card, ordered for review -- suggested errors first, then clicked
-events, then detector-only by peak. Columns: event_id, frame (0-based, bundle),
+Specific to mitotic-ERROR scoring, so off unless asked:
+    --suggest   adds hint-only SUGGESTIONS for the reviewer to confirm, never filters:
+                multipolar? (3+ daughters), disruption? (fragments and lost H2B),
+                long mitosis? (>= 80 min plate to segregation, which precedes cytokinesis failure)
+    --order     clicked (default): clicked events, then detector-only by peak
+                suggest: suggested errors first, then as clicked   |   time: by movie time
+
+Output: one row per card. Columns: event_id, frame (0-based, bundle),
 fiji_frame (1-based), minutes (real time from the ND2 clock), x, y (px), x_um, y_um,
 source, n_sources, ids, suggest, then any passthrough columns. Times come from the
 bundle's frame timestamps, so 3-min, 10-min and drifting intervals all merge correctly.
@@ -57,6 +61,8 @@ def main():
     ap.add_argument("--merge-um", type=float, default=26.0)
     ap.add_argument("--merge-min", type=float, default=80.0)
     ap.add_argument("--bundle", default=str(REPO / DATA_DIR / "bundle"))
+    ap.add_argument("--suggest", action="store_true", help="add fate-based error hints (needs fate.csv)")
+    ap.add_argument("--order", choices=["clicked", "suggest", "time"], default="clicked")
     a = ap.parse_args()
     man = json.loads((Path(a.bundle) / a.well / "manifest.json").read_text(encoding="utf-8"))
     ts = np.asarray(man["frame_timestamps_ms"], float)
@@ -108,11 +114,15 @@ def main():
         if len(det):
             best = det.loc[det.peak.idxmax()].to_dict()
             row.update({k: best[k] for k in FATE_COLS if k in best})
-        row["suggest"] = suggestions(row)
+        row["suggest"] = suggestions(row) if a.suggest else ""
         out.append(row)
     o = pd.DataFrame(out)
-    o["_order"] = np.select([o.suggest != "", o.clicked], [0, 1], 2)
-    o = o.sort_values(["_order", "peak", "minutes"], ascending=[True, False, True]).drop(columns="_order")
+    if a.order == "time":
+        o = o.sort_values("minutes")
+    else:
+        first = [o.suggest != "", o.clicked] if a.order == "suggest" else [o.clicked]
+        o["_order"] = np.select(first, list(range(len(first))), len(first))
+        o = o.sort_values(["_order", "peak", "minutes"], ascending=[True, False, True]).drop(columns="_order")
     o.insert(0, "event_id", [f"{a.well}#{i + 1:04d}" for i in range(len(o))])
     o.to_csv(a.out, index=False)
     print(f"{len(ev)} source rows -> {len(o)} cards: "

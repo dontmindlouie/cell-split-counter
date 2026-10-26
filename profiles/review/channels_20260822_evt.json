@@ -1,0 +1,5 @@
+{
+ "note": "Channels: H2B red (AF594), ZO1 green (AF488), each stretched to the card.",
+ "channels": ["AF594", "AF488", "AF647"],
+ "channels_off": ["AF647"]
+}
