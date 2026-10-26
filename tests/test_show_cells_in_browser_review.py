@@ -108,3 +108,18 @@ def test_channel_layers_validated(fake, monkeypatch):
     with pytest.raises(ValueError, match="channels_off"):
         cell_mcp_server.show_cells_in_browser(fake, events=[POINT], channels=["AF594"],
                                               channels_off=["AF488"])
+
+
+def test_events_per_part_and_frame_cap(fake, tmp_path, monkeypatch):
+    # Fewer events per part is what pays for longer windows; the cap is the per-event ceiling.
+    monkeypatch.chdir(tmp_path)
+    lines = cell_mcp_server.show_cells_in_browser(fake, events=[POINT] * 5, events_per_part=2).splitlines()
+    assert len([l for l in lines[1:] if not l.startswith("file:")]) == 3
+    seen = []
+    real = cell_mcp_server.tools_output._cm._fixed_point_frames
+    monkeypatch.setattr(cell_mcp_server.tools_output._cm, "_fixed_point_frames",
+                        lambda *a, **k: seen.append(k["cap"]) or real(*a, **k))
+    cell_mcp_server.show_cells_in_browser(fake, events=[POINT], max_frames=90)
+    assert seen == [90, 90]
+    with pytest.raises(ValueError, match="events_per_part"):
+        cell_mcp_server.show_cells_in_browser(fake, events=[POINT], events_per_part=0)

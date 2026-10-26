@@ -95,7 +95,9 @@ _EVENTS_PER_PAGE = 12
 def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                           review_form: dict | None = None,
                           channels: list[str] | None = None,
-                          channels_off: list[str] | None = None) -> str:
+                          channels_off: list[str] | None = None,
+                          events_per_part: int | None = None,
+                          max_frames: int | None = None) -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
 
     QUICK REF (long descriptions truncate ~1200 chars in, no [...] marker --
@@ -238,6 +240,15 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
         channels_off (optional): of those, the ones that start switched off, e.g.
             ["AF647"] when a far-red marker would wash over H2B nuclei; the reader
             can still turn them on.
+        events_per_part (optional): events per page part (default 8 with channels,
+            12 without). Fewer events per part is what pays for longer windows: a
+            part's size is events x frames, so 4 events with twice the frames load
+            like 8 with the default.
+        max_frames (optional, default 60): the per-event frame ceiling. A window
+            with more frames than this is sampled (with gaps, said on the badge);
+            raise it with events_per_part lowered to keep long windows gap-free,
+            e.g. 9 h after a 10-min movie's metaphase is ~55 frames, on a 3-min
+            movie ~180.
 
     Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
     the user BOTH, verbatim, each on its own line -- terminals and chat clients
@@ -320,7 +331,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     out_dir = _cm.BUNDLE / well / "browsers"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime('%Y%m%d_%H%M%S')
-    per_page = _LAYER_EVENTS_PER_PAGE if layers else _EVENTS_PER_PAGE
+    per_page = int((_LAYER_EVENTS_PER_PAGE if layers else _EVENTS_PER_PAGE)
+                   if events_per_part is None else events_per_part)
+    cap = int(MAX_IMAGES_PAGE if max_frames is None else max_frames)
+    if per_page < 1 or cap < 2:
+        raise ValueError("events_per_part must be >= 1 and max_frames >= 2")
     n_pages = -(-len(events) // per_page)
 
     def _page_name(k):
@@ -349,7 +364,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 crop_um=float(ev.get("crop_um", 90.0)),
                 color=color, scale_bar=True,
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
-                cap=MAX_IMAGES_PAGE,
+                cap=cap,
                 # Always off on this page, unconditionally -- not a per-event
                 # option. This is a report a researcher opens cold, and the
                 # crosshair reads as a detection ring even though it isn't one
@@ -382,7 +397,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 before_min=float(ev.get("before_min", _REPORT_WINDOW_BEFORE_MIN)),
                 after_min=float(ev.get("after_min", _REPORT_WINDOW_AFTER_MIN)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
-                cap=MAX_IMAGES_PAGE, added=added,
+                cap=cap, added=added,
                 centre_frame=(None if ev.get("centre_frame") is None
                               else int(ev["centre_frame"])),
                 hold_centre_after_member_end=bool(
@@ -409,7 +424,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 crop_um=float(ev.get("crop_um", 90.0)),
                 color=color, scale_bar=True, marker=bool(ev.get("marker", False)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
-                cap=MAX_IMAGES_PAGE,
+                cap=cap,
             )
             header, thumb_images = _cm._filmstrip_frames(well, track_id, **common, **ts)
             _, lb_images = _cm._filmstrip_frames(

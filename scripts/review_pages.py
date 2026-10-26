@@ -11,6 +11,8 @@ Config keys (all optional except review_form):
     before_min, after_min   window around each event's anchor frame (default 60 / 300)
     crop_um, context_um     filmstrip crop and the wider lightbox crop (default 70 / 200)
     channels, channels_off  as in show_cells_in_browser
+    events_per_part, max_frames   as in show_cells_in_browser: fewer events per part pays for
+                    longer windows; max_frames must cover the window or it is sampled with gaps
     review_form     as in show_cells_in_browser -- put the main verdict first in
                     "choices" so the 1-9 keys mark it
 Each card's label carries its source, Fiji frame and any suggestion; its id is the
@@ -52,7 +54,8 @@ def main():
                        # HTML entity would show literally there
                        "label": f"{r.event_id} | {r.source} | Fiji frame {r.fiji_frame}{sug}"})
     print(m.show_cells_in_browser(a.well, events, note=cfg.get("note", ""), review_form=cfg["review_form"],
-                                  channels=cfg.get("channels"), channels_off=cfg.get("channels_off")))
+                                  channels=cfg.get("channels"), channels_off=cfg.get("channels_off"),
+                                  events_per_part=cfg.get("events_per_part"), max_frames=cfg.get("max_frames")))
 
 
 if __name__ == "__main__":
