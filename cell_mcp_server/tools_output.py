@@ -61,9 +61,15 @@ _REPORT_MIN_CROP_UM = 90.0
 # top of it, which is where most of the visible softness was coming from.
 _FIGURE_UPSCALE_TO = 900
 # Layered pages (channels=...) carry every lightbox frame once PER CHANNEL, so at 900 px
-# a 3-channel page ran ~13 MB an event; at 450 the browser's smooth scaling fills the
-# view and a 12-event part stays a few tens of MB, openable off an external drive.
-_LAYER_LB_SIZE = 450
+# a 3-channel page ran ~13 MB an event; at 360 the browser's smooth scaling still fills
+# the view (a 200 um context crop is ~230 px native, so nothing real is lost).
+_LAYER_LB_SIZE = 360
+# Filmstrip tiles of a layered page: canvases scale them up for display, so storing
+# them at the default 312 px only stored upscaled noise three times over.
+_LAYER_THUMB_SIZE = 180
+# Fewer events per part on layered pages, which also carry 4-5 h windows: a part
+# stays a few tens of MB on an external drive.
+_LAYER_EVENTS_PER_PAGE = 8
 # Noisy far-red channels dominate a layered page's size; at 80 the grain is still
 # shot noise, not JPEG blocks, and a part is about a third smaller than at 90.
 _LAYER_JPEG_QUALITY = 80
@@ -314,7 +320,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     out_dir = _cm.BUNDLE / well / "browsers"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime('%Y%m%d_%H%M%S')
-    n_pages = -(-len(events) // _EVENTS_PER_PAGE)
+    per_page = _LAYER_EVENTS_PER_PAGE if layers else _EVENTS_PER_PAGE
+    n_pages = -(-len(events) // per_page)
 
     def _page_name(k):
         return (f"browser_{stamp}.html" if n_pages == 1
@@ -330,8 +337,9 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     sections = []
     shared: list[str] = []
     lb_data = []
-    def _render(ev, color, lb_size=_FIGURE_UPSCALE_TO):
+    def _render(ev, color, lb_size=_FIGURE_UPSCALE_TO, thumb_size=None):
         """(header, label, thumb images, lightbox images) for one event."""
+        ts = {} if thumb_size is None else {"upscale_to": thumb_size}
         kind = ev["kind"]
         if kind == "point":
             waypoints = ev.get("waypoints")
@@ -356,7 +364,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             args = (well, int(ev["start_frame"]), int(ev["end_frame"]),
                     None if waypoints is not None else float(ev["x"]),
                     None if waypoints is not None else float(ev["y"]), None)
-            header, thumb_images = _cm._fixed_point_frames(*args, **common)
+            header, thumb_images = _cm._fixed_point_frames(*args, **common, **ts)
             _, lb_images = _cm._fixed_point_frames(
                 *args, **_lightbox_args(common, ev), upscale_to=lb_size)
             label = ev.get("label") or (
@@ -387,7 +395,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             # same rule would nearest-neighbor DOWNSCALE it instead, which is a
             # worse artifact (aliasing/moire) than the softness this was fixing.
             header, thumb_images = _cm._family_filmstrip_frames(
-                well, members, **common, min_crop_um=_REPORT_MIN_CROP_UM)
+                well, members, **common, min_crop_um=_REPORT_MIN_CROP_UM, **ts)
             _, lb_images = _cm._family_filmstrip_frames(
                 well, members, **_lightbox_args(common, ev), upscale_to=lb_size,
                 min_crop_um=_REPORT_MIN_CROP_UM)
@@ -403,7 +411,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,
             )
-            header, thumb_images = _cm._filmstrip_frames(well, track_id, **common)
+            header, thumb_images = _cm._filmstrip_frames(well, track_id, **common, **ts)
             _, lb_images = _cm._filmstrip_frames(
                 well, track_id, **_lightbox_args(common, ev), upscale_to=lb_size)
             label = ev.get("label") or f"track {track_id}"
@@ -419,7 +427,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             for ly in layers:
                 tok = _cm._LAYER.set(ly["name"])
                 try:
-                    header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE)
+                    header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE,
+                                                          thumb_size=_LAYER_THUMB_SIZE)
                 finally:
                     _cm._LAYER.reset(tok)
                 thumbs[ly["name"]] = _b64_all([_grey(x) for x in t_img], _LAYER_JPEG_QUALITY)
@@ -474,12 +483,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
         )
         lb_data.append(lb_entry)
 
-        if len(sections) == _EVENTS_PER_PAGE or i == len(events) - 1:
+        if len(sections) == per_page or i == len(events) - 1:
             written.append(_write_page(
                 out_dir / _page_name(len(written) + 1), well, note, sections, shared,
                 lb_data, len(written) + 1, n_pages, _page_name,
                 first_event=i + 2 - len(sections), last_event=i + 1,
-                n_events=len(events), review=review, layers=layers))
+                n_events=len(events), review=review, layers=layers, per_page=per_page))
             sections, shared, lb_data = [], [], []
 
     # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
@@ -493,7 +502,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     if len(full) == 1:
         return f"{full[0]}\n{full[0].as_uri()}"
     head = (f"{len(events)} events split into {len(full)} pages of up to "
-            f"{_EVENTS_PER_PAGE}; each page links to the previous/next part. "
+            f"{per_page}; each page links to the previous/next part. "
             f"Open part 1 first:")
     return "\n".join([head] + [f"{p}\n{p.as_uri()}" for p in full])
 
@@ -576,7 +585,8 @@ def _review_controls_html(i, form):
 
 
 def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
-                page_name, first_event, last_event, n_events, review, layers=()):
+                page_name, first_event, last_event, n_events, review, layers=(),
+                per_page=_EVENTS_PER_PAGE):
     """Write one page of show_cells_in_browser's output and return its path."""
     lb_json = json.dumps(lb_data)
     # "</" escaped so a label containing "</script>" can't end the script block early.
@@ -827,7 +837,7 @@ if (LAYERS.length) redrawAll();
 // Keyboard review. Section ids are GLOBAL event numbers (sec0..); LB_DATA is this
 // page's events only, so lightbox index k is event FIRST + k.
 var FIRST = {first_event - 1}, PAGES = {json.dumps([page_name(k) for k in range(1, n_parts + 1)])},
-    PER = {_EVENTS_PER_PAGE}, focusEv = FIRST, playTimer = null;
+    PER = {per_page}, focusEv = FIRST, playTimer = null;
 function secOf(ev) {{ return document.getElementById('sec' + ev); }}
 function setFocus(ev, scroll) {{
   if (ev < FIRST || ev >= FIRST + LB_DATA.length) {{
