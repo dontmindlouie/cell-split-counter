@@ -1,5 +1,5 @@
 {
- "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). Decide whether it is a division (1 = division, 2 = not a division, 3 = unsure; the keys move to the next card) and type anything else in the notes box (n jumps there). Labels marked 'suggested' are the detector's hints, not calls. Channels: H2B red (AF594), ZO1 green (AF488), each stretched to the card. Tick any mitotic errors you see (optional -- notes work too) and type the metaphase frame (Fiji numbering).",
+ "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). Decide whether it is a division (1 = division, 2 = not a division, 3 = unsure; the keys move to the next card) and type anything else in the notes box (n jumps there). Labels marked 'suggested' are the detector's hints, not calls. Channels: H2B red (AF594), ZO1 green (AF488), each stretched to the card.",
  "before_min": 60,
  "after_min": 540,
  "frames_per_part": 240,
@@ -12,20 +12,7 @@
     "not a division",
     "unsure"
    ]
-  },
-  "checks": [
-   "misaligned",
-   "lagging",
-   "bridge",
-   "micronuclei",
-   "binuclei",
-   "tripolar/multipolar",
-   "cytokinesis failure",
-   "cell death"
-  ],
-  "numbers": [
-   "metaphase frame"
-  ]
+  }
  },
  "channels": [
   "AF594",

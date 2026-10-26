@@ -123,3 +123,15 @@ def test_events_per_part_and_frame_cap(fake, tmp_path, monkeypatch):
     assert seen == [90, 90]
     with pytest.raises(ValueError, match="events_per_part"):
         cell_mcp_server.show_cells_in_browser(fake, events=[POINT], events_per_part=0)
+
+
+def test_channel_switching_shown_greyed_when_off(fake, tmp_path, monkeypatch):
+    # A feature that is off is still visible (disabled, with a hint), so the reader knows
+    # to ask for it; with channel_toggles on the boxes are live.
+    monkeypatch.chdir(tmp_path)
+    real = cell_mcp_server._manifest
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda w: dict(
+        real(w), channels=[{"name": "AF594", "dir": "channels/AF594", "color_rgb": [255, 0, 0]}]))
+    html = Path(cell_mcp_server.show_cells_in_browser(fake, events=[POINT]).splitlines()[0]).read_text(encoding="utf-8")
+    assert "class=offctl" in html and "<input type=checkbox disabled checked>" in html
+    assert "ask Claude" in html

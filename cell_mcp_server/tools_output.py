@@ -338,6 +338,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     out_dir = _cm.BUNDLE / well / "browsers"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime('%Y%m%d_%H%M%S')
+    # Channel switching that this page does NOT carry is still shown, greyed out, so a
+    # reader learns it exists and can ask for it: the combined channels, or for a plain
+    # multi-channel page every channel the bundle has.
+    fixed_layers = [] if channel_toggles else (layers or [
+        {"name": c["name"], "rgb": c.get("color_rgb") or [255, 255, 255], "on": True}
+        for c in _cm._manifest(well).get("channels") or [] if c.get("color_rgb")])
     per_page = int((_LAYER_EVENTS_PER_PAGE if layers else _EVENTS_PER_PAGE)
                    if events_per_part is None else events_per_part)
     cap = int(MAX_IMAGES_PAGE if max_frames is None else max_frames)
@@ -536,9 +542,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 first_event=i + 2 - len(sections), last_event=i + 1,
                 n_events=len(events), review=review, layers=layers if channel_toggles else (),
                 per_page=per_page,
-                shown_note=("" if channel_toggles or not layers else
-                            "channels: " + ", ".join(ly["name"] for ly in layers if ly["on"])
-                            + " (each stretched to the event)")))
+                fixed_layers=fixed_layers))
             sections, shared, lb_data = [], [], []
 
     # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
@@ -660,7 +664,7 @@ def _review_controls_html(i, form):
 
 def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
                 page_name, first_event, last_event, n_events, review, layers=(),
-                per_page=_EVENTS_PER_PAGE, shown_note=""):
+                per_page=_EVENTS_PER_PAGE, fixed_layers=()):
     """Write one page of show_cells_in_browser's output and return its path."""
     lb_json = json.dumps(lb_data)
     # "</" escaped so a label containing "</script>" can't end the script block early.
@@ -670,8 +674,15 @@ def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
         f'<label><input type=checkbox class=layer data-ch="{ly["name"]}"{" checked" if ly["on"] else ""} onchange="redrawAll()">'
         f'<span style="color:rgb({ly["rgb"][0]},{ly["rgb"][1]},{ly["rgb"][2]})">&#9632;</span> {ly["name"]}</label>'
         for ly in layers)
-    if shown_note:
-        layer_ctl = f'<span>{shown_note}</span>'
+    if fixed_layers:
+        why = ("Channel switching is off for this page, to keep it light (about 3x the data with three "
+               "channels). Ask Claude to rebuild these cards with channel switching on.")
+        layer_ctl = (f'<span class=offctl title="{why}">'
+                     + "".join(f'<label><input type=checkbox disabled{" checked" if ly["on"] else ""}>'
+                               f'<span style="color:rgb({ly["rgb"][0]},{ly["rgb"][1]},{ly["rgb"][2]})">&#9632;</span> '
+                               f'{ly["name"]}</label>' for ly in fixed_layers)
+                     + '<label><input type=checkbox disabled checked> auto contrast per event</label>'
+                     + '<small>(switching off: ask Claude)</small></span>')
     if layers:
         layer_ctl += ('<label title="Stretch each channel to this event\'s own crop, like Fiji\'s Auto on a selection. '
                       'Off: the bundle\'s field-wide window.">'
@@ -751,6 +762,8 @@ div.pager a.cur {{ background: #7aa7d0; color: #111; }}
 div.pager a.done::after {{ content: " \\2713"; color: #6fcf7f; }}
 section.focus {{ outline: 2px solid #4fa3ff; outline-offset: 6px; border-radius: 4px; }}
 p.keys {{ color: #888; font-size: 0.78rem; margin: 0.2rem 0 0; }}
+span.offctl {{ display: inline-flex; gap: 0.6rem; align-items: center; opacity: 0.45; cursor: help; }}
+span.offctl label {{ cursor: help; }}
 .lightbox-play {{ position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%);
   background: rgba(255,255,255,0.12); color: #fff; border: none; border-radius: 6px;
   padding: 4px 14px; cursor: pointer; font: inherit; }}
