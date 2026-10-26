@@ -96,3 +96,15 @@ def test_context_um_widens_only_the_lightbox(fake, tmp_path, monkeypatch):
     monkeypatch.setattr(cell_mcp_server.tools_output._cm, "_fixed_point_frames", spy)
     cell_mcp_server.show_cells_in_browser(fake, events=[dict(POINT, crop_um=60, context_um=200)])
     assert calls == [60.0, 200.0]                        # filmstrip, then lightbox
+
+
+def test_channel_layers_validated(fake, monkeypatch):
+    # Layers are named from the bundle's own channel list; a typo should say what exists.
+    real = cell_mcp_server._manifest
+    monkeypatch.setattr(cell_mcp_server, "_manifest", lambda w: dict(
+        real(w), channels=[{"name": "AF594", "dir": "channels/AF594", "color_rgb": [255, 0, 0]}]))
+    with pytest.raises(ValueError, match="no channel"):
+        cell_mcp_server.show_cells_in_browser(fake, events=[POINT], channels=["AF999"])
+    with pytest.raises(ValueError, match="channels_off"):
+        cell_mcp_server.show_cells_in_browser(fake, events=[POINT], channels=["AF594"],
+                                              channels_off=["AF488"])

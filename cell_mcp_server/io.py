@@ -3,6 +3,7 @@
 Split out of the original single-file cell_mcp.py's "io" section.
 """
 
+import contextvars
 import functools
 from pathlib import Path
 
@@ -104,7 +105,24 @@ def _tracks(well: str) -> pd.DataFrame:
     return pd.read_csv(_cm.BUNDLE / well / "tracks.csv")
 
 
+# Set (with .set/.reset) to one channel name to make _frame_png return that channel's
+# own grey frame instead of the display composite. show_cells_in_browser renders a
+# page's channels as separate layers this way, so the reader can switch them on and
+# off and stretch each to the crop; every caller that leaves it unset is unchanged.
+_LAYER = contextvars.ContextVar("frame_layer", default=None)
+
+
 def _frame_png(well: str, frame: int) -> np.ndarray:
+    layer = _LAYER.get()
+    if layer is not None:
+        ch = next((c for c in _cm._manifest(well).get("channels") or [] if c["name"] == layer), None)
+        if ch is None:
+            raise ValueError(f"{well} has no channel {layer!r}")
+        grey = cv2.imread(str(_cm.BUNDLE / well / ch["dir"] / f"frame_{frame:05d}.png"),
+                          cv2.IMREAD_GRAYSCALE)
+        if grey is None:
+            raise ValueError(f"{well}: missing {ch['dir']}/frame_{frame:05d}.png")
+        return grey
     p = _cm.BUNDLE / well / "frames" / f"frame_{frame:05d}.png"
     if not p.is_file():
         n = _cm._manifest(well)["n_frames"]
@@ -258,5 +276,5 @@ def _edge_um(well: str, cx: float, cy: float) -> float:
 __all__ = [
     "_server_stamp", "_SERVER_STAMP", "_fresh", "_manifest", "_tracks",
     "_frame_png", "_hours", "_elapsed_str", "_frame_at_offset_min", "_minutes_between",
-    "_pick_frames", "_edge_um",
+    "_pick_frames", "_edge_um", "_LAYER",
 ]

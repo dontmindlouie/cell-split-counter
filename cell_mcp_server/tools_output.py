@@ -60,6 +60,13 @@ _REPORT_MIN_CROP_UM = 90.0
 # target means less additional stretching happens client-side in the browser on
 # top of it, which is where most of the visible softness was coming from.
 _FIGURE_UPSCALE_TO = 900
+# Layered pages (channels=...) carry every lightbox frame once PER CHANNEL, so at 900 px
+# a 3-channel page ran ~13 MB an event; at 450 the browser's smooth scaling fills the
+# view and a 12-event part stays a few tens of MB, openable off an external drive.
+_LAYER_LB_SIZE = 450
+# Noisy far-red channels dominate a layered page's size; at 80 the grain is still
+# shot noise, not JPEG blocks, and a part is about a third smaller than at 90.
+_LAYER_JPEG_QUALITY = 80
 
 # JPEG, not PNG, for both tiers. Reported 2026-10-17 (researcher, ZO1_STB_P2): a
 # 60-event page came out at 2.3 GB and would not open; 10 events was still 417 MB.
@@ -80,7 +87,9 @@ _EVENTS_PER_PAGE = 12
 
 @server.tool()
 def show_cells_in_browser(well: str, events: list[dict], note: str = "",
-                          review_form: dict | None = None) -> str:
+                          review_form: dict | None = None,
+                          channels: list[str] | None = None,
+                          channels_off: list[str] | None = None) -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
 
     QUICK REF (long descriptions truncate ~1200 chars in, no [...] marker --
@@ -213,6 +222,17 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             an `id` key (any string, e.g. your own candidate number); it becomes the
             CSV's event_id column so rows join back to your list.
 
+        channels (optional, multi-channel wells): channel names from
+            list_channels(), e.g. ["AF594", "AF488", "AF647"]. The page then carries
+            each as its own grey layer and composes them in the browser, with an
+            on/off box per channel and (on by default) contrast stretched to each
+            event's crop instead of the whole field -- a dim nucleus next to a bright
+            one stays readable, and a marker that washes over the nuclei can be
+            switched off. Without it the page shows the bundle's fixed composite.
+        channels_off (optional): of those, the ones that start switched off, e.g.
+            ["AF647"] when a far-red marker would wash over H2B nuclei; the reader
+            can still turn them on.
+
     Returns TWO lines: the absolute path, then the same file as a file:// URL. Give
     the user BOTH, verbatim, each on its own line -- terminals and chat clients
     linkify a URL but not a Windows path, and which one is clickable depends on their
@@ -268,6 +288,17 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             raise ValueError(
                 f"events[{i}] has kind='track' but no 'track_id' given: {ev!r}")
     form = _normalize_review_form(review_form)
+    layers = []
+    if channels:
+        known = {c["name"]: c for c in _cm._manifest(well).get("channels") or []}
+        missing = [c for c in channels if c not in known]
+        if missing:
+            raise ValueError(f"{well} has no channel(s) {missing}; it has {sorted(known)}")
+        off = set(channels_off or [])
+        if off - set(channels):
+            raise ValueError(f"channels_off {sorted(off - set(channels))} not in channels {channels}")
+        layers = [{"name": c, "rgb": known[c].get("color_rgb") or [255, 255, 255], "on": c not in off}
+                  for c in channels]
 
     def _b64_all(imgs, quality):
         out = []
@@ -299,7 +330,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     sections = []
     shared: list[str] = []
     lb_data = []
-    for i, ev in enumerate(events):
+    def _render(ev, color, lb_size=_FIGURE_UPSCALE_TO):
+        """(header, label, thumb images, lightbox images) for one event."""
         kind = ev["kind"]
         if kind == "point":
             waypoints = ev.get("waypoints")
@@ -307,7 +339,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             common = dict(
                 max_images=None if mx is None else int(mx),
                 crop_um=float(ev.get("crop_um", 90.0)),
-                color=True, scale_bar=True,
+                color=color, scale_bar=True,
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,
                 # Always off on this page, unconditionally -- not a per-event
@@ -326,7 +358,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                     None if waypoints is not None else float(ev["y"]), None)
             header, thumb_images = _cm._fixed_point_frames(*args, **common)
             _, lb_images = _cm._fixed_point_frames(
-                *args, **_lightbox_args(common, ev), upscale_to=_FIGURE_UPSCALE_TO)
+                *args, **_lightbox_args(common, ev), upscale_to=lb_size)
             label = ev.get("label") or (
                 f"drift ({len(waypoints)} waypoints)" if waypoints is not None
                 else f"({ev['x']:.0f}, {ev['y']:.0f})")
@@ -338,7 +370,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 start_frame=ev.get("start_frame"), end_frame=ev.get("end_frame"),
                 max_images=None if mx is None else int(mx),
                 crop_um=None if crop is None else float(crop),
-                color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
+                color=color, scale_bar=True, marker=bool(ev.get("marker", False)),
                 before_min=float(ev.get("before_min", _REPORT_WINDOW_BEFORE_MIN)),
                 after_min=float(ev.get("after_min", _REPORT_WINDOW_AFTER_MIN)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
@@ -357,7 +389,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             header, thumb_images = _cm._family_filmstrip_frames(
                 well, members, **common, min_crop_um=_REPORT_MIN_CROP_UM)
             _, lb_images = _cm._family_filmstrip_frames(
-                well, members, **_lightbox_args(common, ev), upscale_to=_FIGURE_UPSCALE_TO,
+                well, members, **_lightbox_args(common, ev), upscale_to=lb_size,
                 min_crop_um=_REPORT_MIN_CROP_UM)
             label = ev.get("label") or f"tracks {', '.join(str(t) for t in members)}"
         else:  # kind == "track"
@@ -367,25 +399,47 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 start_frame=ev.get("start_frame"), end_frame=ev.get("end_frame"),
                 max_images=None if mx is None else int(mx),
                 crop_um=float(ev.get("crop_um", 90.0)),
-                color=True, scale_bar=True, marker=bool(ev.get("marker", False)),
+                color=color, scale_bar=True, marker=bool(ev.get("marker", False)),
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=MAX_IMAGES_PAGE,
             )
             header, thumb_images = _cm._filmstrip_frames(well, track_id, **common)
             _, lb_images = _cm._filmstrip_frames(
-                well, track_id, **_lightbox_args(common, ev), upscale_to=_FIGURE_UPSCALE_TO)
+                well, track_id, **_lightbox_args(common, ev), upscale_to=lb_size)
             label = ev.get("label") or f"track {track_id}"
+        return header, label, thumb_images, lb_images
 
-        b64_list = _b64_all(thumb_images, _THUMB_JPEG_QUALITY)       # filmstrip thumbnails -- small, pixelated-upscale OK
-        lb_b64_list = _b64_all(lb_images, _LIGHTBOX_JPEG_QUALITY)    # lightbox only -- large, smooth-scaled
-        del thumb_images, lb_images
+    for i, ev in enumerate(events):
         # Index into THIS page's LB_DATA, not the global event index.
         lb_i = len(lb_data)
-        tiles = [
-            f'<img src="data:image/jpeg;base64,{b64}" loading="lazy" '
-            f'onclick="openLightbox({lb_i},{j})">'
-            for j, b64 in enumerate(b64_list)
-        ]
+        if layers:
+            # One grey JPEG per channel per frame: about the size of one colour JPEG,
+            # and the page tints, toggles and stretches them (see composeTile).
+            thumbs, lbs = {}, {}
+            for ly in layers:
+                tok = _cm._LAYER.set(ly["name"])
+                try:
+                    header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE)
+                finally:
+                    _cm._LAYER.reset(tok)
+                thumbs[ly["name"]] = _b64_all([_grey(x) for x in t_img], _LAYER_JPEG_QUALITY)
+                lbs[ly["name"]] = _b64_all([_grey(x) for x in l_img], _LAYER_JPEG_QUALITY)
+                del t_img, l_img
+            n_tiles = len(thumbs[layers[0]["name"]])
+            tiles = [f'<canvas data-lb={lb_i} data-j={j} onclick="openLightbox({lb_i},{j})"></canvas>'
+                     for j in range(n_tiles)]
+            lb_entry = {"label": label, "thumbs": thumbs, "layers": lbs}
+        else:
+            header, label, thumb_images, lb_images = _render(ev, color=True)
+            b64_list = _b64_all(thumb_images, _THUMB_JPEG_QUALITY)       # filmstrip thumbnails -- small, pixelated-upscale OK
+            lb_b64_list = _b64_all(lb_images, _LIGHTBOX_JPEG_QUALITY)    # lightbox only -- large, smooth-scaled
+            del thumb_images, lb_images
+            tiles = [
+                f'<img src="data:image/jpeg;base64,{b64}" loading="lazy" '
+                f'onclick="openLightbox({lb_i},{j})">'
+                for j, b64 in enumerate(b64_list)
+            ]
+            lb_entry = {"label": label, "images": lb_b64_list}
         # Split the per-case facts from the standing how-this-renders text and collect
         # the latter for ONE printing at the top. Repeating it under every case is what
         # made a reviewer stop reading it, and the caveats live in that half.
@@ -418,14 +472,14 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             f"<div class=filmstrip>{''.join(tiles)}</div>"
             f"{_review_controls_html(i, form)}</section>"
         )
-        lb_data.append({"label": label, "images": lb_b64_list})
+        lb_data.append(lb_entry)
 
         if len(sections) == _EVENTS_PER_PAGE or i == len(events) - 1:
             written.append(_write_page(
                 out_dir / _page_name(len(written) + 1), well, note, sections, shared,
                 lb_data, len(written) + 1, n_pages, _page_name,
                 first_event=i + 2 - len(sections), last_event=i + 1,
-                n_events=len(events), review=review))
+                n_events=len(events), review=review, layers=layers))
             sections, shared, lb_data = [], [], []
 
     # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
@@ -445,6 +499,12 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
 
 
 _FORM_KINDS = ("checks", "choices", "numbers", "text")
+
+
+def _grey(img):
+    """A rendered tile as one grey plane (layers are rendered uncoloured, so B=G=R
+    except for burned-in label colours, which only need to stay visible)."""
+    return img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
 def _lightbox_args(common, ev):
@@ -516,11 +576,20 @@ def _review_controls_html(i, form):
 
 
 def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
-                page_name, first_event, last_event, n_events, review):
+                page_name, first_event, last_event, n_events, review, layers=()):
     """Write one page of show_cells_in_browser's output and return its path."""
     lb_json = json.dumps(lb_data)
     # "</" escaped so a label containing "</script>" can't end the script block early.
     review_json = json.dumps(review).replace("</", "<\\/")
+    layers_json = json.dumps(list(layers))
+    layer_ctl = "".join(
+        f'<label><input type=checkbox class=layer data-ch="{ly["name"]}"{" checked" if ly["on"] else ""} onchange="redrawAll()">'
+        f'<span style="color:rgb({ly["rgb"][0]},{ly["rgb"][1]},{ly["rgb"][2]})">&#9632;</span> {ly["name"]}</label>'
+        for ly in layers)
+    if layers:
+        layer_ctl += ('<label title="Stretch each channel to this event\'s own crop, like Fiji\'s Auto on a selection. '
+                      'Off: the bundle\'s field-wide window.">'
+                      '<input type=checkbox id=autoCtl checked onchange="redrawAll()"> auto contrast per event</label>')
     if n_parts > 1:
         prev_html = (f'<a href="{page_name(part - 1)}">&lsaquo; part {part - 1}</a>'
                      if part > 1 else "")
@@ -567,6 +636,8 @@ div.view-controls {{ display: flex; align-items: center; gap: 0.9rem;
 div.view-controls label {{ display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; cursor: pointer; }}
 div.filmstrip {{ display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; }}
 div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+div.filmstrip canvas {{ flex: 0 0 auto; height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+.lightbox canvas {{ width: min(88vh, 92vw); height: auto; }}
 /* The frame/time/coord label (top) and scale bar (bottom) are burned into the image
    pixels, not drawn by CSS -- so "hiding" them for a clean figure means clipping
    those strips off the rendered image rather than toggling a layer. Both bands are
@@ -575,7 +646,8 @@ div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260
    image, just at different display sizes -- clip-path % is relative to the image's
    own box either way, so they must use the same values or one under/over-trims. */
 body.figure-mode div.filmstrip img,
-body.figure-mode .lightbox img {{ clip-path: inset(7% 0 7% 0); }}
+body.figure-mode .lightbox img, body.figure-mode div.filmstrip canvas,
+body.figure-mode .lightbox canvas {{ clip-path: inset(7% 0 7% 0); }}
 .lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 20; }}
 .lightbox.open {{ display: flex; }}
 .lightbox img {{ max-width: 92vw; max-height: 88vh; }}
@@ -617,6 +689,7 @@ div.reviewbar button:hover {{ background: #26394a; }}
 <nav class="track-nav">
 <div class="view-controls">
   <label><input type="checkbox" id="figureCtl" onchange="document.body.classList.toggle('figure-mode', this.checked)"> hide labels + scale bar (figures)</label>
+  {layer_ctl}
   <div class="reviewbar"><span id="rv-count"></span>
     <button onclick="exportReview()" title="Download one CSV with every event in this set (all parts)">Export CSV</button></div>
   {pager_html}
@@ -632,16 +705,103 @@ Enlarged: <b>&larr;</b>/<b>&rarr;</b> frames &middot; <b>space</b> play &middot;
   <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
   <button class="lightbox-nav prev" id="lb-prev" onclick="stepLightbox(-1)">&lsaquo;</button>
   <img id="lb-img" alt="">
+  <canvas id="lb-canvas" style="display:none"></canvas>
   <div class="lightbox-caption" id="lb-caption"></div>
   <button class="lightbox-nav next" id="lb-next" onclick="stepLightbox(1)">&rsaquo;</button>
   <button class="lightbox-play" id="lb-play" onclick="togglePlay()">play</button>
 </div>
 <script>
 var LB_DATA = {lb_json};
+var LAYERS = {layers_json};
 var lbSection = 0, lbIdx = 0;
+// ---- per-channel layers: each channel is a grey JPEG; tint, toggle and stretch here ----
+var decoded = {{}};                       // key -> Image, decoded once
+function img(key, b64, done) {{
+  var im = decoded[key];
+  if (im && im.complete) return done(im);
+  if (!im) {{ im = decoded[key] = new Image(); im.src = 'data:image/jpeg;base64,' + b64; }}
+  im.addEventListener('load', function() {{ done(im); }}, {{once: true}});
+}}
+function framesOf(sec) {{ var d = LB_DATA[sec]; return d.images || d.layers[LAYERS[0].name]; }}
+function onLayers() {{
+  return LAYERS.filter(function(l) {{
+    var c = document.querySelector('input.layer[data-ch="' + l.name + '"]'); return !c || c.checked; }});
+}}
+var stretchCache = {{}}, stretchWaiting = {{}};
+function stretchOf(sec, done) {{             // per event, per channel: 1st / 99.7th percentile of its thumbs
+  if (stretchCache[sec]) return done(stretchCache[sec]);
+  // Every tile of an event asks at once on first draw: compute once, queue the rest.
+  if (stretchWaiting[sec]) return stretchWaiting[sec].push(done);
+  stretchWaiting[sec] = [done];
+  done = function(st) {{ var q = stretchWaiting[sec]; delete stretchWaiting[sec]; q.forEach(function(f) {{ f(st); }}); }};
+  var d = LB_DATA[sec], out = {{}}, left = LAYERS.length;
+  LAYERS.forEach(function(l) {{
+    var hist = new Uint32Array(256), n = 0, arr = d.thumbs[l.name], got = 0;
+    arr.forEach(function(b64, j) {{
+      img('t' + sec + l.name + j, b64, function(im) {{
+        var c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
+        var x = c.getContext('2d'); x.drawImage(im, 0, 0);
+        var y0 = Math.round(im.height * 0.08), y1 = Math.round(im.height * 0.92);   // skip the label bands
+        var px = x.getImageData(0, y0, im.width, y1 - y0).data;
+        for (var p = 0; p < px.length; p += 4) {{ hist[px[p]]++; n++; }}
+        if (++got === arr.length) {{
+          var lo = 0, hi = 255, acc = 0;
+          for (var v = 0; v < 256; v++) {{ acc += hist[v]; if (acc >= n * 0.01) {{ lo = v; break; }} }}
+          acc = 0;
+          for (var v2 = 0; v2 < 256; v2++) {{ acc += hist[v2]; if (acc >= n * 0.997) {{ hi = v2; break; }} }}
+          out[l.name] = [lo, Math.max(hi, lo + 8)];
+          if (--left === 0) {{ stretchCache[sec] = out; done(out); }}
+        }}
+      }});
+    }});
+  }});
+}}
+function compose(canvas, sec, key, list, done) {{   // list: {{name: b64}} for one frame
+  var on = onLayers(), auto = (document.getElementById('autoCtl') || {{}}).checked;
+  stretchOf(sec, function(st) {{
+    var ims = {{}}, left = LAYERS.length;
+    LAYERS.forEach(function(l) {{
+      img(key + l.name, list[l.name], function(im) {{
+        ims[l.name] = im;
+        if (--left) return;
+        var w = im.width, h = im.height; canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext('2d'), out = ctx.createImageData(w, h), o = out.data;
+        for (var p = 3; p < o.length; p += 4) o[p] = 255;
+        on.forEach(function(l2) {{
+          var c = document.createElement('canvas'); c.width = w; c.height = h;
+          var x = c.getContext('2d'); x.drawImage(ims[l2.name], 0, 0);
+          var g = x.getImageData(0, 0, w, h).data, lo = auto ? st[l2.name][0] : 0, hi = auto ? st[l2.name][1] : 255;
+          var k = 255 / (hi - lo), r = l2.rgb[0] / 255, gg = l2.rgb[1] / 255, b = l2.rgb[2] / 255;
+          for (var p = 0; p < g.length; p += 4) {{
+            var v = (g[p] - lo) * k; v = v < 0 ? 0 : v > 255 ? 255 : v;
+            if (v * r > o[p]) o[p] = v * r; if (v * gg > o[p + 1]) o[p + 1] = v * gg; if (v * b > o[p + 2]) o[p + 2] = v * b;
+          }}
+        }});
+        ctx.putImageData(out, 0, 0); if (done) done();
+      }});
+    }});
+  }});
+}}
+function frameLayers(d, kind, j) {{
+  var o = {{}}; LAYERS.forEach(function(l) {{ o[l.name] = d[kind][l.name][j]; }}); return o;
+}}
+function redrawAll() {{
+  document.querySelectorAll('div.filmstrip canvas').forEach(function(cv) {{
+    var sec = +cv.dataset.lb, j = +cv.dataset.j;
+    compose(cv, sec, 't' + sec + '_' + j, frameLayers(LB_DATA[sec], 'thumbs', j));
+  }});
+  if (document.getElementById('lightbox').classList.contains('open')) showLbFrame();
+}}
 function showLbFrame() {{
-  var imgs = LB_DATA[lbSection].images;
-  document.getElementById('lb-img').src = 'data:image/jpeg;base64,' + imgs[lbIdx];
+  var imgs = framesOf(lbSection), d = LB_DATA[lbSection];
+  var el = document.getElementById('lb-img'), cv = document.getElementById('lb-canvas');
+  if (d.layers) {{
+    el.style.display = 'none'; cv.style.display = '';
+    compose(cv, lbSection, 'l' + lbSection + '_' + lbIdx, frameLayers(d, 'layers', lbIdx));
+  }} else {{
+    cv.style.display = 'none'; el.style.display = '';
+    el.src = 'data:image/jpeg;base64,' + imgs[lbIdx];
+  }}
   document.getElementById('lb-caption').textContent =
     LB_DATA[lbSection].label + ' -- frame ' + (lbIdx + 1) + ' / ' + imgs.length;
   document.getElementById('lb-prev').disabled = lbIdx === 0;
@@ -654,7 +814,7 @@ function openLightbox(section, idx) {{
 }}
 function closeLightbox() {{ if (playTimer) stopPlay(); document.getElementById('lightbox').classList.remove('open'); }}
 function stepLightbox(delta) {{
-  var imgs = LB_DATA[lbSection].images;
+  var imgs = framesOf(lbSection);
   var next = lbIdx + delta;
   if (next < 0 || next >= imgs.length) return;
   lbIdx = next;
@@ -663,6 +823,7 @@ function stepLightbox(delta) {{
 document.getElementById('lightbox').addEventListener('click', function(e) {{
   if (e.target.id === 'lightbox') closeLightbox();
 }});
+if (LAYERS.length) redrawAll();
 // Keyboard review. Section ids are GLOBAL event numbers (sec0..); LB_DATA is this
 // page's events only, so lightbox index k is event FIRST + k.
 var FIRST = {first_event - 1}, PAGES = {json.dumps([page_name(k) for k in range(1, n_parts + 1)])},
@@ -692,7 +853,7 @@ function togglePlay() {{
   if (playTimer) return stopPlay();
   document.getElementById('lb-play').textContent = 'pause';
   playTimer = setInterval(function() {{
-    lbIdx = (lbIdx + 1) % LB_DATA[lbSection].images.length; showLbFrame();
+    lbIdx = (lbIdx + 1) % framesOf(lbSection).length; showLbFrame();
   }}, 350);
 }}
 function lbEvent(d) {{
