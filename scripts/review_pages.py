@@ -21,6 +21,9 @@ Config keys (all optional except review_form; the command-line flags override th
     events_per_part, max_frames   set either to pin it instead of deriving it
     crop_um, context_um     filmstrip crop and the wider lightbox crop (default 70 / 200)
     channels, channels_off  as in show_cells_in_browser
+    channel_toggles         default false: the shown channels are combined into one image per
+                            frame (contrast per card). true / --toggles: an on/off box per channel
+                            in the browser, at about 3x the data with three channels
     review_form     as in show_cells_in_browser -- put the main verdict first in
                     "choices" so the 1-9 keys mark it
 Each card's label carries its source, Fiji frame and any suggestion; its id is the
@@ -43,6 +46,8 @@ def main():
     ap.add_argument("--ids", help="comma-separated event_ids: build only these cards")
     ap.add_argument("--before-min", type=float); ap.add_argument("--after-min", type=float)
     ap.add_argument("--events-per-part", type=int); ap.add_argument("--max-frames", type=int)
+    ap.add_argument("--toggles", action="store_true",
+                    help="per-channel on/off in the browser (about 3x the data with three channels)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8"))
     ev = pd.read_csv(a.events)
@@ -84,6 +89,7 @@ def main():
           f"a card{' (sampled: raise --max-frames)' if longest > max_frames else ''}, {per_part} cards a part")
     print(m.show_cells_in_browser(a.well, events, note=cfg.get("note", ""), review_form=cfg["review_form"],
                                   channels=cfg.get("channels"), channels_off=cfg.get("channels_off"),
+                                  channel_toggles=bool(a.toggles or cfg.get("channel_toggles", False)),
                                   events_per_part=int(per_part), max_frames=max_frames))
 
 

@@ -10,6 +10,7 @@ import os
 import re
 
 import cv2
+import numpy as np
 
 from .server import server, MAX_IMAGES_PAGE, _STRIDE_MIN, _HDR_SEP
 from .tools_filmstrip import _resolve_family
@@ -96,6 +97,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                           review_form: dict | None = None,
                           channels: list[str] | None = None,
                           channels_off: list[str] | None = None,
+                          channel_toggles: bool = False,
                           events_per_part: int | None = None,
                           max_frames: int | None = None) -> str:
     """Show the user cells -- writes a page of labelled filmstrips they can open.
@@ -237,9 +239,14 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             event's crop instead of the whole field -- a dim nucleus next to a bright
             one stays readable, and a marker that washes over the nuclei can be
             switched off. Without it the page shows the bundle's fixed composite.
-        channels_off (optional): of those, the ones that start switched off, e.g.
-            ["AF647"] when a far-red marker would wash over H2B nuclei; the reader
-            can still turn them on.
+        channels_off (optional): of those, the ones left out, e.g. ["AF647"] when a
+            far-red marker would wash over H2B nuclei.
+        channel_toggles (default False): False combines the shown channels here,
+            each stretched to the event's own crop, into ONE colour image per
+            frame -- the clean look at the data cost of the plain composite, but
+            fixed. True embeds each channel as its own grey layer (about 3x the
+            data with three channels) and the page gets an on/off box per channel,
+            with channels_off starting switched off rather than left out.
         events_per_part (optional): events per page part (default 8 with channels,
             12 without). Fewer events per part is what pays for longer windows: a
             part's size is events x frames, so 4 events with twice the frames load
@@ -435,9 +442,33 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     for i, ev in enumerate(events):
         # Index into THIS page's LB_DATA, not the global event index.
         lb_i = len(lb_data)
-        if layers:
-            # One grey JPEG per channel per frame: about the size of one colour JPEG,
-            # and the page tints, toggles and stretches them (see composeTile).
+        if layers and not channel_toggles:
+            # Same per-channel renders, combined here: one colour JPEG per frame.
+            shown = [ly for ly in layers if ly["on"]]
+            grey_t, grey_l = {}, {}
+            for ly in shown:
+                tok = _cm._LAYER.set(ly["name"])
+                try:
+                    header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE,
+                                                          thumb_size=_LAYER_THUMB_SIZE)
+                finally:
+                    _cm._LAYER.reset(tok)
+                grey_t[ly["name"]] = [_grey(x) for x in t_img]
+                grey_l[ly["name"]] = [_grey(x) for x in l_img]
+                del t_img, l_img
+            st = {n: _stretch_of(v) for n, v in grey_t.items()}
+            b64_list = _b64_all(_combine(grey_t, shown, st), _THUMB_JPEG_QUALITY)
+            lb_b64_list = _b64_all(_combine(grey_l, shown, st), _LIGHTBOX_JPEG_QUALITY)
+            del grey_t, grey_l
+            tiles = [
+                f'<img src="data:image/jpeg;base64,{b64}" loading="lazy" '
+                f'onclick="openLightbox({lb_i},{j})">'
+                for j, b64 in enumerate(b64_list)
+            ]
+            lb_entry = {"label": label, "images": lb_b64_list}
+        elif layers:
+            # One grey JPEG per channel per frame, and the page tints, toggles and
+            # stretches them (see compose in the page script).
             thumbs, lbs = {}, {}
             for ly in layers:
                 tok = _cm._LAYER.set(ly["name"])
@@ -503,7 +534,11 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 out_dir / _page_name(len(written) + 1), well, note, sections, shared,
                 lb_data, len(written) + 1, n_pages, _page_name,
                 first_event=i + 2 - len(sections), last_event=i + 1,
-                n_events=len(events), review=review, layers=layers, per_page=per_page))
+                n_events=len(events), review=review, layers=layers if channel_toggles else (),
+                per_page=per_page,
+                shown_note=("" if channel_toggles or not layers else
+                            "channels: " + ", ".join(ly["name"] for ly in layers if ly["on"])
+                            + " (each stretched to the event)")))
             sections, shared, lb_data = [], [], []
 
     # ABSOLUTE, always, and as a file:// URL too. _cm.BUNDLE is usually relative, so this
@@ -523,6 +558,30 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
 
 
 _FORM_KINDS = ("checks", "choices", "numbers", "text")
+
+
+def _stretch_of(tiles):
+    """(lo, hi) for one channel of one event: its 1st / 99.7th percentile over the
+    event's own tiles, skipping the burned-in label bands -- the same rule the page
+    script applies when channels are toggled in the browser."""
+    px = np.concatenate([t[int(t.shape[0] * 0.08):int(t.shape[0] * 0.92)].ravel() for t in tiles])
+    lo, hi = np.percentile(px, [1, 99.7])
+    return float(lo), float(max(hi, lo + 8))
+
+
+def _combine(by_ch, shown, st):
+    """Per-frame colour images from per-channel grey tiles: stretch, tint, max."""
+    out = []
+    for j in range(len(by_ch[shown[0]["name"]])):
+        acc = None
+        for ly in shown:
+            lo, hi = st[ly["name"]]
+            g = np.clip((by_ch[ly["name"]][j].astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255)
+            r, gg, b = (v / 255.0 for v in ly["rgb"])
+            t = np.stack([g * b, g * gg, g * r], axis=-1)
+            acc = t if acc is None else np.maximum(acc, t)
+        out.append(acc.astype(np.uint8))
+    return out
 
 
 def _grey(img):
@@ -601,7 +660,7 @@ def _review_controls_html(i, form):
 
 def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
                 page_name, first_event, last_event, n_events, review, layers=(),
-                per_page=_EVENTS_PER_PAGE):
+                per_page=_EVENTS_PER_PAGE, shown_note=""):
     """Write one page of show_cells_in_browser's output and return its path."""
     lb_json = json.dumps(lb_data)
     # "</" escaped so a label containing "</script>" can't end the script block early.
@@ -611,6 +670,8 @@ def _write_page(out_path, well, note, sections, shared, lb_data, part, n_parts,
         f'<label><input type=checkbox class=layer data-ch="{ly["name"]}"{" checked" if ly["on"] else ""} onchange="redrawAll()">'
         f'<span style="color:rgb({ly["rgb"][0]},{ly["rgb"][1]},{ly["rgb"][2]})">&#9632;</span> {ly["name"]}</label>'
         for ly in layers)
+    if shown_note:
+        layer_ctl = f'<span>{shown_note}</span>'
     if layers:
         layer_ctl += ('<label title="Stretch each channel to this event\'s own crop, like Fiji\'s Auto on a selection. '
                       'Off: the bundle\'s field-wide window.">'
@@ -675,7 +736,7 @@ body.figure-mode .lightbox img, body.figure-mode div.filmstrip canvas,
 body.figure-mode .lightbox canvas {{ clip-path: inset(7% 0 7% 0); }}
 .lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 20; }}
 .lightbox.open {{ display: flex; }}
-.lightbox img {{ max-width: 92vw; max-height: 88vh; }}
+.lightbox img {{ width: min(88vh, 92vw); height: auto; }}   /* fill the view whatever size was stored */
 .lightbox-caption {{ position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); color: #ccc; font-size: 12.5px; }}
 .lightbox-close {{ position: absolute; top: 14px; right: 20px; color: #fff; font-size: 28px; line-height: 1; cursor: pointer; background: none; border: none; padding: 6px 10px; }}
 .lightbox-nav {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,0.12); color: #fff; border: none; font-size: 28px; line-height: 1; width: 52px; height: 64px; cursor: pointer; border-radius: 8px; }}
