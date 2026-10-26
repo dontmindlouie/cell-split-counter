@@ -1,0 +1,44 @@
+{
+ "name": "H2B-mCherry TSC, 20260822 ZO1 EVT/STB crops (dense, mixed-brightness fields)",
+ "nucleus_channel": 1,
+ "smooth_um": 1.0,
+ "threshold_scale": 0.35,
+ "split_um": 5.0,
+ "min_area_um2": 8.0,
+ "base_min_lo": 30.0,
+ "base_min_hi": 60.0,
+ "cond": 1.4,
+ "area": 1.0,
+ "fold_um": 20.0,
+ "fold_min": 40.0,
+ "target_recall": 0.95,
+ "rationale": {
+  "nucleus_channel": "AF594 = H2B-mCherry in the 20260822 EVT ND2s (index 1 of AF488/AF594/AF647).",
+  "split_um": "Interphase TSC nuclei are ~10-12 um across; seeds closer than a radius are one nucleus.",
+  "min_area_um2": "Below any real nucleus or metaphase plate; removes debris and micronuclei from the scan (micronuclei are scored by eye, not here).",
+  "base_min_lo/hi": "Compare against the cell 30-60 min earlier: prophase-to-metaphase in mammalian cells is ~20-40 min, so this baseline is still interphase. Chosen by her Claude without calibration; kept because it worked.",
+  "cond/area": "MEASURED on 136 hand clicks across all three day groups (crop1_D4_1 35, crop4_D2_3 61, crop7_D0_1 40). ONE setting, top >= 1.4x and area <= 1.0x baseline: D4 34/35 at 139 candidates, D2 50/61 at 218, D0 33/40 at 116 (~3-4 candidates per real mitosis, 82-97% recall). Per-group tuning did not beat it. Misses concentrate in crowded clusters and in the first ~40 min of a movie (no 30-60 min baseline yet).",
+  "fold_um/fold_min": "One mitosis spans several frames and the daughters separate ~10-15 um; fold hits closer than that into one event.",
+  "threshold_scale": "MEASURED: at 1.0 x Otsu the bright cells pull the threshold up and dim interphase nuclei go unsegmented, so a plate has no 'before' to be brighter than (23/35 found). 0.5 -> 35/35 clicks in a mask, 33/35 at 154 candidates; 0.35 over-segments (452 candidates for 34). crop1_D4_1, 2026-10-23.",
+  "local_bg_frac/bg_window_um/dist_smooth_px": "Ported from her segment_field.py (20260822 EVT). Global 0.5x Otsu alone: 33/35 needed 154 candidates; with these, 109.",
+  "signal": "MEASURED 2026-10-25: 'top' (brightest point after 1 px blur) instead of mean. In dense D0/D2 fields the watershed merges a plate with a neighbour, which drags mean and area toward interphase; the brightest point is still the plate. D0_1: 33/40 found at 116 candidates with top vs 272 with mean.",
+  "edge_um": "MEASURED 2026-10-25: The researcher's review of crop8_D0_1's unclicked candidates marked 6/78 'out of frame' (a cell leaving the field shrinks and passes as a plate), all centred within 8 px of the border. Dropping objects within 7 um (8 px) of the edge loses 0 clicks on crop2_D4_1/crop3_D2_3/crop8_D0_1 and removes 8-18 candidates per field.",
+  "threshold_scale/local_bg_frac (EVT)": "MEASURED 2026-10-25: in crop1_D4_2 dim interphase nuclei next to very bright ones were never segmented, so their plates had no baseline (34/68 found). 0.35 x Otsu with local_bg_frac 0.15: crop1_D4_2 49/68; over the 7 clicked EVT fields 440 -> 464 of 542 found for +19% candidates. NOT used for TSC batch2 / BeWo (0.58 um/px, single channel): there it found 369 -> 371 of 437 sampled clicks (M1, M3, M6, M9, BeWo M5) for +22% candidates, and ZO1_STB P1-6 335 -> 339 for +13%."
+ },
+ "signal": "top",
+ "grid_cond": [
+  1.15,
+  1.2,
+  1.3,
+  1.4,
+  1.6
+ ],
+ "grid_area": [
+  0.6,
+  0.8,
+  1.0,
+  1.2
+ ],
+ "edge_um": 7.0,
+ "local_bg_frac": 0.15
+}

@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Candidate review: __FIELD__</title>
+<style>
+  :root { --bg:#121212; --fg:#e8e8e8; --dim:#999; --card:#1d1d1d; --yes:#2e9e5b; --no:#c0443c; --uns:#c99a2e; --focus:#4fa3ff; --hit:#ffc83c; }
+  body { background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; margin:0; padding:0 16px 80px; }
+  header { position:sticky; top:0; background:var(--bg); padding:10px 0; border-bottom:1px solid #333; z-index:2; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  .sum, .help { color:var(--dim); font-size:12px; }
+  .tally span { margin-right:14px; }
+  button { font:inherit; border:1px solid #444; background:#2a2a2a; color:var(--fg); padding:5px 12px; border-radius:4px; cursor:pointer; }
+  button:disabled { opacity:.4; cursor:default; }
+  .card { background:var(--card); margin:12px 0; padding:8px; border-radius:6px; border:2px solid transparent; }
+  .card.focus { border-color:var(--focus); }
+  .card.yes { box-shadow:inset 6px 0 0 var(--yes); } .card.no { box-shadow:inset 6px 0 0 var(--no); } .card.unsure { box-shadow:inset 6px 0 0 var(--uns); }
+  .meta { color:var(--dim); font-size:12px; margin-bottom:6px; }
+  .tiles { display:flex; flex-wrap:wrap; gap:3px; }
+  .tile { position:relative; cursor:zoom-in; }
+  .tile img { display:block; width:120px; height:120px; image-rendering:pixelated; border:2px solid transparent; }
+  .tile.hit img { border-color:var(--hit); }
+  .tile span { position:absolute; left:4px; top:2px; font-size:11px; color:#ccc; text-shadow:0 0 3px #000; }
+  .tile.hit span { color:var(--hit); }
+  .tile::after { content:""; position:absolute; left:50%; top:50%; width:24px; height:24px; margin:-12px 0 0 -12px; border:1px dashed rgba(80,200,255,.55); pointer-events:none; }
+  .row { display:flex; gap:6px; align-items:center; margin-top:6px; flex-wrap:wrap; }
+  button.on.yes { background:var(--yes); } button.on.no { background:var(--no); } button.on.unsure { background:var(--uns); color:#111; }
+  input.note { flex:1; min-width:160px; background:#111; color:var(--fg); border:1px solid #444; padding:5px; border-radius:4px; }
+  .pager { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+  .pager button.cur { background:var(--focus); color:#111; }
+  /* lightbox */
+  #lb { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none; z-index:10; align-items:center; justify-content:center; flex-direction:column; gap:8px; }
+  #lb.open { display:flex; }
+  #lbwrap { position:relative; }
+  #lbimg { display:block; width:min(86vh, 92vw); height:min(86vh, 92vw); image-rendering:pixelated; max-height:calc(100vh - 150px); max-width:calc(100vh - 150px); }
+  #lbbox { position:absolute; border:1.5px dashed rgba(80,200,255,.8); pointer-events:none; }
+  #lbwrap.hit #lbimg { outline:3px solid var(--hit); }
+  #lbbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center; color:var(--fg); }
+  #lbbar input[type=range] { width:min(500px, 60vw); }
+  #lbinfo { font-size:13px; min-width:260px; text-align:center; }
+  #lbinfo .h { color:var(--hit); font-weight:600; }
+  .scale { position:absolute; right:10px; bottom:10px; height:4px; background:#fff; }
+  .scale + small { position:absolute; right:10px; bottom:16px; color:#fff; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Unclicked candidates: __FIELD__</h1>
+  <div class="sum">__SUMMARY__. Sorted strongest first. Yellow = frames the detector flagged; dashed square = candidate centre. Click any frame to open the wide view.</div>
+  <div class="help">Keys: <b>1</b> mitosis, <b>2</b> not, <b>3</b> unsure, <b>j/k</b> next/prev, <b>Enter</b> open wide view, <b>n</b> note.
+    Wide view: <b>&larr;/&rarr;</b> frame, <b>space</b> play, <b>&uarr;/&darr;</b> prev/next candidate, <b>Esc</b> close. Marks save in this browser.</div>
+  <div class="row"><div class="tally" id="tally"></div><button id="export">Export CSV</button>
+    <label class="help">per page <select id="pp"><option>5</option><option selected>10</option><option>20</option><option>50</option></select></label></div>
+  <div class="pager" id="pager"></div>
+</header>
+<main id="list"></main>
+<div class="pager" id="pager2"></div>
+
+<div id="lb">
+  <div id="lbwrap"><img id="lbimg" alt="wide view"><div id="lbbox"></div><div class="scale" id="scale"></div><small id="scalet"></small></div>
+  <div id="lbbar">
+    <button id="lbprev">&larr;</button><button id="lbplay">play</button><button id="lbnext">&rarr;</button>
+    <input type="range" id="lbrange" min="0" value="0">
+    <span id="lbinfo"></span>
+  </div>
+  <div id="lbbar2" class="row">
+    <button data-k="yes" class="yes">1 Mitosis</button><button data-k="no" class="no">2 Not</button><button data-k="unsure" class="unsure">3 Unsure</button>
+    <button id="lbclose">close (Esc)</button>
+  </div>
+</div>
+
+<script>
+const FIELD = "__FIELD__", ITEMS = __ITEMS__, CLOSE = __CLOSE__, WIDE = __WIDE__, UMPX = __UMPX__;
+const KEY = "candreview:__PAGEKEY__";   // per output folder: a recheck page must not inherit the first pass's notes
+let marks = {}, page = 0, per = 10, focus = 0;
+try { marks = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
+try { const s = JSON.parse(localStorage.getItem(KEY + ":ui") || "{}"); page = s.page || 0; per = s.per || 10; } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(marks)); localStorage.setItem(KEY + ":ui", JSON.stringify({ page, per })); } catch (e) {} };
+const LABELS = [["yes", "Mitosis"], ["no", "Not"], ["unsure", "Unsure"]];
+const list = document.getElementById("list");
+const pages = () => Math.ceil(ITEMS.length / per);
+const isHit = (it, f) => f >= it.first && f <= it.last;
+document.getElementById("pp").value = String(per);
+
+function render() {
+  page = Math.max(0, Math.min(pages() - 1, page));
+  list.innerHTML = "";
+  const start = page * per;
+  ITEMS.slice(start, start + per).forEach((it, k) => {
+    const i = start + k, c = document.createElement("div");
+    c.className = "card"; c.id = "c" + i;
+    c.innerHTML = `<div class="meta">#${i + 1} of ${ITEMS.length} &middot; cand ${it.id} &middot; flagged frames ${it.first}&ndash;${it.last} &middot; X ${it.x_um} Y ${it.y_um} &micro;m (px ${it.x}, ${it.y}) &middot; peak ${it.peak}x${it.prior ? ` &middot; <b style="color:var(--uns)">earlier note: ${it.prior}</b>` : ""}</div>
+      <div class="tiles">${it.frames.map(f => `<div class="tile${isHit(it, f) ? " hit" : ""}" data-f="${f}"><img loading="lazy" src="${it.dir}/s${f}.png" alt="frame ${f}"><span>f${f}</span></div>`).join("")}</div>
+      <div class="row">${LABELS.map(([k, t]) => `<button data-k="${k}" class="${k}">${t}</button>`).join("")}
+      <input class="note" placeholder="note (multipolar, neighbour, debris...)"></div>`;
+    c.querySelectorAll(".row button").forEach(b => b.onclick = () => { setMark(i, b.dataset.k); setFocus(i); });
+    c.querySelectorAll(".tile").forEach(t => t.onclick = () => { setFocus(i); openLb(i, +t.dataset.f); });
+    const note = c.querySelector(".note");
+    note.value = (marks[it.id] || {}).note || "";
+    note.oninput = () => { marks[it.id] = { ...(marks[it.id] || {}), note: note.value }; save(); };
+    list.appendChild(c);
+    paint(i);
+  });
+  for (const id of ["pager", "pager2"]) {
+    const pg = document.getElementById(id); pg.innerHTML = "";
+    const mk = (t, to, dis, cur) => { const b = document.createElement("button"); b.textContent = t; b.disabled = dis;
+      if (cur) b.className = "cur"; b.onclick = () => goPage(to, id === "pager2"); pg.appendChild(b); };
+    mk("‹ prev", page - 1, page === 0);
+    for (let p = 0; p < pages(); p++) {
+      const it = ITEMS.slice(p * per, p * per + per), done = it.every(x => (marks[x.id] || {}).mark);
+      mk(`${p + 1}${done ? " ✓" : ""}`, p, false, p === page);
+    }
+    mk("next ›", page + 1, page >= pages() - 1);
+  }
+  save();
+}
+function goPage(p, top) {
+  page = p; render(); setFocus(page * per);
+  if (top !== false) window.scrollTo(0, 0);
+}
+function paint(i) {
+  const it = ITEMS[i], c = document.getElementById("c" + i), m = (marks[it.id] || {}).mark;
+  if (!c) return;
+  c.classList.remove("yes", "no", "unsure"); if (m) c.classList.add(m);
+  c.querySelectorAll(".row button").forEach(b => b.classList.toggle("on", b.dataset.k === m));
+}
+function setMark(i, k) {
+  const id = ITEMS[i].id, cur = marks[id] || {};
+  marks[id] = { ...cur, mark: cur.mark === k ? undefined : k };
+  save(); paint(i); tally(); lbPaint();
+}
+function setFocus(i, scroll) {
+  i = Math.max(0, Math.min(ITEMS.length - 1, i));
+  if (Math.floor(i / per) !== page) { page = Math.floor(i / per); render(); }
+  document.getElementById("c" + focus)?.classList.remove("focus");
+  focus = i;
+  const c = document.getElementById("c" + focus);
+  c.classList.add("focus");
+  if (scroll) c.scrollIntoView({ block: "center" });
+}
+function tally() {
+  const n = { yes: 0, no: 0, unsure: 0 };
+  ITEMS.forEach(it => { const m = (marks[it.id] || {}).mark; if (m) n[m]++; });
+  document.getElementById("tally").innerHTML =
+    `<span>${n.yes + n.no + n.unsure}/${ITEMS.length} marked</span><span style="color:var(--yes)">mitosis ${n.yes}</span><span style="color:var(--no)">not ${n.no}</span><span style="color:var(--uns)">unsure ${n.unsure}</span>`;
+}
+
+// ---- lightbox ----
+const lb = document.getElementById("lb"), lbimg = document.getElementById("lbimg"), lbrange = document.getElementById("lbrange");
+let lbi = 0, lbk = 0, timer = null;
+function openLb(i, f) {
+  lbi = i; const it = ITEMS[i];
+  lbk = f ? it.frames.indexOf(f) : it.frames.indexOf(it.first);
+  if (lbk < 0) lbk = 0;
+  lbrange.max = it.frames.length - 1;
+  it.frames.forEach(fr => { const im = new Image(); im.src = `${it.dir}/x${fr}.png`; });   // preload
+  lb.classList.add("open"); lbShow();
+}
+function lbShow() {
+  const it = ITEMS[lbi], f = it.frames[lbk];
+  lbimg.src = `${it.dir}/x${f}.png`; lbrange.value = lbk;
+  document.getElementById("lbwrap").classList.toggle("hit", isHit(it, f));
+  const w = lbimg.clientWidth || 600, box = w * (2 * CLOSE) / (2 * WIDE), bx = document.getElementById("lbbox");
+  Object.assign(bx.style, { width: box + "px", height: box + "px", left: (w - box) / 2 + "px", top: (w - box) / 2 + "px" });
+  const um = 50, sc = document.getElementById("scale");
+  sc.style.width = (um / UMPX) * w / (2 * WIDE) + "px"; document.getElementById("scalet").textContent = um + " µm";
+  document.getElementById("lbinfo").innerHTML =
+    `#${lbi + 1}/${ITEMS.length} cand ${it.id} &middot; <span class="${isHit(it, f) ? "h" : ""}">frame ${f}${isHit(it, f) ? " (flagged)" : ""}</span> &middot; ${(f - it.first) * 10 >= 0 ? "+" : ""}${(f - it.first) * 10} min`;
+  lbPaint();
+}
+function lbPaint() {
+  if (!lb.classList.contains("open")) return;
+  const m = (marks[ITEMS[lbi].id] || {}).mark;
+  document.querySelectorAll("#lbbar2 button[data-k]").forEach(b => b.classList.toggle("on", b.dataset.k === m));
+}
+function lbStep(d) { const it = ITEMS[lbi]; lbk = (lbk + d + it.frames.length) % it.frames.length; lbShow(); }
+function lbCand(d) { stop(); const i = Math.max(0, Math.min(ITEMS.length - 1, lbi + d)); setFocus(i); openLb(i); }
+function play() { if (timer) return stop(); document.getElementById("lbplay").textContent = "pause"; timer = setInterval(() => lbStep(1), 350); }
+function stop() { clearInterval(timer); timer = null; document.getElementById("lbplay").textContent = "play"; }
+function closeLb() { stop(); lb.classList.remove("open"); setFocus(lbi, true); }
+document.getElementById("lbprev").onclick = () => { stop(); lbStep(-1); };
+document.getElementById("lbnext").onclick = () => { stop(); lbStep(1); };
+document.getElementById("lbplay").onclick = play;
+document.getElementById("lbclose").onclick = closeLb;
+lbrange.oninput = () => { stop(); lbk = +lbrange.value; lbShow(); };
+lb.onclick = e => { if (e.target === lb) closeLb(); };
+document.querySelectorAll("#lbbar2 button[data-k]").forEach(b => b.onclick = () => setMark(lbi, b.dataset.k));
+window.addEventListener("resize", () => { if (lb.classList.contains("open")) lbShow(); });
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") { if (e.key === "Escape") e.target.blur(); return; }
+  if (lb.classList.contains("open")) {
+    if (e.key === "Escape") closeLb();
+    else if (e.key === "ArrowLeft") { stop(); lbStep(-1); }
+    else if (e.key === "ArrowRight") { stop(); lbStep(1); }
+    else if (e.key === " ") { e.preventDefault(); play(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); lbCand(-1); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); lbCand(1); }
+    else if ("123".includes(e.key)) { setMark(lbi, LABELS[+e.key - 1][0]); if (lbi < ITEMS.length - 1) lbCand(1); }
+    else return;
+    e.preventDefault(); return;
+  }
+  if ("123".includes(e.key) && e.key.length === 1) { setMark(focus, LABELS[+e.key - 1][0]); setFocus(focus + 1, true); }
+  else if (e.key === "j") setFocus(focus + 1, true);
+  else if (e.key === "k") setFocus(focus - 1, true);
+  else if (e.key === "Enter") openLb(focus);
+  else if (e.key === "n") { e.preventDefault(); document.querySelector(`#c${focus} .note`).focus(); }
+});
+document.getElementById("pp").onchange = e => { per = +e.target.value; goPage(Math.floor(focus / per)); };
+document.getElementById("export").onclick = () => {
+  const esc = s => `"${String(s ?? "").replace(/"/g, '""')}"`;
+  const rows = [["field", "rank", "cand", "first_frame", "last_frame", "x_px", "y_px", "x_um", "y_um", "peak", "matched_click", "earlier_note", "mark", "note"]];
+  ITEMS.forEach((it, i) => { const m = marks[it.id] || {};
+    rows.push([FIELD, i + 1, it.id, it.first, it.last, it.x, it.y, it.x_um, it.y_um, it.peak, it.matched, it.prior || "", m.mark || "", m.note || ""]); });
+  const blob = new Blob([rows.map(r => r.map(esc).join(",")).join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `candidate_review_${FIELD}.csv`; a.click();
+};
+render(); tally(); setFocus(page * per);
+</script>
+</body>
+</html>
