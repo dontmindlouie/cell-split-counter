@@ -8,6 +8,7 @@ that were interleaved with the tool functions but are used by several of them
 """
 
 import base64
+import contextvars
 from typing import NamedTuple
 
 import cv2
@@ -132,6 +133,17 @@ class _Tile(NamedTuple):
     crop_h: int
     x0: int
     y0: int
+    bare: "np.ndarray | None" = None   # the crop before any overlay; set only while _OVERLAYS captures
+
+
+# Set to a list while rendering per-channel layers that get tinted afterwards
+# (show_cells_in_browser's multi-channel pages). Overlays burned into a grey layer
+# get tinted with it -- a red channel had red labels and a red marker ring
+# (2026-10-27 field feedback) -- so while this is set, _stamp_tile hands back the
+# bare crop and appends everything drawn on it (label, note, bar, rings, crosshair)
+# to the list as its own image, black where nothing was drawn, for the caller to
+# lay over the tinted result. One entry per returned tile, in order.
+_OVERLAYS: "contextvars.ContextVar[list | None]" = contextvars.ContextVar("overlay_capture", default=None)
 
 
 def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
@@ -169,7 +181,8 @@ def _crop_tile(well: str, frame: int, cx: float, cy: float, half: int,
         s = upscale_to / img.shape[0]
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_LANCZOS4)
         cx_crop, cy_crop = cx_crop * s, cy_crop * s
-    return _Tile(img, cx_crop, cy_crop, s, int(crop.shape[0]), int(x0), int(y0))
+    bare = img.copy() if _OVERLAYS.get() is not None else None
+    return _Tile(img, cx_crop, cy_crop, s, int(crop.shape[0]), int(x0), int(y0), bare)
 
 
 def _stamp_tile(tile: _Tile, label: str, um_px: float, scale_bar: bool,
@@ -189,11 +202,13 @@ def _stamp_tile(tile: _Tile, label: str, um_px: float, scale_bar: bool,
     after the first fix -- fixed-size overlays had read as too SMALL against it
     before that), so only half the excess is applied (~1.9x at 900px, closer to the
     "twice as big" originally asked for) -- text needs to grow with the image, but
-    not linearly, or it starts to dominate a crop meant to show the cell.
+    not linearly, or it starts to dominate a crop meant to show the cell. It never
+    shrinks below the base size: tiles smaller than 312px (multi-channel filmstrips)
+    had labels too small to read.
     """
     img = tile.img
     ratio = img.shape[0] / _UPSCALE_TO
-    k = 1.0 + (ratio - 1.0) * 0.5
+    k = max(1.0, 1.0 + (ratio - 1.0) * 0.5)
     thickness = max(1, round(k))
     cv2.putText(img, label, (round(4 * k), round(14 * k)), cv2.FONT_HERSHEY_SIMPLEX,
                 0.4 * k, (255, 255, 255), thickness, cv2.LINE_AA)
@@ -202,6 +217,11 @@ def _stamp_tile(tile: _Tile, label: str, um_px: float, scale_bar: bool,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35 * k, corner_color, thickness, cv2.LINE_AA)
     if scale_bar:
         img = _scale_bar(img, um_px * (tile.crop_h / img.shape[0]), target_um=10.0, k=k)
+    captured = _OVERLAYS.get()
+    if captured is not None and tile.bare is not None:
+        drawn = np.any(img != tile.bare, axis=-1) if img.ndim == 3 else img != tile.bare
+        captured.append(np.where(drawn[..., None] if img.ndim == 3 else drawn, img, 0).astype(np.uint8))
+        return tile.bare
     return img
 
 
@@ -1051,7 +1071,7 @@ def _family_filmstrip_frames(
 
 __all__ = [
     "_colorize", "_DISPLAY_NOTE_BASE", "_display_note", "_scale_bar", "_Tile",
-    "_crop_tile", "_stamp_tile", "_encode",
+    "_crop_tile", "_stamp_tile", "_encode", "_OVERLAYS",
     "_WALK_MAX_GAP_DIST", "_WALK_MAX_GAP_FRAMES", "_label_img", "_blob_centroids",
     "_walk_positions", "_filmstrip_frames", "_FAMILY_MAX_MEMBERS",
     "_resolve_family_centres", "_family_filmstrip_frames",

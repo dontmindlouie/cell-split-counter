@@ -65,9 +65,12 @@ _FIGURE_UPSCALE_TO = 900
 # a 3-channel page ran ~13 MB an event; at 360 the browser's smooth scaling still fills
 # the view (a 200 um context crop is ~230 px native, so nothing real is lost).
 _LAYER_LB_SIZE = 360
-# Filmstrip tiles of a layered page: canvases scale them up for display, so storing
-# them at the default 312 px only stored upscaled noise three times over.
-_LAYER_THUMB_SIZE = 180
+# Filmstrip tiles of a layered page, at the 260 px they are displayed at. 180 px
+# saved space but the canvas stretched it ~1.4x, and the filmstrip (with the
+# marker) is where researchers actually review -- 2026-10-27 field observation:
+# the lightbox goes unused. Still under the 312 px default, which stored
+# upscaled noise once per channel.
+_LAYER_THUMB_SIZE = 260
 # Fewer events per part on layered pages, which also carry 4-5 h windows: a part
 # stays a few tens of MB on an external drive.
 _LAYER_EVENTS_PER_PAGE = 8
@@ -445,6 +448,20 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             label = ev.get("label") or f"track {track_id}"
         return header, label, thumb_images, lb_images
 
+    def _render_layer(ev, name):
+        """_render for one channel, uncoloured and bare, with its overlays apart:
+        (header, label, thumbs, lightboxes, thumb overlays, lightbox overlays)."""
+        tok, ovl = _cm._LAYER.set(name), _cm._OVERLAYS.set([])
+        try:
+            header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE,
+                                                  thumb_size=_LAYER_THUMB_SIZE)
+            drawn = _cm._OVERLAYS.get()
+        finally:
+            _cm._OVERLAYS.reset(ovl)
+            _cm._LAYER.reset(tok)
+        assert len(drawn) == len(t_img) + len(l_img), "one overlay per stamped tile"
+        return header, label, t_img, l_img, drawn[:len(t_img)], drawn[len(t_img):]
+
     for i, ev in enumerate(events):
         # Index into THIS page's LB_DATA, not the global event index.
         lb_i = len(lb_data)
@@ -453,18 +470,13 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             shown = [ly for ly in layers if ly["on"]]
             grey_t, grey_l = {}, {}
             for ly in shown:
-                tok = _cm._LAYER.set(ly["name"])
-                try:
-                    header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE,
-                                                          thumb_size=_LAYER_THUMB_SIZE)
-                finally:
-                    _cm._LAYER.reset(tok)
+                header, label, t_img, l_img, t_ovl, l_ovl = _render_layer(ev, ly["name"])
                 grey_t[ly["name"]] = [_grey(x) for x in t_img]
                 grey_l[ly["name"]] = [_grey(x) for x in l_img]
                 del t_img, l_img
             st = {n: _stretch_of(v) for n, v in grey_t.items()}
-            b64_list = _b64_all(_combine(grey_t, shown, st), _THUMB_JPEG_QUALITY)
-            lb_b64_list = _b64_all(_combine(grey_l, shown, st), _LIGHTBOX_JPEG_QUALITY)
+            b64_list = _b64_all(_overlay(_combine(grey_t, shown, st), t_ovl), _THUMB_JPEG_QUALITY)
+            lb_b64_list = _b64_all(_overlay(_combine(grey_l, shown, st), l_ovl), _LIGHTBOX_JPEG_QUALITY)
             del grey_t, grey_l
             tiles = [
                 f'<img src="data:image/jpeg;base64,{b64}" loading="lazy" '
@@ -474,22 +486,20 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
             lb_entry = {"label": label, "images": lb_b64_list}
         elif layers:
             # One grey JPEG per channel per frame, and the page tints, toggles and
-            # stretches them (see compose in the page script).
+            # stretches them (see compose in the page script). The overlays (label, bar,
+            # marker) ride along as one PNG per frame -- lossless, so "nothing drawn"
+            # stays exactly black -- and are laid on after the tint.
             thumbs, lbs = {}, {}
             for ly in layers:
-                tok = _cm._LAYER.set(ly["name"])
-                try:
-                    header, label, t_img, l_img = _render(ev, color=False, lb_size=_LAYER_LB_SIZE,
-                                                          thumb_size=_LAYER_THUMB_SIZE)
-                finally:
-                    _cm._LAYER.reset(tok)
+                header, label, t_img, l_img, t_ovl, l_ovl = _render_layer(ev, ly["name"])
                 thumbs[ly["name"]] = _b64_all([_grey(x) for x in t_img], _LAYER_JPEG_QUALITY)
                 lbs[ly["name"]] = _b64_all([_grey(x) for x in l_img], _LAYER_JPEG_QUALITY)
                 del t_img, l_img
             n_tiles = len(thumbs[layers[0]["name"]])
             tiles = [f'<canvas data-lb={lb_i} data-j={j} onclick="openLightbox({lb_i},{j})"></canvas>'
                      for j in range(n_tiles)]
-            lb_entry = {"label": label, "thumbs": thumbs, "layers": lbs}
+            lb_entry = {"label": label, "thumbs": thumbs, "layers": lbs,
+                        "thumb_ovl": _png_b64_all(t_ovl), "layer_ovl": _png_b64_all(l_ovl)}
         else:
             header, label, thumb_images, lb_images = _render(ev, color=True)
             b64_list = _b64_all(thumb_images, _THUMB_JPEG_QUALITY)       # filmstrip thumbnails -- small, pixelated-upscale OK
@@ -566,9 +576,10 @@ _FORM_KINDS = ("checks", "choices", "numbers", "text")
 
 def _stretch_of(tiles):
     """(lo, hi) for one channel of one event: its 1st / 99.7th percentile over the
-    event's own tiles, skipping the burned-in label bands -- the same rule the page
-    script applies when channels are toggled in the browser."""
-    px = np.concatenate([t[int(t.shape[0] * 0.08):int(t.shape[0] * 0.92)].ravel() for t in tiles])
+    event's own tiles -- the same rule the page script applies when channels are
+    toggled in the browser. Layers are rendered bare (see _OVERLAYS in render.py),
+    so no label pixels skew it."""
+    px = np.concatenate([t.ravel() for t in tiles])
     lo, hi = np.percentile(px, [1, 99.7])
     return float(lo), float(max(hi, lo + 8))
 
@@ -586,6 +597,19 @@ def _combine(by_ch, shown, st):
             acc = t if acc is None else np.maximum(acc, t)
         out.append(acc.astype(np.uint8))
     return out
+
+
+def _overlay(imgs, overlays):
+    """Lay each frame's captured overlay over its tinted composite, in the overlay's
+    own colour: white text stays white whatever channels are shown."""
+    for img, ov in zip(imgs, overlays):
+        drawn = ov.any(axis=-1)
+        img[drawn] = ov[drawn]
+    return imgs
+
+
+def _png_b64_all(imgs):
+    return [base64.b64encode(cv2.imencode(".png", img)[1].tobytes()).decode("ascii") for img in imgs]
 
 
 def _grey(img):
@@ -818,7 +842,7 @@ var decoded = {{}};                       // key -> Image, decoded once
 function img(key, b64, done) {{
   var im = decoded[key];
   if (im && im.complete) return done(im);
-  if (!im) {{ im = decoded[key] = new Image(); im.src = 'data:image/jpeg;base64,' + b64; }}
+  if (!im) {{ im = decoded[key] = new Image(); im.src = 'data:image/' + (key.slice(-4) === '_ovl' ? 'png' : 'jpeg') + ';base64,' + b64; }}
   im.addEventListener('load', function() {{ done(im); }}, {{once: true}});
 }}
 function framesOf(sec) {{ var d = LB_DATA[sec]; return d.images || d.layers[LAYERS[0].name]; }}
@@ -840,8 +864,7 @@ function stretchOf(sec, done) {{             // per event, per channel: 1st / 99
       img('t' + sec + l.name + j, b64, function(im) {{
         var c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
         var x = c.getContext('2d'); x.drawImage(im, 0, 0);
-        var y0 = Math.round(im.height * 0.08), y1 = Math.round(im.height * 0.92);   // skip the label bands
-        var px = x.getImageData(0, y0, im.width, y1 - y0).data;
+        var px = x.getImageData(0, 0, im.width, im.height).data;
         for (var p = 0; p < px.length; p += 4) {{ hist[px[p]]++; n++; }}
         if (++got === arr.length) {{
           var lo = 0, hi = 255, acc = 0;
@@ -855,7 +878,7 @@ function stretchOf(sec, done) {{             // per event, per channel: 1st / 99
     }});
   }});
 }}
-function compose(canvas, sec, key, list, done) {{   // list: {{name: b64}} for one frame
+function compose(canvas, sec, key, list, ovl, done) {{   // list: {{name: b64}} for one frame; ovl: its overlay PNG
   var on = onLayers(), auto = (document.getElementById('autoCtl') || {{}}).checked;
   stretchOf(sec, function(st) {{
     var ims = {{}}, left = LAYERS.length;
@@ -876,7 +899,16 @@ function compose(canvas, sec, key, list, done) {{   // list: {{name: b64}} for o
             if (v * r > o[p]) o[p] = v * r; if (v * gg > o[p + 1]) o[p + 1] = v * gg; if (v * b > o[p + 2]) o[p + 2] = v * b;
           }}
         }});
-        ctx.putImageData(out, 0, 0); if (done) done();
+        ctx.putImageData(out, 0, 0);
+        if (!ovl) {{ if (done) done(); return; }}
+        img(key + '_ovl', ovl, function(oim) {{   // label, bar and marker in their own colour, over the tint
+          var c = document.createElement('canvas'); c.width = w; c.height = h;
+          var x = c.getContext('2d'); x.drawImage(oim, 0, 0);
+          var od = x.getImageData(0, 0, w, h).data, fin = ctx.getImageData(0, 0, w, h), f = fin.data;
+          for (var p = 0; p < od.length; p += 4)
+            if (od[p] || od[p + 1] || od[p + 2]) {{ f[p] = od[p]; f[p + 1] = od[p + 1]; f[p + 2] = od[p + 2]; }}
+          ctx.putImageData(fin, 0, 0); if (done) done();
+        }});
       }});
     }});
   }});
@@ -887,7 +919,8 @@ function frameLayers(d, kind, j) {{
 function redrawAll() {{
   document.querySelectorAll('div.filmstrip canvas').forEach(function(cv) {{
     var sec = +cv.dataset.lb, j = +cv.dataset.j;
-    compose(cv, sec, 't' + sec + '_' + j, frameLayers(LB_DATA[sec], 'thumbs', j));
+    var d = LB_DATA[sec];
+    compose(cv, sec, 't' + sec + '_' + j, frameLayers(d, 'thumbs', j), d.thumb_ovl && d.thumb_ovl[j]);
   }});
   if (document.getElementById('lightbox').classList.contains('open')) showLbFrame();
 }}
@@ -896,7 +929,8 @@ function showLbFrame() {{
   var el = document.getElementById('lb-img'), cv = document.getElementById('lb-canvas');
   if (d.layers) {{
     el.style.display = 'none'; cv.style.display = '';
-    compose(cv, lbSection, 'l' + lbSection + '_' + lbIdx, frameLayers(d, 'layers', lbIdx));
+    compose(cv, lbSection, 'l' + lbSection + '_' + lbIdx, frameLayers(d, 'layers', lbIdx),
+            d.layer_ovl && d.layer_ovl[lbIdx]);
   }} else {{
     cv.style.display = 'none'; el.style.display = '';
     el.src = 'data:image/jpeg;base64,' + imgs[lbIdx];
