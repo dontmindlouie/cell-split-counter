@@ -30,6 +30,9 @@ Config keys (all optional; review_form required after merging; flags override th
     channel_toggles         default false: the shown channels are combined into one image per
                             frame (contrast per card). true / --toggles: an on/off box per channel
                             in the browser, at about 3x the data with three channels
+    marker, marker_um       default false / 12: yellow corner brackets marker_um wide around each
+                            card's point on every frame, so a crowded field still says which
+                            mitosis is the target
     review_form     as in show_cells_in_browser -- put the main verdict first in
                     "choices" so the 1-9 keys mark it
 Each card's label carries its source, Fiji frame and any suggestion; its id is the
@@ -102,6 +105,7 @@ def main():
                        "start_frame": start, "end_frame": max(end, start + 1),
                        "crop_um": float(cfg.get("crop_um", 70)), "context_um": float(cfg.get("context_um", 200)),
                        "id": r.event_id,
+                       "marker": bool(cfg.get("marker", False)), "marker_um": float(cfg.get("marker_um", 12)),
                        # plain text: the label is also the lightbox caption, set as text, so an
                        # HTML entity would show literally there
                        "label": f"{r.event_id} | {r.source} | Fiji frame {r.fiji_frame}{sug}"})

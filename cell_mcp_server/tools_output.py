@@ -198,11 +198,13 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 in a crowded or wide crop, e.g. a page someone else will read with
                 no other way to say "this one, not that one". With track_ids, rings
                 every member present or none. kind="point" never draws a crosshair
-                on this page regardless of `marker` (fixed 2026-08-17 -- it read as
-                a detection ring even though it isn't one); the crop is centred on
-                the requested point regardless. watch_location_over_time keeps the
-                crosshair, since it's a live aid while investigating, not a
-                handoff report.
+                on this page (fixed 2026-08-17 -- it read as a detection ring even
+                though it isn't one); with marker=True it instead gets yellow corner
+                brackets marker_um wide (default 12) around the point on every
+                frame -- a box with no sides, for crowded fields where the crop
+                centre alone doesn't say which mitosis is the target.
+                watch_location_over_time keeps the crosshair, since it's a live aid
+                while investigating, not a handoff report.
             context_um (optional): crop width in micrometres for the LIGHTBOX only,
                 e.g. 220 to show the neighbours around a 70 um filmstrip -- whether
                 the "daughters" are really daughters is often decided by what is
@@ -389,6 +391,9 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 # there it's a live aid for figuring out which nucleus a crop is
                 # tracking, not a handoff artifact.
                 crosshair=False,
+                # The opt-in exception: corner brackets around the target, for
+                # crowded fields where the centre alone doesn't say which cell.
+                marker_um=(float(ev.get("marker_um", 12.0)) if ev.get("marker") else None),
                 waypoints=([(int(f), float(wx), float(wy)) for f, wx, wy in waypoints]
                            if waypoints is not None else None),
             )

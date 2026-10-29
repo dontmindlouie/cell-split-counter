@@ -504,6 +504,7 @@ def _fixed_point_frames(
     stride_min: float = _STRIDE_MIN, cap: int = MAX_IMAGES,
     upscale_to: int = _UPSCALE_TO, crosshair: bool = True,
     waypoints: list[tuple[int, float, float]] | None = None,
+    marker_um: float | None = None,
 ) -> tuple[str, list[np.ndarray]]:
     """Shared by watch_location_over_time (MCP images) and show_cells_in_browser (HTML page).
 
@@ -520,6 +521,12 @@ def _fixed_point_frames(
     real per-event manual labour. A list of (frame, x, y) checkpoints linearly
     interpolates the crop centre between them (clamped to the first/last waypoint
     outside their span), turning that into one call.
+
+    marker_um: draw four yellow corner brackets, marker_um wide, around the point on
+    every frame -- a box with no sides, so it frames the target without covering it
+    or reading as a segmented outline. Off unless asked: for a crowded-field review
+    page where "which mitosis is the target?" (2026-10-27, 3 of 34 blind cards) is
+    otherwise unanswerable. Scales with the crop, so filmstrip and wider lightbox agree.
     """
     m = _cm._manifest(well)
     n_frames = int(m["n_frames"])
@@ -579,9 +586,11 @@ def _fixed_point_frames(
         "This is a PLACE, not a tracked object -- nothing is ringed, because a ring "
         "would claim a detection that was never made."
         + (" The yellow crosshair marks WHERE YOU ASKED to look." if crosshair else
-           " No crosshair is drawn on this page -- it would read as a detection ring "
-           "to someone opening it cold, so the report view omits it; the crop is "
-           "centred on the requested point regardless.")
+           (" Yellow corner brackets frame the requested point (the target, not a "
+            "detection)." if marker_um else
+            " No crosshair is drawn on this page -- it would read as a detection ring "
+            "to someone opening it cold, so the report view omits it; the crop is "
+            "centred on the requested point regardless."))
         + f" Each frame's label also names the NEAREST tracked cell and how far its "
         f"centre sits from the {where_word} (only when closer than the crop is "
         "wide) -- that is the nearest cell, not necessarily the thing at the "
@@ -605,6 +614,8 @@ def _fixed_point_frames(
             for dx0, dx1 in ((-12, -5), (5, 12)):
                 cv2.line(img, (cxp + dx0, cyp), (cxp + dx1, cyp), (0, 255, 255), 1, cv2.LINE_AA)
                 cv2.line(img, (cxp, cyp + dx0), (cxp, cyp + dx1), (0, 255, 255), 1, cv2.LINE_AA)
+        if marker_um:
+            _corner_brackets(img, cxp, cyp, marker_um / 2 / (um_px / tile.scale))
 
         near = _nearest_detection(well, int(f), ccx, ccy, exclude=anchor_track_id)
         corner = (f"~{near[0]} @{near[1]:.0f}um"
@@ -612,6 +623,19 @@ def _fixed_point_frames(
         label = f"f{int(f)} t={_cm._elapsed_str(well, int(f))} @({ccx:.0f}, {ccy:.0f})"
         images.append(_stamp_tile(tile, label, um_px, scale_bar, corner=corner))
     return header, images
+
+
+def _corner_brackets(img: np.ndarray, cx: int, cy: int, half: float) -> None:
+    """Four L-shaped corners of a box 2*half wide around (cx, cy), each arm a third
+    of the side -- see _fixed_point_frames' marker_um. Line width grows with the tile."""
+    h = int(round(max(half, 6.0)))
+    arm = max(3, h * 2 // 3)
+    t = max(1, round(img.shape[0] / 300))
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            x, y = cx + sx * h, cy + sy * h
+            cv2.line(img, (x, y), (x - sx * arm, y), (0, 255, 255), t, cv2.LINE_AA)
+            cv2.line(img, (x, y), (x, y - sy * arm), (0, 255, 255), t, cv2.LINE_AA)
 
 
 _FAMILY_MAX_MEMBERS = 6

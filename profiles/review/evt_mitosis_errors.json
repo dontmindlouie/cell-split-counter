@@ -1,5 +1,5 @@
 {
- "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). Decide whether it is a division (1 = division, 2 = not a division, 3 = unsure; the keys move to the next card) and type anything else in the notes box (n jumps there). Labels marked 'suggested' are the detector's hints, not calls. Channels: H2B red (AF594), ZO1 green (AF488), each stretched to the card.",
+ "note": "Each card is one possible mitosis: clicked, found by the detector, or both (see the label). Decide whether it is a division (1 = division, 2 = not a division, 3 = unsure; the keys move to the next card) and type anything else in the notes box (n jumps there). Yellow corner brackets frame the card's target (where it was clicked or detected). Labels marked 'suggested' are the detector's hints, not calls. Channels: H2B red (AF594), ZO1 green (AF488), each stretched to the card.",
  "before_min": 60,
  "after_min": 540,
  "frames_per_part": 240,
@@ -21,5 +21,7 @@
  ],
  "channels_off": [
   "AF647"
- ]
+ ],
+ "marker": true,
+ "marker_um": 20
 }

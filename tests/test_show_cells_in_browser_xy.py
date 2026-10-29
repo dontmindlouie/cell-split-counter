@@ -140,3 +140,34 @@ def test_bad_event_late_in_list_fails_before_any_page_is_written(fake, tmp_path,
     with pytest.raises(ValueError, match=r"events\[4\]"):
         cell_mcp_server.show_cells_in_browser(fake, events=[ok] * 4 + [{"kind": "track"}])
     assert not list(tmp_path.rglob("*.html"))
+
+
+def test_point_marker_frames_the_target_without_covering_it(fake):
+    """marker_um: corner brackets around the point (2026-10-28: crowded blind cards
+    asked "which mitosis is the target?"), off unless asked."""
+    from cell_mcp_server import render
+    kw = dict(max_images=None, crop_um=60.0, color=True, scale_bar=False, crosshair=False)
+    _, plain = render._fixed_point_frames(fake, 0, 1, 100.0, 100.0, None, **kw)
+    header, marked = render._fixed_point_frames(fake, 0, 1, 100.0, 100.0, None,
+                                                **kw, marker_um=12.0)
+    assert "corner brackets" in header
+    diff = np.any(plain[0] != marked[0], axis=-1)
+    ys, xs = np.nonzero(diff)
+    h, w = diff.shape
+    assert len(ys) > 0
+    # Drawn around the centre, at ~6 um (12 px at 0.5 um/px, before upscale) out,
+    # and nothing on the point itself.
+    assert not diff[h // 2 - 5:h // 2 + 5, w // 2 - 5:w // 2 + 5].any()
+    assert abs(xs.mean() - w / 2) < 3 and abs(ys.mean() - h / 2) < 3
+
+
+def test_point_marker_is_off_by_default_on_the_page(fake, tmp_path, monkeypatch):
+    seen = []
+    real = cell_mcp_server._fixed_point_frames
+    monkeypatch.setattr(cell_mcp_server, "_fixed_point_frames",
+                        lambda *a, **k: (seen.append(k.get("marker_um")), real(*a, **k))[1])
+    monkeypatch.chdir(tmp_path)
+    ev = {"kind": "point", "x": 100.0, "y": 100.0, "start_frame": 0, "end_frame": 1}
+    cell_mcp_server.show_cells_in_browser(fake, events=[ev])
+    cell_mcp_server.show_cells_in_browser(fake, events=[dict(ev, marker=True, marker_um=10)])
+    assert seen[0] is None and seen[-1] == 10.0
