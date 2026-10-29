@@ -99,7 +99,7 @@ def _scale_bar(img: np.ndarray, um_per_px: float, target_um: float = 20.0, k: fl
     text/bar was reading as tiny relative to the image (2026-08-13 feedback).
     """
     h, w = img.shape[:2]
-    px = int(round(target_um / um_per_px / 4))
+    px = int(round(target_um / um_per_px))
     if px < 5 or px > w - 20:
         return img
     font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.4 * k
