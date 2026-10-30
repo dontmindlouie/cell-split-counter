@@ -171,3 +171,15 @@ def test_point_marker_is_off_by_default_on_the_page(fake, tmp_path, monkeypatch)
     cell_mcp_server.show_cells_in_browser(fake, events=[ev])
     cell_mcp_server.show_cells_in_browser(fake, events=[dict(ev, marker=True, marker_um=10)])
     assert seen[0] is None and seen[-1] == 10.0
+
+
+def test_point_crosshair_is_opt_in_on_the_page(fake, tmp_path, monkeypatch):
+    seen = []
+    real = cell_mcp_server._fixed_point_frames
+    monkeypatch.setattr(cell_mcp_server, "_fixed_point_frames",
+                        lambda *a, **k: (seen.append(k.get("crosshair")), real(*a, **k))[1])
+    monkeypatch.chdir(tmp_path)
+    ev = {"kind": "point", "x": 100.0, "y": 100.0, "start_frame": 0, "end_frame": 1}
+    cell_mcp_server.show_cells_in_browser(fake, events=[ev])
+    cell_mcp_server.show_cells_in_browser(fake, events=[dict(ev, crosshair=True)])
+    assert seen[0] is False and seen[-1] is True

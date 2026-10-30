@@ -1,0 +1,4 @@
+{
+ "note": "The yellow cross marks the clicked point (the card's centre). It stays fixed in place, so daughters that move away will drift off it.",
+ "crosshair": true
+}

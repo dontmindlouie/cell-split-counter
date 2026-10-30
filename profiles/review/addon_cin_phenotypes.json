@@ -1,0 +1,6 @@
+{
+ "note": "Tick any CIN phenotypes you see (the columns of her scoring sheet); notes still work for anything else. slippage (added 2026-10-29) = mitotic slippage: chromatin condenses but there is no anaphase, and it comes back as ONE nucleus (her earlier 'tetroploid' notes); binuclei = anaphase happens but the cell does not split, so two nuclei in one cell.",
+ "review_form": {
+  "checks": ["misaligned", "lagging", "bridge", "micronuclei", "binuclei", "slippage", "tripolar/multipolar", "cytokinesis failure", "cell death"]
+ }
+}

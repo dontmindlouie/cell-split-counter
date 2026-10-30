@@ -198,8 +198,8 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 in a crowded or wide crop, e.g. a page someone else will read with
                 no other way to say "this one, not that one". With track_ids, rings
                 every member present or none. kind="point" never draws a crosshair
-                on this page (fixed 2026-08-17 -- it read as a detection ring even
-                though it isn't one); with marker=True it instead gets yellow corner
+                on this page unless crosshair=True (off since 2026-08-17 -- it read
+                as a detection ring even though it isn't one); with marker=True it gets yellow corner
                 brackets marker_um wide (default 12) around the point on every
                 frame -- a box with no sides, for crowded fields where the crop
                 centre alone doesn't say which mitosis is the target.
@@ -383,16 +383,17 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 color=color, scale_bar=True,
                 stride_min=float(ev.get("stride_min", _STRIDE_MIN)),
                 cap=cap,
-                # Always off on this page, unconditionally -- not a per-event
-                # option. This is a report a researcher opens cold, and the
+                # Off by default -- this is a report a researcher opens cold, and the
                 # crosshair reads as a detection ring even though it isn't one
                 # (2026-08-16 field feedback: "how did the marker get added back?").
                 # watch_location_over_time/follow_cells_over_time keep it, since
                 # there it's a live aid for figuring out which nucleus a crop is
-                # tracking, not a handoff artifact.
-                crosshair=False,
-                # The opt-in exception: corner brackets around the target, for
-                # crowded fields where the centre alone doesn't say which cell.
+                # tracking, not a handoff artifact. Two opt-ins since 2026-10-27, for
+                # crowded EVT fields where the researcher could not tell which of
+                # several dividing cells a card was about: `crosshair` (the small
+                # cross on the point; her Claude's, 10/27) and `marker` (corner
+                # brackets around it, 10/28). Either or both.
+                crosshair=bool(ev.get("crosshair", False)),
                 marker_um=(float(ev.get("marker_um", 12.0)) if ev.get("marker") else None),
                 waypoints=([(int(f), float(wx), float(wy)) for f, wx, wy in waypoints]
                            if waypoints is not None else None),

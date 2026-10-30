@@ -33,6 +33,8 @@ Config keys (all optional; review_form required after merging; flags override th
     marker, marker_um       default false / 12: yellow corner brackets marker_um wide around each
                             card's point on every frame, so a crowded field still says which
                             mitosis is the target
+    crosshair               default false: the small yellow cross on each card's point instead
+                            (or as well) -- addon_crosshair.json
     review_form     as in show_cells_in_browser -- put the main verdict first in
                     "choices" so the 1-9 keys mark it
 Each card's label carries its source, Fiji frame and any suggestion; its id is the
@@ -106,6 +108,7 @@ def main():
                        "crop_um": float(cfg.get("crop_um", 70)), "context_um": float(cfg.get("context_um", 200)),
                        "id": r.event_id,
                        "marker": bool(cfg.get("marker", False)), "marker_um": float(cfg.get("marker_um", 12)),
+                       "crosshair": bool(cfg.get("crosshair", False)),
                        # plain text: the label is also the lightbox caption, set as text, so an
                        # HTML entity would show literally there
                        "label": f"{r.event_id} | {r.source} | Fiji frame {r.fiji_frame}{sug}"})

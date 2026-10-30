@@ -1,0 +1,6 @@
+{
+ "note": "Type the metaphase plate frame as printed on the image (the 'f' number, e.g. f6 -> 6; Fiji frame = this + 1).",
+ "review_form": {
+  "numbers": ["metaphase frame (f number on image)"]
+ }
+}
