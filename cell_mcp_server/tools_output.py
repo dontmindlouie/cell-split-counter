@@ -272,7 +272,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
     one-line summary followed by a path + URL pair per page; giving the user part 1
     is enough, but pass all of them through. Pass the whole event list in ONE call --
     do not split it into several calls yourself.
-    Keyboard (shown on the page): j/k move between events (crossing into the next
+    Keyboard (shown on the page): k/j or down/up move to the next/previous event (crossing into the next
     or previous part), Enter opens the lightbox, 1-9 pick an option of the FIRST
     review_form choices group and move on, n jumps to notes. In the lightbox:
     left/right step frames, space plays, up/down change event, 1-9 mark and move on.
@@ -823,7 +823,7 @@ div.reviewbar button:hover {{ background: #26394a; }}
     <button onclick="exportReview()" title="Download one CSV with every event in this set (all parts)">Export CSV</button></div>
   {pager_html}
 </div>
-<p class=keys>Keys: <b>j</b>/<b>k</b> next/previous event &middot; <b>Enter</b> enlarge &middot; <b>1</b>-<b>9</b> pick from the first choice group and move on &middot; <b>n</b> notes.
+<p class=keys>Keys: <b>k</b>/<b>j</b> or <b>&darr;</b>/<b>&uarr;</b> next/previous event &middot; <b>Enter</b> enlarge &middot; <b>1</b>-<b>9</b> pick from the first choice group and move on &middot; <b>n</b> notes.
 Enlarged: <b>&larr;</b>/<b>&rarr;</b> frames &middot; <b>space</b> play &middot; <b>&uarr;</b>/<b>&darr;</b> previous/next event &middot; <b>1</b>-<b>9</b> mark and move on &middot; <b>Esc</b> close.</p>
 </nav>
 {note_html}
@@ -1019,8 +1019,8 @@ document.addEventListener('keydown', function(e) {{
     else return;
     e.preventDefault(); return;
   }}
-  if (e.key === 'j') setFocus(focusEv + 1, true);
-  else if (e.key === 'k') setFocus(focusEv - 1, true);
+  if (e.key === 'k' || e.key === 'ArrowDown') setFocus(focusEv + 1, true);
+  else if (e.key === 'j' || e.key === 'ArrowUp') setFocus(focusEv - 1, true);
   else if (e.key === 'Enter') openLightbox(focusEv - FIRST, 0);
   else if (e.key === 'n') {{ var ta = secOf(focusEv).querySelector('textarea'); if (ta) ta.focus(); }}
   else if (n) {{ if (markFirstChoice(focusEv, n)) setFocus(focusEv + 1, true); }}
