@@ -209,6 +209,17 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
                 e.g. 220 to show the neighbours around a 70 um filmstrip -- whether
                 the "daughters" are really daughters is often decided by what is
                 around them. Default: the same crop as the filmstrip.
+            highlight_frames (optional, kind="point" only): [{"frame": 312,
+                "tag": "detector", "color": "#f5c518"}, ...] -- outline those
+                filmstrip tiles and print the tag above them, e.g. the frame a
+                detector proposes, so the reader checks it instead of hunting for it.
+                The strip opens scrolled to put the first one (or the one with
+                "centre": true) in the middle.
+            pick_field (optional, kind="point" only): the name of one of
+                review_form's numbers. Each tile gets its frame number underneath as a
+                button that fills that box (the image itself still opens the
+                lightbox). For "which frame is X" questions -- typing the f number
+                off the image was the slow, typo-prone part.
             hold_centre_after_member_end (optional, default False, kind="family"
                 only): freeze a member's last position into the crop's mean once
                 its span ends, instead of letting the mean jump to whoever
@@ -520,6 +531,7 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
         # Split the per-case facts from the standing how-this-renders text and collect
         # the latter for ONE printing at the top. Repeating it under every case is what
         # made a reviewer stop reading it, and the caveats live in that half.
+        tiles = _frame_tiles(well, ev, tiles, cap, i, form)
         spec, _, gen = header.partition(_HDR_SEP)
         if gen and gen not in shared:
             shared.append(gen)
@@ -578,6 +590,45 @@ def show_cells_in_browser(well: str, events: list[dict], note: str = "",
 
 
 _FORM_KINDS = ("checks", "choices", "numbers", "text")
+
+
+def _frame_tiles(well, ev, tiles, cap, i, form):
+    """Wrap a point card's tiles with highlight_frames tags and pick_field buttons.
+    Unchanged when the card asks for neither. The tile -> frame mapping repeats
+    _fixed_point_frames's own choice (same range, same _pick_frames call), so a
+    sampled strip still labels each tile with the frame it really shows."""
+    hl, pick = ev.get("highlight_frames") or [], ev.get("pick_field")
+    if ev.get("kind") != "point" or not (hl or pick):
+        return tiles
+    if pick is not None and pick not in form["numbers"]:
+        raise ValueError(f"pick_field {pick!r} is not one of review_form's numbers {form['numbers']}")
+    from html import escape
+    from .io import _pick_frames
+    n = int(_cm._manifest(well)["n_frames"])
+    lo, hi = max(0, int(ev["start_frame"])), min(n - 1, int(ev["end_frame"]))
+    mx = ev.get("max_images")
+    frames, _ = _pick_frames(well, list(range(lo, hi + 1)), None if mx is None else int(mx),
+                             cap, float(ev.get("stride_min", _STRIDE_MIN)))
+    assert len(frames) == len(tiles), "one frame per tile"
+    by_frame = {}
+    for h in hl:
+        by_frame.setdefault(int(h["frame"]), []).append(h)
+    # The strip opens scrolled so this tile is in the middle: the first highlight
+    # marked "centre": true, else the first highlight.
+    centre_frame = next((int(h["frame"]) for h in hl if h.get("centre")),
+                        int(hl[0]["frame"]) if hl else None)
+    out = []
+    for f, t in zip(frames, tiles):
+        hs = by_frame.get(f, [])
+        color = hs[0].get("color", "#f5c518") if hs else ""
+        tag = " + ".join(escape(str(h.get("tag", ""))) for h in hs)
+        btn = (f'<button class=fpick data-ev={i} data-pf="{escape(pick)}" data-frame={f} '
+               f'onclick="pickFrame(this)">f{f}</button>' if pick else "")
+        style = f' style="--hl:{escape(color)}"' if hs else ""
+        centre = " data-centre=1" if f == centre_frame else ""
+        out.append(f'<div class="tile{" hl" if hs else ""}"{style}{centre}>'
+                   f'<span class=ftag>{tag or "&nbsp;"}</span>{t}{btn}</div>')
+    return out
 
 
 def _stretch_of(tiles):
@@ -764,6 +815,11 @@ div.view-controls label {{ display: flex; align-items: center; gap: 0.3rem; whit
 div.filmstrip {{ display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; padding-bottom: 4px; }}
 div.filmstrip img {{ flex: 0 0 auto; image-rendering: pixelated; max-height: 260px; border: 1px solid #333; cursor: zoom-in; }}
 div.filmstrip canvas {{ flex: 0 0 auto; height: 260px; border: 1px solid #333; cursor: zoom-in; }}
+div.filmstrip div.tile {{ flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 2px; }}
+div.filmstrip div.tile .ftag {{ font-size: 0.72rem; line-height: 1.1; color: var(--hl, #888); font-weight: bold; white-space: nowrap; }}
+div.filmstrip div.tile.hl img, div.filmstrip div.tile.hl canvas {{ outline: 3px solid var(--hl); outline-offset: -3px; }}
+div.filmstrip button.fpick {{ font: inherit; font-size: 0.75rem; padding: 0 0.5rem; background: #222; color: #ccc; border: 1px solid #444; border-radius: 3px; cursor: pointer; }}
+div.filmstrip button.fpick.on {{ background: #2d6cdf; color: #fff; border-color: #2d6cdf; }}
 .lightbox canvas {{ width: min(88vh, 92vw); height: auto; }}
 /* The frame/time/coord label (top) and scale bar (bottom) are burned into the image
    pixels, not drawn by CSS -- so "hiding" them for a clean figure means clipping
@@ -1070,6 +1126,45 @@ document.querySelectorAll('div.review [data-f]').forEach(function(el) {{
     st[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value;
     rvSave();
   }});
+}});
+// pick_field: a frame button under a tile fills that card's number box, as if typed.
+function pickShow(ev, field) {{
+  var box = document.querySelector('div.review [data-ev="' + ev + '"][data-f="' + CSS.escape(field) + '"]');
+  document.querySelectorAll('button.fpick[data-ev="' + ev + '"]').forEach(function(b) {{
+    b.classList.toggle('on', !!box && box.value !== '' && b.dataset.frame === box.value);
+  }});
+}}
+function pickFrame(btn) {{
+  var ev = btn.dataset.ev, field = btn.dataset.pf;
+  var box = document.querySelector('div.review [data-ev="' + ev + '"][data-f="' + CSS.escape(field) + '"]');
+  if (!box) return;
+  box.value = box.value === btn.dataset.frame ? '' : btn.dataset.frame;  // click again to clear
+  box.dispatchEvent(new Event('input'));
+}}
+document.querySelectorAll('button.fpick').forEach(function(b) {{ pickShow(b.dataset.ev, b.dataset.pf); }});
+// highlight_frames: open each strip scrolled so its centre tile sits mid-strip.
+// Lazy tiles have no width until they load, so re-centre as they arrive -- until the
+// reader moves the strip themselves.
+function centreStrip(t) {{
+  var s = t.parentElement;
+  if (s.dataset.touched) return;
+  s.scrollLeft = t.offsetLeft - s.offsetLeft - (s.clientWidth - t.offsetWidth) / 2;
+}}
+document.querySelectorAll('div.filmstrip div.tile[data-centre]').forEach(function(t) {{
+  var s = t.parentElement;
+  ['wheel', 'pointerdown', 'touchstart', 'keydown'].forEach(function(e) {{
+    s.addEventListener(e, function() {{ s.dataset.touched = 1; }}, {{passive: true}});
+  }});
+  s.querySelectorAll('img').forEach(function(im) {{
+    im.addEventListener('load', function() {{ centreStrip(t); }});
+  }});
+  centreStrip(t);
+}});
+window.addEventListener('load', function() {{
+  document.querySelectorAll('div.filmstrip div.tile[data-centre]').forEach(centreStrip);
+}});
+document.querySelectorAll('div.review input[type=number]').forEach(function(el) {{
+  el.addEventListener('input', function() {{ pickShow(el.dataset.ev, el.dataset.f); }});
 }});
 function csvCell(v) {{
   v = v === undefined || v === null ? '' : String(v);

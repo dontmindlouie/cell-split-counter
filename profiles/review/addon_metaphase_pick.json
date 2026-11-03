@@ -1,0 +1,7 @@
+{
+ "note": "Click the frame number under a tile to fill the metaphase frame (click it again to clear); typing still works.",
+ "review_form": {
+  "numbers": ["metaphase frame (f number on image)"]
+ },
+ "pick_field": "metaphase frame (f number on image)"
+}

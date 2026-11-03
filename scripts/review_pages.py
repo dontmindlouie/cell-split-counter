@@ -37,6 +37,11 @@ Config keys (all optional; review_form required after merging; flags override th
                             (or as well) -- addon_crosshair.json
     review_form     as in show_cells_in_browser -- put the main verdict first in
                     "choices" so the 1-9 keys mark it
+    pick_field      one of review_form's numbers: each tile gets its frame number as a
+                    button that fills that box (addon_metaphase_pick.json)
+HIGHLIGHTS come from the events CSV, not the config: a column hl_<tag> holding a frame
+number outlines that tile and prints <tag> above it (blank = none on that card). The
+strip opens scrolled with the first hl_ column's tile in the middle.
 Each card's label carries its source, Fiji frame and any suggestion; its id is the
 event_id, which the CSV export keeps, so marks join back to events.csv.
 """
@@ -97,6 +102,8 @@ def main():
     after = float(pick(a.after_min, "after_min", 300))
     ts = np.asarray(m._manifest(a.well)["frame_timestamps_ms"], float)
     mins = (ts - ts[0]) / 60000.0
+    hl_cols = [c for c in ev.columns if c.startswith("hl_")]
+    palette = ["#f5c518", "#38d1e0", "#ff5fd2", "#7CFC00"]
     events = []
     for r in ev.itertuples():
         t = mins[int(r.frame)]
@@ -112,6 +119,13 @@ def main():
                        # plain text: the label is also the lightbox caption, set as text, so an
                        # HTML entity would show literally there
                        "label": f"{r.event_id} | {r.source} | Fiji frame {r.fiji_frame}{sug}"})
+        rd = r._asdict()
+        hl = [{"frame": int(rd[c]), "tag": c[3:], "color": palette[k % len(palette)]}
+              for k, c in enumerate(hl_cols) if pd.notna(rd[c])]
+        if hl:
+            events[-1]["highlight_frames"] = hl
+        if cfg.get("pick_field"):
+            events[-1]["pick_field"] = cfg["pick_field"]
     if not events:
         raise SystemExit("no cards selected")
     longest = max(e["end_frame"] - e["start_frame"] + 1 for e in events)
